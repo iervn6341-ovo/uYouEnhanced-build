@@ -1,0 +1,239 @@
+#import <Foundation/Foundation.h>
+#import <math.h>
+#import "../../CaptionIsland/CILRCLIBProvider.h"
+#import "../../CaptionIsland/CITextUtilities.h"
+
+@interface CILRCLIBProvider (SmokeTesting)
+- (CILRCLIBResult *)lyricsResultFromSearchData:(NSData *)data
+                                          title:(NSString *)title
+                                         artist:(NSString *)artist
+                                  videoDuration:(NSTimeInterval)videoDuration
+                                          error:(NSError **)error;
+- (NSURL *)searchURLForTitle:(NSString *)title artist:(NSString *)artist broad:(BOOL)broad;
+@end
+
+static NSData *CIJSONData(id object) {
+    return [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
+}
+
+static void CIAssert(BOOL condition, NSString *message) {
+    if (condition) return;
+    NSLog(@"LRCLIB provider smoke failed: %@", message);
+    exit(1);
+}
+
+static NSDictionary *CIRecord(NSInteger recordID,
+                              NSString *track,
+                              NSString *artist,
+                              double duration,
+                              NSString *plain,
+                              id synced) {
+    return @{
+        @"id": @(recordID),
+        @"trackName": track,
+        @"artistName": artist,
+        @"albumName": @"Album",
+        @"duration": @(duration),
+        @"instrumental": @NO,
+        @"plainLyrics": plain ?: NSNull.null,
+        @"syncedLyrics": synced ?: NSNull.null,
+    };
+}
+
+int main(void) {
+    @autoreleasepool {
+        CILRCLIBProvider *provider = [CILRCLIBProvider new];
+        NSError *error = nil;
+        NSString *splitTitle;
+        NSString *splitArtist;
+        CISplitSongMetadata(@"Example Artist – Example Song [Official Video]",
+            @"ExampleArtistVEVO", &splitTitle, &splitArtist);
+        CIAssert([splitTitle isEqualToString:@"Example Song"],
+            @"common YouTube decorations should be removed before lookup");
+        CIAssert([splitArtist isEqualToString:@"Example Artist"],
+            @"Unicode title separators should provide the canonical artist");
+        NSURLComponents *broadComponents = [NSURLComponents componentsWithURL:
+            [provider searchURLForTitle:@"Example Song" artist:@"Example Artist" broad:YES]
+            resolvingAgainstBaseURL:NO];
+        NSString *broadQuery = broadComponents.queryItems.firstObject.value;
+        CIAssert([broadQuery containsString:@"Example Artist"] &&
+            [broadQuery containsString:@"Example Song"],
+            @"broad lookup should constrain the query with both artist and title");
+
+        NSArray *nearbyVersions = @[
+            CIRecord(10, @"Example Song", @"Example Artist", 210.0,
+                @"Plain first\nPlain second", nil),
+            CIRecord(11, @"Example Song", @"Example Artist", 212.5,
+                @"Synced first\nSynced second",
+                @"[00:01.00]Synced first\n[03:00.00]Synced second"),
+            CIRecord(12, @"Example Song (Live)", @"Example Artist", 211.0,
+                @"Wrong version", @"[00:01.00]Wrong version"),
+        ];
+        CILRCLIBResult *result = [provider lyricsResultFromSearchData:
+            CIJSONData(nearbyVersions) title:@"Example Song" artist:@"Example Artist"
+            videoDuration:211.0 error:&error];
+        CIAssert(result != nil && error == nil, @"valid search response should parse");
+        CIAssert(result.recordID == 11, @"nearby synced version should beat a marginally closer plain version");
+        CIAssert(result.syncedCues.count == 2, @"syncedLyrics should become timed cues");
+        CIAssert(fabs(result.syncedCues[0].startTime - 1.0) < 0.001,
+            @"LRC timestamps should remain tied to playback media time");
+
+        error = nil;
+        NSArray *distantSynced = @[
+            CIRecord(20, @"Example Song", @"Example Artist", 211.0,
+                @"Closest plain\nSecond line", nil),
+            CIRecord(21, @"Example Song", @"Example Artist", 230.0,
+                @"Distant synced", @"[00:01.00]Distant synced"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(distantSynced)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result.recordID == 20, @"synced preference must not select a clearly different duration");
+        CIAssert(result.syncedCues.count == 0 &&
+            [result.plainLyrics containsString:@"Closest plain"],
+            @"closest plain lyrics should remain the fallback");
+
+        error = nil;
+        NSArray *singleCue = @[
+            CIRecord(22, @"Example Song", @"Example Artist", 211.0,
+                @"First\nSecond\nThird\nFourth",
+                @"[00:01.00]Only one timestamp"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(singleCue)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result.recordID == 22 && result.syncedCues.count == 0 &&
+            [result.plainLyrics containsString:@"Fourth"],
+            @"an incomplete one-cue timeline should fall back to its plain lyrics");
+
+        error = nil;
+        NSArray *onlyDistantTimeline = @[
+            CIRecord(23, @"Example Song", @"Example Artist", 240.0,
+                @"First\nSecond",
+                @"[00:01.00]First\n[00:04.00]Second"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(onlyDistantTimeline)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result.recordID == 23 && result.syncedCues.count == 0,
+            @"a uniquely matched but distant timeline should use plain lyrics instead");
+
+        error = nil;
+        NSArray *distantTimelineWithoutPlain = @[
+            CIRecord(24, @"Example Song", @"Example Artist", 240.0,
+                nil, @"[00:01.00]First\n[00:04.00]Second"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(distantTimelineWithoutPlain)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result == nil && error.code == 404,
+            @"an unsafe synced timeline without plain lyrics must be rejected");
+
+        error = nil;
+        NSArray *wrongArtist = @[
+            CIRecord(25, @"Hello", @"Adele", 295.0,
+                @"Hello from the other side", nil),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(wrongArtist)
+            title:@"Hello" artist:@"Random Uploader" videoDuration:295.0 error:&error];
+        CIAssert(result == nil && error.code == 404,
+            @"an exact short title must not bypass a mismatched artist");
+
+        error = nil;
+        NSArray *malformedTimeline = @[
+            CIRecord(26, @"Example Song", @"Example Artist", 211.0,
+                @"Plain survives\nSecond line", @"not an lrc timeline"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(malformedTimeline)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result.recordID == 26 && result.syncedCues.count == 0 &&
+            [result.plainLyrics containsString:@"Plain survives"],
+            @"malformed synced lyrics should fall back to valid plain lyrics");
+
+        error = nil;
+        NSArray *croppedTimeline = @[
+            CIRecord(27, @"Example Song", @"Example Artist", 211.0,
+                @"First\nSecond",
+                @"[00:01.00]First\n[03:40.00]Outside the video"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(croppedTimeline)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result.recordID == 27 && result.syncedCues.count == 0,
+            @"synced safety checks should run after cues outside the video are removed");
+
+        error = nil;
+        NSArray *missingTrackDuration = @[
+            CIRecord(28, @"Example Song", @"Example Artist", 0,
+                @"First\nSecond",
+                @"[00:01.00]First\n[01:00.00]Second"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(missingTrackDuration)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result.recordID == 28 && result.syncedCues.count == 0,
+            @"unknown LRCLIB duration should not install an unverified synced timeline");
+
+        error = nil;
+        NSArray *tinyTimeline = @[
+            CIRecord(29, @"Example Song", @"Example Artist", 211.0,
+                @"First\nSecond",
+                @"[00:01.00]First\n[00:04.00]Second"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(tinyTimeline)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result.recordID == 29 && result.syncedCues.count == 0,
+            @"two tiny cues should not represent a full-length song timeline");
+
+        error = nil;
+        NSArray *gapTimeline = @[
+            CIRecord(30, @"Short Song", @"Example Artist", 10.0,
+                @"First\nSecond",
+                @"[00:01.00]First\n[00:03.00]\n[00:05.00]Second"),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(gapTimeline)
+            title:@"Short Song" artist:@"Example Artist" videoDuration:10.0 error:&error];
+        CIAssert(result.syncedCues.count == 2 &&
+            fabs(result.syncedCues[0].endTime - 3.0) < 0.001,
+            @"an empty LRC timestamp should end the prior line and create a display gap");
+
+        error = nil;
+        NSArray *placeholderOnly = @[
+            CIRecord(31, @"Example Song", @"Example Artist", 211.0,
+                @"*******\n*******", nil),
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(placeholderOnly)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result == nil && error.code == 404,
+            @"placeholder-only plain lyrics should not become a candidate");
+
+        error = nil;
+        NSArray *unusable = @[
+            @{
+                @"id": @40,
+                @"trackName": @"Different Track",
+                @"artistName": @"Someone Else",
+                @"duration": @211,
+                @"instrumental": @NO,
+                @"plainLyrics": @"Wrong",
+                @"syncedLyrics": NSNull.null,
+            },
+            @{
+                @"id": @41,
+                @"trackName": @"Example Song",
+                @"artistName": @"Example Artist",
+                @"duration": @211,
+                @"instrumental": @YES,
+                @"plainLyrics": NSNull.null,
+                @"syncedLyrics": NSNull.null,
+            },
+        ];
+        result = [provider lyricsResultFromSearchData:CIJSONData(unusable)
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result == nil && error.code == 404,
+            @"instrumental and low-confidence candidates should be rejected");
+
+        error = nil;
+        NSData *malformedRoot = [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
+        result = [provider lyricsResultFromSearchData:malformedRoot
+            title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
+        CIAssert(result == nil && error != nil, @"non-array search roots should fail safely");
+
+        NSLog(@"LRCLIB provider smoke passed");
+    }
+    return 0;
+}

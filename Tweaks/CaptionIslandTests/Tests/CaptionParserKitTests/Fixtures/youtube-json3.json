@@ -1,0 +1,33 @@
+{
+  "wireMagic": "pb3",
+  "events": [
+    {
+      "tStartMs": 0,
+      "dDurationMs": 1200,
+      "segs": [
+        { "utf8": "Hello " },
+        { "utf8": "世界", "tOffsetMs": 200 }
+      ]
+    },
+    {
+      "tStartMs": 1200,
+      "dDurationMs": 300,
+      "wWinId": 1
+    },
+    {
+      "tStartMs": 1500,
+      "dDurationMs": 1000,
+      "segs": [
+        { "utf8": "Second" },
+        { "utf8": "\n" },
+        { "utf8": "line" }
+      ]
+    },
+    {
+      "tStartMs": "3000",
+      "segs": [
+        { "utf8": "No duration" }
+      ]
+    }
+  ]
+}

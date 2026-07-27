@@ -1,0 +1,9 @@
+[ar:Fixture Artist]
+[ti:Fixture Song]
+[offset:+250]
+[00:01.00]First line
+[00:03.50][00:05.00]Repeated line
+[00:07.00]<00:07.10>Enhanced <00:07.40>words
+[01:02.5]Long minute timestamp
+[1:02:03.450]Hour extension
+This untimed line is ignored

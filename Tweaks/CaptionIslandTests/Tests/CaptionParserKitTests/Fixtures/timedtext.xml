@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<timedtext format="3">
+  <body>
+    <text start="0.50" dur="1.25">Rock &amp; Roll<br/>第二行</text>
+    <p t="2000" d="1500"><s>日</s><s>本</s><s>語</s></p>
+    <text start="4.0">No duration</text>
+    <text dur="1.0">Missing start is ignored</text>
+  </body>
+</timedtext>

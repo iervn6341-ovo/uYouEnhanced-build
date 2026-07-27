@@ -1,0 +1,21 @@
+WEBVTT
+Kind: captions
+Language: en
+
+NOTE this block must not become a cue
+00:00:00.000 --> 00:00:09.000
+ignored note payload
+
+intro-cue
+00:00:00.500 --> 00:00:02.000 align:start position:0%
+<v Narrator><c.green>Hello &amp; welcome</c>
+second line
+
+STYLE
+::cue { color: lime; }
+
+00:02.000 --> 00:04.250
+Music &#9835;
+
+00:04,250 --> 00:05,000
+Comma timestamp accepted
