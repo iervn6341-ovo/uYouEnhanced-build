@@ -54,14 +54,67 @@ public final class CIActivityBridge: NSObject {
         label: "com.captionisland.activity.commands"
     )
     private static var commandTail: Task<Void, Never>?
+    private static let metadataLogLock = NSLock()
+    private static var didReportMissingSupportKey = false
+    private static let installedTargetMetadataIssue: String? = {
+        let appBundle = Bundle.main
+        let appBundleID = appBundle.bundleIdentifier ?? "unknown"
+        let appSupportValue = appBundle.object(
+            forInfoDictionaryKey: "NSSupportsLiveActivities"
+        )
+        guard (appSupportValue as? NSNumber)?.boolValue == true else {
+            let value = appSupportValue.map { String(describing: $0) } ?? "missing"
+            return "main app \(appBundleID) has NSSupportsLiveActivities=\(value)"
+        }
+
+        let plugInsURL = appBundle.builtInPlugInsURL ??
+            appBundle.bundleURL.appendingPathComponent(
+                "PlugIns",
+                isDirectory: true
+            )
+        let widgetURL = plugInsURL.appendingPathComponent(
+            "CaptionIslandWidget.appex",
+            isDirectory: true
+        )
+        guard let widgetBundle = Bundle(url: widgetURL) else {
+            return "CaptionIslandWidget.appex is missing or has an unreadable Info.plist"
+        }
+
+        let widgetBundleID = widgetBundle.bundleIdentifier ?? "unknown"
+        let expectedWidgetBundleID = "\(appBundleID).CaptionIslandWidget"
+        guard widgetBundleID == expectedWidgetBundleID else {
+            return "widget bundle ID is \(widgetBundleID), expected \(expectedWidgetBundleID)"
+        }
+
+        let widgetSupportValue = widgetBundle.object(
+            forInfoDictionaryKey: "NSSupportsLiveActivities"
+        )
+        guard (widgetSupportValue as? NSNumber)?.boolValue == true else {
+            let value = widgetSupportValue.map { String(describing: $0) } ?? "missing"
+            return "widget \(widgetBundleID) has NSSupportsLiveActivities=\(value)"
+        }
+
+        let extensionDictionary = widgetBundle.object(
+            forInfoDictionaryKey: "NSExtension"
+        ) as? [String: Any]
+        let extensionPoint = extensionDictionary?[
+            "NSExtensionPointIdentifier"
+        ] as? String
+        guard extensionPoint == "com.apple.widgetkit-extension" else {
+            return "widget extension point is \(extensionPoint ?? "missing")"
+        }
+        return nil
+    }()
 
     @objc(isAvailable)
     public static func isAvailable() -> Bool {
-        return ActivityAuthorizationInfo().areActivitiesEnabled
+        targetSupportsLiveActivities(logIfMissing: false) &&
+            ActivityAuthorizationInfo().areActivitiesEnabled
     }
 
     @objc(startWithVideoID:title:)
     public static func start(videoID: String, title: String) {
+        guard targetSupportsLiveActivities(logIfMissing: true) else { return }
         let safeVideoID = sanitizedActivityText(videoID, maximumBytes: 96)
         let safeTitle = sanitizedActivityText(title, maximumBytes: 384)
         enqueue {
@@ -74,6 +127,7 @@ public final class CIActivityBridge: NSObject {
 
     @objc(ensureWithVideoID:title:)
     public static func ensure(videoID: String, title: String) {
+        guard targetSupportsLiveActivities(logIfMissing: true) else { return }
         let safeVideoID = sanitizedActivityText(videoID, maximumBytes: 96)
         let safeTitle = sanitizedActivityText(title, maximumBytes: 384)
         enqueue {
@@ -93,6 +147,7 @@ public final class CIActivityBridge: NSObject {
         position: Double,
         playing: Bool
     ) {
+        guard targetSupportsLiveActivities(logIfMissing: false) else { return }
         let safeText = sanitizedActivityText(text, maximumBytes: 1_024)
         let safeSource = sanitizedActivityText(source, maximumBytes: 64)
         let startMilliseconds = milliseconds(cueStart)
@@ -111,6 +166,7 @@ public final class CIActivityBridge: NSObject {
 
     @objc(showGapWithTitle:)
     public static func showGap(title: String) {
+        guard targetSupportsLiveActivities(logIfMissing: false) else { return }
         let safeTitle = sanitizedActivityText(title, maximumBytes: 384)
         enqueue {
             await CIActivityManager.shared.showGap(
@@ -121,6 +177,7 @@ public final class CIActivityBridge: NSObject {
 
     @objc(endImmediately:)
     public static func end(immediately: Bool) {
+        guard targetSupportsLiveActivities(logIfMissing: false) else { return }
         enqueue {
             await CIActivityManager.shared.end(immediately: immediately)
         }
@@ -148,6 +205,26 @@ public final class CIActivityBridge: NSObject {
                 await operation()
             }
         }
+    }
+
+    private static func targetSupportsLiveActivities(
+        logIfMissing: Bool
+    ) -> Bool {
+        guard let issue = installedTargetMetadataIssue else { return true }
+        guard logIfMissing else { return false }
+
+        metadataLogLock.lock()
+        let shouldReport = !didReportMissingSupportKey
+        didReportMissingSupportKey = true
+        metadataLogLock.unlock()
+        guard shouldReport else { return false }
+
+        emit(
+            level: "error",
+            message: "Installed target cannot start Live Activities: \(issue). "
+                + "Reinstall an IPA that passed the Caption Island metadata check."
+        )
+        return false
     }
 
     private static func milliseconds(_ value: Double) -> Int {
@@ -179,8 +256,10 @@ private actor CIActivityManager {
     private var lastPlaying = true
     private var dismissedVideoID = ""
     private var didLogMissingActivity = false
+    private var isStartBlockedByUnsupportedTarget = false
 
     func start(videoID: String, title: String) async {
+        guard !isStartBlockedByUnsupportedTarget else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             CIActivityBridge.emit(
                 level: "warning",
@@ -282,9 +361,15 @@ private actor CIActivityManager {
             )
         } catch {
             activity = nil
+            let description = error.localizedDescription
+            let normalizedDescription = description.lowercased()
+            if normalizedDescription.contains("nssupportsliveactivities") ||
+                normalizedDescription.contains("unsupportedtarget") {
+                isStartBlockedByUnsupportedTarget = true
+            }
             CIActivityBridge.emit(
                 level: "error",
-                message: "Unable to start Live Activity: \(error.localizedDescription)"
+                message: "Unable to start Live Activity: \(description)"
             )
         }
     }

@@ -157,8 +157,14 @@ jobs:
           echo "==> YouTube v$youtube_version downloaded!"
           plutil -replace NSSupportsLiveActivities -bool YES "Payload/YouTube.app/Info.plist" 2>/dev/null || \
             plutil -insert NSSupportsLiveActivities -bool YES "Payload/YouTube.app/Info.plist"
+          plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "Payload/YouTube.app/Info.plist" 2>/dev/null || \
+            plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "Payload/YouTube.app/Info.plist"
           plutil -replace MinimumOSVersion -string "$MINIMUM_IOS_VERSION" "Payload/YouTube.app/Info.plist" 2>/dev/null || \
             plutil -insert MinimumOSVersion -string "$MINIMUM_IOS_VERSION" "Payload/YouTube.app/Info.plist"
+          if ! /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "Payload/YouTube.app/Info.plist" 2>/dev/null | grep -qw audio; then
+            /usr/libexec/PlistBuddy -c 'Add :UIBackgroundModes array' "Payload/YouTube.app/Info.plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Add :UIBackgroundModes: string audio' "Payload/YouTube.app/Info.plist"
+          fi
           echo "youtube_version=${youtube_version}" >> $GITHUB_OUTPUT
 
         env:
@@ -202,6 +208,7 @@ jobs:
           app_path="$(find "$verify_dir/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$app_path"
           test "$(plutil -extract NSSupportsLiveActivities raw -expect bool -o - "$app_path/Info.plist")" = "true"
+          test "$(plutil -extract NSSupportsLiveActivitiesFrequentUpdates raw -expect bool -o - "$app_path/Info.plist")" = "true"
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app_path/Info.plist")" = "$MINIMUM_IOS_VERSION"
           /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app_path/Info.plist" | grep -qw audio
           test -f "$app_path/Frameworks/CaptionIsland.dylib"
@@ -217,6 +224,8 @@ jobs:
           widget_minos="$(otool -l "$widget_path/CaptionIslandWidget" | awk '$1 == "minos" { print $2; exit }')"
           test "$widget_minos" = "$MINIMUM_IOS_VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$widget_path/Info.plist")" = "$MINIMUM_IOS_VERSION"
+          test "$(plutil -extract NSSupportsLiveActivities raw -expect bool -o - "$widget_path/Info.plist")" = "true"
+          test "$(plutil -extract NSSupportsLiveActivitiesFrequentUpdates raw -expect bool -o - "$widget_path/Info.plist")" = "true"
           for extension_plist in "$app_path"/PlugIns/*.appex/Info.plist; do
             extension_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$extension_plist")"
             case "$extension_id" in

@@ -11,6 +11,7 @@ TWEAK_NAME = CaptionIsland
 CaptionIsland_FILES = \
 	Tweak.xm \
 	CISettings.xm \
+	CIBackgroundPlaybackMonitor.m \
 	CIConstants.m \
 	CIModels.m \
 	CITextUtilities.m \

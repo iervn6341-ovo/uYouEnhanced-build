@@ -25,9 +25,16 @@ Widget extension 負責 Dynamic Island 的 compact、minimal、expanded 版面�
 換片時會沿用現有 Activity，避免反覆收合與展開。只有字幕 cue 改變時才送出更新。
 
 本 Tweak 最低需要 iOS 17.5。沒有 Dynamic Island 的裝置仍可在鎖定畫面看到
-Live Activity。YouTube 在背景播放且程序仍有執行時間時可以繼續更新；若 App 被強制
-關閉或被系統完全暫停，畫面會停在最後狀態。完全不依賴 App 程序的更新需要額外的
-ActivityKit push server。
+Live Activity。進入背景或鎖定畫面後，Tweak 會停用前景的高頻 callback，改為每
+0.75 秒讀取一次 YouTube 播放時間；只有時間前進且字幕 cue 改變時才更新 Activity。
+回到前景、停止播放或播放器釋放後，背景計時器會立即停止。
+
+此機制需要 YouTube 的背景音訊仍在播放，讓 App 保有系統核准的背景執行時間。若
+App 被強制關閉或被系統完全暫停，畫面會停在最後狀態；本 Tweak 不會播放無聲音訊來
+規避系統限制。完全不依賴 App 程序的更新需要額外的 ActivityKit push server。
+
+「螢幕關閉」時面板本身不會發光：iPhone 11 會在喚醒鎖定畫面時看到最新字幕；
+支援 Always-On Display 的機型則仍由 iOS 的 AOD 顯示規則決定是否持續顯示。
 
 ## 設定
 
@@ -68,8 +75,9 @@ LRCLIB 內容不跨影片寫入磁碟快取。若要公開發行，仍應自行�
 - 一條 utility QoS serial queue 管理字幕狀態；
 - 同時間最多一個字幕下載與一個 LRCLIB request，換片會取消舊工作；
 - YouTube 字幕使用最多 8 筆的記憶體快取，LRCLIB 歌詞不做磁碟快取；
-- 播放時間最多每秒取樣約 5 次，只有 cue 改變才更新 ActivityKit；
-- 不擷取音訊、不使用 CoreML，也不進行裝置端語音辨識或永久輪詢。
+- 前景沿用 YouTube callback（最多約 5 Hz）；背景改用單一 0.75 秒計時器並提供
+  0.15 秒系統容差，時間未改變時不提交任何字幕工作；
+- 不擷取音訊、不使用 CoreML，也不進行裝置端語音辨識或無聲音訊保活。
 
 ## 建置與驗證
 

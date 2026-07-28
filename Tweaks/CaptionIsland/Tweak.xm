@@ -5,6 +5,7 @@
 #import <YouTubeHeader/YTPlayerViewController.h>
 #import <YouTubeHeader/YTSingleVideoTime.h>
 #import <objc/runtime.h>
+#import "CIBackgroundPlaybackMonitor.h"
 #import "CICaptionCoordinator.h"
 #import "CIConstants.h"
 #import "CIToastPresenter.h"
@@ -39,6 +40,7 @@ static void CIUpdateSuppression(YTPlayerViewController *controller) {
 
 static void CIHandlePlaybackTime(YTPlayerViewController *controller, YTSingleVideoTime *videoTime) {
     if (!videoTime || (CIActivePlayerController && CIActivePlayerController != controller)) return;
+    if (CIBackgroundPlaybackMonitor.sharedMonitor.isSamplingPlaybackInBackground) return;
     CICaptionCoordinator *coordinator = CICaptionCoordinator.sharedCoordinator;
     CIUpdateSuppression(controller);
     if (!controller.isPlayingAd) [coordinator updatePlaybackTime:videoTime.time];
@@ -87,6 +89,7 @@ static void CIActivatePlayback(YTPlayerViewController *controller, id playbackDa
         objc_setAssociatedObject(CIActivePlayerController, CIActivePlayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CIActivePlayerController = controller;
+    [CIBackgroundPlaybackMonitor.sharedMonitor attachPlayerController:controller];
     objc_setAssociatedObject(controller, CIActivePlayerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     CIUpdateSuppression(controller);
     if (controller.isPlayingAd) return;
@@ -107,6 +110,7 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     objc_setAssociatedObject(controller, CIActivePlayerKey, nil,
                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (CIActivePlayerController == controller) CIActivePlayerController = nil;
+    [CIBackgroundPlaybackMonitor.sharedMonitor detachPlayerController:controller];
     [CICaptionCoordinator.sharedCoordinator stop];
 }
 
@@ -211,6 +215,7 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 %ctor {
     Class playerClass = NSClassFromString(@"YTPlayerViewController");
     if (!playerClass) return;
+    (void)CIBackgroundPlaybackMonitor.sharedMonitor;
     %init(CaptionIslandActivationHooks);
     SEL modern = @selector(potentiallyMutatedSingleVideo:currentVideoTimeDidChange:);
     if (class_getInstanceMethod(playerClass, modern)) {

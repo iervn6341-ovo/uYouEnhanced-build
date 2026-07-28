@@ -59,7 +59,11 @@ $(TWEAK_NAME)_EMBED_LIBRARIES = $(THEOS_OBJ_DIR)/libcolorpicker.dylib
 $(TWEAK_NAME)_EMBED_FRAMEWORKS = $(_THEOS_LOCAL_DATA_DIR)/$(THEOS_OBJ_DIR_NAME)/install_Alderis.xcarchive/Products/var/jb/Library/Frameworks/Alderis.framework
 CAPTION_ISLAND_WIDGET_APPEX = $(_THEOS_LOCAL_DATA_DIR)/obj/CaptionIslandWidget/CaptionIslandWidget.appex
 GENERATED_EXTENSIONS_DIR = $(_THEOS_LOCAL_DATA_DIR)/generated-extensions
+INCLUDE_OPENYOUTUBE ?= 0
 STATIC_EXTENSION_NAMES := $(notdir $(wildcard Extensions/*.appex))
+ifneq ($(INCLUDE_OPENYOUTUBE),1)
+STATIC_EXTENSION_NAMES := $(filter-out OpenYoutubeSafariExtension.appex,$(STATIC_EXTENSION_NAMES))
+endif
 GENERATED_EXTENSION_APPEXS = $(addprefix $(GENERATED_EXTENSIONS_DIR)/,$(STATIC_EXTENSION_NAMES))
 $(TWEAK_NAME)_EMBED_BUNDLES = $(wildcard Bundles/*.bundle) $(wildcard Tweaks/CaptionIsland/Assets/*.bundle)
 $(TWEAK_NAME)_EMBED_EXTENSIONS = $(GENERATED_EXTENSION_APPEXS) $(CAPTION_ISLAND_WIDGET_APPEX)
@@ -95,18 +99,24 @@ before-all::
 		exit 1; \
 	fi
 before-all::
+	@rm -rf "$(GENERATED_EXTENSIONS_DIR)"
 	@mkdir -p "$(GENERATED_EXTENSIONS_DIR)"
-	@set -e; for extension in Extensions/*.appex; do \
-		name=$$(basename "$$extension"); \
-		rm -rf "$(GENERATED_EXTENSIONS_DIR)/$$name"; \
+	@set -e; for name in $(STATIC_EXTENSION_NAMES); do \
+		extension="Extensions/$$name"; \
 		cp -R "$$extension" "$(GENERATED_EXTENSIONS_DIR)/$$name"; \
 	done
 before-all::
 	@if [[ -f "$(IPA)/Info.plist" ]]; then \
 		plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"; \
+		plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist"; \
 		plutil -replace MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist"; \
+		if ! /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$(IPA)/Info.plist" 2>/dev/null | grep -qw audio; then \
+			/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$(IPA)/Info.plist" 2>/dev/null || :; \
+			/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes: string audio" "$(IPA)/Info.plist"; \
+		fi; \
 	fi
 before-all::
 	@if [[ ! -f $(UYOU_DEB) ]]; then \
@@ -124,11 +134,25 @@ before-all::
 		fi; \
 	fi;
 before-package::
+	@test -f "$(IPA)/Info.plist"
+	@plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"
+	@plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist"
+	@if ! /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$(IPA)/Info.plist" 2>/dev/null | grep -qw audio; then \
+		/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$(IPA)/Info.plist" 2>/dev/null || :; \
+		/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes: string audio" "$(IPA)/Info.plist"; \
+	fi
 	@test -f "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
 	@/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $(BUNDLE_ID).CaptionIslandWidget" "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
 	@/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(YOUTUBE_VERSION)" "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
 	@/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(YOUTUBE_VERSION)" "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
-	@set -e; for plist in "$(GENERATED_EXTENSIONS_DIR)"/*.appex/Info.plist; do \
+	@plutil -replace NSSupportsLiveActivities -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivities -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
+	@plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
+	@set -e; for appex in $(GENERATED_EXTENSION_APPEXS); do \
+		plist="$$appex/Info.plist"; \
 		old_id=$$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$$plist"); \
 		suffix=$${old_id#com.google.ios.youtube}; \
 		test "$$suffix" != "$$old_id"; \
