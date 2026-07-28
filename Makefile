@@ -1,13 +1,12 @@
 SDK_VERSION ?= 17.5
-HOST_DEPLOYMENT_VERSION ?= 15.0
+HOST_DEPLOYMENT_VERSION ?= 17.5
 export TARGET = iphone:clang:$(SDK_VERSION):$(HOST_DEPLOYMENT_VERSION)
 export ARCHS = arm64
 
 export libcolorpicker_ARCHS = arm64
 export libFLEX_ARCHS = arm64
 export Alderis_XCODEOPTS = LD_DYLIB_INSTALL_NAME=@rpath/Alderis.framework/Alderis
-export Alderis_XCODEFLAGS = DYLIB_INSTALL_NAME_BASE=/Library/Frameworks BUILD_LIBRARY_FOR_DISTRIBUTION=YES ARCHS="$(ARCHS)"
-export libcolorpicker_CFLAGS = -Wno-error=deprecated-declarations
+export Alderis_XCODEFLAGS = DYLIB_INSTALL_NAME_BASE=/Library/Frameworks BUILD_LIBRARY_FOR_DISTRIBUTION=YES ARCHS="$(ARCHS)" IPHONEOS_DEPLOYMENT_TARGET="$(HOST_DEPLOYMENT_VERSION)"
 export libcolorpicker_LDFLAGS = -F$(TARGET_PRIVATE_FRAMEWORK_PATH) -install_name @rpath/libcolorpicker.dylib
 export ADDITIONAL_CFLAGS = -I$(THEOS_PROJECT_DIR)/Tweaks/RemoteLog -I$(THEOS_PROJECT_DIR)/Tweaks
 
@@ -79,12 +78,22 @@ UYOU_PATH = Tweaks/uYou
 UYOU_DEB = $(UYOU_PATH)/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb
 UYOU_DYLIB = $(UYOU_PATH)/Library/MobileSubstrate/DynamicLibraries/uYou.dylib
 UYOU_BUNDLE = $(UYOU_PATH)/Library/Application\ Support/uYouBundle.bundle
+YTWEAKS_IOS175_PATCH = $(THEOS_PROJECT_DIR)/Patches/YTweaks-iOS17.5.patch
 
 internal-clean::
 	@rm -rf $(UYOU_PATH)/*
 	@rm -rf "$(_THEOS_LOCAL_DATA_DIR)/generated-extensions"
 
 ifneq ($(JAILBROKEN),1)
+before-all::
+	@if git -C Tweaks/YTweaks apply --reverse --check "$(YTWEAKS_IOS175_PATCH)" >/dev/null 2>&1; then \
+		:; \
+	elif git -C Tweaks/YTweaks apply --check "$(YTWEAKS_IOS175_PATCH)" >/dev/null 2>&1; then \
+		git -C Tweaks/YTweaks apply "$(YTWEAKS_IOS175_PATCH)"; \
+	else \
+		$(PRINT_FORMAT_ERROR) "Unable to apply the iOS 17.5 YTweaks patch"; \
+		exit 1; \
+	fi
 before-all::
 	@mkdir -p "$(GENERATED_EXTENSIONS_DIR)"
 	@set -e; for extension in Extensions/*.appex; do \
@@ -96,6 +105,8 @@ before-all::
 	@if [[ -f "$(IPA)/Info.plist" ]]; then \
 		plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"; \
+		plutil -replace MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist" 2>/dev/null || \
+		plutil -insert MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist"; \
 	fi
 before-all::
 	@if [[ ! -f $(UYOU_DEB) ]]; then \
@@ -122,6 +133,8 @@ before-package::
 		suffix=$${old_id#com.google.ios.youtube}; \
 		test "$$suffix" != "$$old_id"; \
 		/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $(BUNDLE_ID)$$suffix" "$$plist"; \
+		plutil -replace MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$$plist" 2>/dev/null || \
+		plutil -insert MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$$plist"; \
 	done
 else
 before-package::

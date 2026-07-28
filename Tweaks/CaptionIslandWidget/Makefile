@@ -1,7 +1,6 @@
 SDK_VERSION ?= 17.5
-# A command-line TARGET from the host build must never lower the widget below
-# ActivityKit's deployment floor.
-override TARGET := iphone:clang:$(SDK_VERSION):16.1
+# Keep the extension deployment target aligned with the host app.
+override TARGET := iphone:clang:$(SDK_VERSION):17.5
 ARCHS = arm64
 THEOS_OBJ_DIR_NAME = obj/CaptionIslandWidget
 

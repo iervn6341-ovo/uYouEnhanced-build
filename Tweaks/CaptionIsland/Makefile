@@ -1,5 +1,5 @@
 SDK_VERSION ?= 17.5
-HOST_DEPLOYMENT_VERSION ?= 15.0
+HOST_DEPLOYMENT_VERSION ?= 17.5
 TARGET := iphone:clang:$(SDK_VERSION):$(HOST_DEPLOYMENT_VERSION)
 ARCHS = arm64
 INSTALL_TARGET_PROCESSES = YouTube
@@ -24,9 +24,8 @@ CaptionIsland_FILES = \
 	CICaptionCoordinator.m \
 	CIActivityBridge.swift \
 	Shared/CICaptionActivityAttributes.swift
-CaptionIsland_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
-CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore Security
-CaptionIsland_WEAK_FRAMEWORKS = ActivityKit
+CaptionIsland_CFLAGS = -fobjc-arc
+CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore Security ActivityKit
 CaptionIsland_SWIFT_VERSION = 5
 
 include $(THEOS_MAKE_PATH)/tweak.mk

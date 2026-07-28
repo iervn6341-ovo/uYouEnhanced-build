@@ -57,16 +57,11 @@ public final class CIActivityBridge: NSObject {
 
     @objc(isAvailable)
     public static func isAvailable() -> Bool {
-        guard #available(iOS 16.1, *) else { return false }
         return ActivityAuthorizationInfo().areActivitiesEnabled
     }
 
     @objc(startWithVideoID:title:)
     public static func start(videoID: String, title: String) {
-        guard #available(iOS 16.1, *) else {
-            emit(level: "warning", message: "Live Activities require iOS 16.1 or later")
-            return
-        }
         let safeVideoID = sanitizedActivityText(videoID, maximumBytes: 96)
         let safeTitle = sanitizedActivityText(title, maximumBytes: 384)
         enqueue {
@@ -79,7 +74,6 @@ public final class CIActivityBridge: NSObject {
 
     @objc(ensureWithVideoID:title:)
     public static func ensure(videoID: String, title: String) {
-        guard #available(iOS 16.1, *) else { return }
         let safeVideoID = sanitizedActivityText(videoID, maximumBytes: 96)
         let safeTitle = sanitizedActivityText(title, maximumBytes: 384)
         enqueue {
@@ -99,7 +93,6 @@ public final class CIActivityBridge: NSObject {
         position: Double,
         playing: Bool
     ) {
-        guard #available(iOS 16.1, *) else { return }
         let safeText = sanitizedActivityText(text, maximumBytes: 1_024)
         let safeSource = sanitizedActivityText(source, maximumBytes: 64)
         let startMilliseconds = milliseconds(cueStart)
@@ -118,7 +111,6 @@ public final class CIActivityBridge: NSObject {
 
     @objc(showGapWithTitle:)
     public static func showGap(title: String) {
-        guard #available(iOS 16.1, *) else { return }
         let safeTitle = sanitizedActivityText(title, maximumBytes: 384)
         enqueue {
             await CIActivityManager.shared.showGap(
@@ -129,7 +121,6 @@ public final class CIActivityBridge: NSObject {
 
     @objc(endImmediately:)
     public static func end(immediately: Bool) {
-        guard #available(iOS 16.1, *) else { return }
         enqueue {
             await CIActivityManager.shared.end(immediately: immediately)
         }
@@ -169,7 +160,6 @@ public final class CIActivityBridge: NSObject {
     }
 }
 
-@available(iOS 16.1, *)
 private actor CIActivityManager {
     private struct PayloadEnvelope: Encodable {
         let attributes: CICaptionActivityAttributes
@@ -280,19 +270,11 @@ private actor CIActivityManager {
 
         let attributes = CICaptionActivityAttributes(sessionID: "caption-island")
         do {
-            if #available(iOS 16.2, *) {
-                activity = try Activity.request(
-                    attributes: attributes,
-                    content: ActivityContent(state: state, staleDate: nil),
-                    pushType: nil
-                )
-            } else {
-                activity = try Activity.request(
-                    attributes: attributes,
-                    contentState: state,
-                    pushType: nil
-                )
-            }
+            activity = try Activity.request(
+                attributes: attributes,
+                content: ActivityContent(state: state, staleDate: nil),
+                pushType: nil
+            )
             didLogMissingActivity = false
             CIActivityBridge.emit(
                 level: "info",
@@ -435,13 +417,9 @@ private actor CIActivityManager {
     ) async {
         guard let activity else { return }
         let safeState = boundedState(state, attributes: activity.attributes)
-        if #available(iOS 16.2, *) {
-            await activity.update(
-                ActivityContent(state: safeState, staleDate: staleDate)
-            )
-        } else {
-            await activity.update(using: safeState)
-        }
+        await activity.update(
+            ActivityContent(state: safeState, staleDate: staleDate)
+        )
     }
 
     private func boundedState(
@@ -556,13 +534,9 @@ private actor CIActivityManager {
             attributes: activity.attributes
         )
         let policy: ActivityUIDismissalPolicy = immediately ? .immediate : .default
-        if #available(iOS 16.2, *) {
-            await activity.end(
-                ActivityContent(state: state, staleDate: nil),
-                dismissalPolicy: policy
-            )
-        } else {
-            await activity.end(using: state, dismissalPolicy: policy)
-        }
+        await activity.end(
+            ActivityContent(state: state, staleDate: nil),
+            dismissalPolicy: policy
+        )
     }
 }

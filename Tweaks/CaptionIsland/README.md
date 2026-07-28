@@ -24,7 +24,7 @@ LRCLIB 標準 LRC 時間碼。
 Widget extension 負責 Dynamic Island 的 compact、minimal、expanded 版面與鎖定畫面。
 換片時會沿用現有 Activity，避免反覆收合與展開。只有字幕 cue 改變時才送出更新。
 
-Live Activity 需要 iOS 16.1 以上。沒有 Dynamic Island 的裝置仍可在鎖定畫面看到
+本 Tweak 最低需要 iOS 17.5。沒有 Dynamic Island 的裝置仍可在鎖定畫面看到
 Live Activity。YouTube 在背景播放且程序仍有執行時間時可以繼續更新；若 App 被強制
 關閉或被系統完全暫停，畫面會停在最後狀態。完全不依賴 App 程序的更新需要額外的
 ActivityKit push server。

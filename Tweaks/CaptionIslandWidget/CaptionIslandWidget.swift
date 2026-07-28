@@ -103,7 +103,7 @@ struct CaptionIslandLiveActivity: Widget {
     private func displayedLine(
         _ context: ActivityViewContext<CICaptionActivityAttributes>
     ) -> String {
-        if #available(iOS 16.2, *), context.isStale {
+        if context.isStale {
             let language = Locale.preferredLanguages.first?.lowercased() ?? "en"
             if language.hasPrefix("zh") { return "字幕同步已暫停" }
             if language.hasPrefix("ja") { return "字幕同期が一時停止しました" }
