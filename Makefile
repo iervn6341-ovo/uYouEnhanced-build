@@ -1,6 +1,6 @@
-export TARGET = iphone:clang:17.5:15.0
-export SDK_PATH = $(THEOS)/sdks/iPhoneOS17.5.sdk/
-export SYSROOT = $(SDK_PATH)
+SDK_VERSION ?= 17.5
+HOST_DEPLOYMENT_VERSION ?= 15.0
+export TARGET = iphone:clang:$(SDK_VERSION):$(HOST_DEPLOYMENT_VERSION)
 export ARCHS = arm64
 
 export libcolorpicker_ARCHS = arm64
@@ -57,12 +57,16 @@ $(TWEAK_NAME)_INJECT_DYLIBS = \
 
 $(TWEAK_NAME)_EMBED_LIBRARIES = $(THEOS_OBJ_DIR)/libcolorpicker.dylib
 $(TWEAK_NAME)_EMBED_FRAMEWORKS = $(_THEOS_LOCAL_DATA_DIR)/$(THEOS_OBJ_DIR_NAME)/install_Alderis.xcarchive/Products/var/jb/Library/Frameworks/Alderis.framework
+CAPTION_ISLAND_WIDGET_APPEX = $(_THEOS_LOCAL_DATA_DIR)/obj/CaptionIslandWidget/CaptionIslandWidget.appex
+GENERATED_EXTENSIONS_DIR = $(_THEOS_LOCAL_DATA_DIR)/generated-extensions
+STATIC_EXTENSION_NAMES := $(notdir $(wildcard Extensions/*.appex))
+GENERATED_EXTENSION_APPEXS = $(addprefix $(GENERATED_EXTENSIONS_DIR)/,$(STATIC_EXTENSION_NAMES))
 $(TWEAK_NAME)_EMBED_BUNDLES = $(wildcard Bundles/*.bundle) $(wildcard Tweaks/CaptionIsland/Assets/*.bundle)
-$(TWEAK_NAME)_EMBED_EXTENSIONS = $(wildcard Extensions/*.appex)
+$(TWEAK_NAME)_EMBED_EXTENSIONS = $(GENERATED_EXTENSION_APPEXS) $(CAPTION_ISLAND_WIDGET_APPEX)
 
 include $(THEOS)/makefiles/common.mk
 ifneq ($(JAILBROKEN),1)
-SUBPROJECTS += Tweaks/Alderis Tweaks/DontEatMyContent Tweaks/FLEXing/libflex Tweaks/iSponsorBlock Tweaks/Return-YouTube-Dislikes Tweaks/YTABConfig Tweaks/YouGroupSettings Tweaks/CaptionIsland Tweaks/YTIcons Tweaks/YouLoop Tweaks/YouMute Tweaks/YouPiP Tweaks/YouQuality Tweaks/YouSlider Tweaks/YouSpeed Tweaks/YouTimeStamp Tweaks/YTHoldForSpeed Tweaks/YTUHD Tweaks/YTVideoOverlay Tweaks/YTweaks
+SUBPROJECTS += Tweaks/Alderis Tweaks/DontEatMyContent Tweaks/FLEXing/libflex Tweaks/iSponsorBlock Tweaks/Return-YouTube-Dislikes Tweaks/YTABConfig Tweaks/YouGroupSettings Tweaks/CaptionIsland Tweaks/CaptionIslandWidget Tweaks/YTIcons Tweaks/YouLoop Tweaks/YouMute Tweaks/YouPiP Tweaks/YouQuality Tweaks/YouSlider Tweaks/YouSpeed Tweaks/YouTimeStamp Tweaks/YTHoldForSpeed Tweaks/YTUHD Tweaks/YTVideoOverlay Tweaks/YTweaks
 include $(THEOS_MAKE_PATH)/aggregate.mk
 endif
 include $(THEOS_MAKE_PATH)/tweak.mk
@@ -77,8 +81,21 @@ UYOU_BUNDLE = $(UYOU_PATH)/Library/Application\ Support/uYouBundle.bundle
 
 internal-clean::
 	@rm -rf $(UYOU_PATH)/*
+	@rm -rf "$(_THEOS_LOCAL_DATA_DIR)/generated-extensions"
 
 ifneq ($(JAILBROKEN),1)
+before-all::
+	@mkdir -p "$(GENERATED_EXTENSIONS_DIR)"
+	@set -e; for extension in Extensions/*.appex; do \
+		name=$$(basename "$$extension"); \
+		rm -rf "$(GENERATED_EXTENSIONS_DIR)/$$name"; \
+		cp -R "$$extension" "$(GENERATED_EXTENSIONS_DIR)/$$name"; \
+	done
+before-all::
+	@if [[ -f "$(IPA)/Info.plist" ]]; then \
+		plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"; \
+	fi
 before-all::
 	@if [[ ! -f $(UYOU_DEB) ]]; then \
 		rm -rf $(UYOU_PATH)/*; \
@@ -94,6 +111,17 @@ before-all::
 			$(PRINT_FORMAT_ERROR) "Failed to extract uYou"; exit 1; \
 		fi; \
 	fi;
+before-package::
+	@test -f "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
+	@/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $(BUNDLE_ID).CaptionIslandWidget" "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
+	@/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(YOUTUBE_VERSION)" "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
+	@/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(YOUTUBE_VERSION)" "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
+	@set -e; for plist in "$(GENERATED_EXTENSIONS_DIR)"/*.appex/Info.plist; do \
+		old_id=$$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$$plist"); \
+		suffix=$${old_id#com.google.ios.youtube}; \
+		test "$$suffix" != "$$old_id"; \
+		/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $(BUNDLE_ID)$$suffix" "$$plist"; \
+	done
 else
 before-package::
 	@mkdir -p $(THEOS_STAGING_DIR)/Library/Application\ Support; cp -r Localizations/uYouPlus.bundle $(THEOS_STAGING_DIR)/Library/Application\ Support/

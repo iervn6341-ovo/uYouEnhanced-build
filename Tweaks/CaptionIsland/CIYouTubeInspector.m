@@ -15,6 +15,7 @@ static id CIValue(id object, NSString *key) {
 static NSString *CIStringValue(id object) {
     if ([object isKindOfClass:NSString.class]) return object;
     if ([object isKindOfClass:NSNumber.class]) return [object stringValue];
+    if ([object isKindOfClass:NSURL.class]) return [(NSURL *)object absoluteString] ?: @"";
     SEL formattingSelector = NSSelectorFromString(@"stringWithFormattingRemoved");
     if ([object respondsToSelector:formattingSelector]) {
         NSString *(*send)(id, SEL) = (void *)objc_msgSend;
@@ -86,6 +87,37 @@ static BOOL CITrackIsTranslated(CICaptionTrack *track) {
     return NO;
 }
 
+static NSArray<CICaptionTrack *> *CITracksFromRawTracks(id rawTracks) {
+    if (![rawTracks isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray<CICaptionTrack *> *tracks =
+        [NSMutableArray arrayWithCapacity:[(NSArray *)rawTracks count]];
+    for (id rawTrack in (NSArray *)rawTracks) {
+        CICaptionTrack *track = [CICaptionTrack new];
+        track.baseURL = CIStringValue(CIValue(rawTrack, @"baseUrl"));
+        if (track.baseURL.length == 0) {
+            track.baseURL = CIStringValue(CIValue(rawTrack, @"baseURL"));
+        }
+        if (track.baseURL.length == 0) {
+            track.baseURL = CIStringValue(CIValue(rawTrack, @"URL"));
+        }
+        track.languageCode = CIStringValue(CIValue(rawTrack, @"languageCode"));
+        track.kind = CIStringValue(CIValue(rawTrack, @"kind"));
+        track.vssID = CIStringValue(CIValue(rawTrack, @"vssId"));
+        if (track.vssID.length == 0) {
+            track.vssID = CIStringValue(CIValue(rawTrack, @"vssID"));
+        }
+        if (track.vssID.length == 0) {
+            track.vssID = CIStringValue(CIValue(rawTrack, @"VSSID"));
+        }
+        track.displayName = CIStringValue(CIValue(rawTrack, @"name"));
+        if (track.displayName.length == 0) {
+            track.displayName = CIStringValue(CIValue(rawTrack, @"displayName"));
+        }
+        if (track.baseURL.length > 0) [tracks addObject:track];
+    }
+    return tracks.copy;
+}
+
 @implementation CIYouTubeInspector
 
 + (CIVideoContext *)contextFromPlaybackData:(id)playbackData playerController:(id)playerController {
@@ -110,25 +142,18 @@ static BOOL CITrackIsTranslated(CICaptionTrack *track) {
     context.duration = [CIValue(details, @"lengthSeconds") doubleValue];
     if (context.duration <= 0) context.duration = [CIValue(playerController, @"currentVideoTotalMediaTime") doubleValue];
 
-    NSArray *rawTracks = CIFindCaptionTracks(playerData, 0);
-    if (rawTracks.count == 0) {
-        id activeVideo = CIValue(playerController, @"activeVideo");
-        rawTracks = CIValue(activeVideo, @"availableCaptionTracks");
+    // MLInnerTubeCaptionTrack exposes the usable signed URL at runtime.
+    // Prefer those objects over protobuf metadata, whose renderer entries can
+    // contain language labels without a downloadable URL.
+    id activeVideo = CIValue(playerController, @"activeVideo");
+    NSArray<CICaptionTrack *> *tracks =
+        CITracksFromRawTracks(CIValue(activeVideo, @"availableCaptionTracks"));
+    if (tracks.count == 0) {
+        id playerItem = CIValue(activeVideo, @"playerItem");
+        tracks = CITracksFromRawTracks(CIValue(playerItem, @"availableCaptionTracks"));
     }
-    NSMutableArray<CICaptionTrack *> *tracks = [NSMutableArray arrayWithCapacity:rawTracks.count];
-    for (id rawTrack in rawTracks) {
-        CICaptionTrack *track = [CICaptionTrack new];
-        track.baseURL = CIStringValue(CIValue(rawTrack, @"baseUrl"));
-        if (track.baseURL.length == 0) track.baseURL = CIStringValue(CIValue(rawTrack, @"baseURL"));
-        if (track.baseURL.length == 0) track.baseURL = CIStringValue(CIValue(rawTrack, @"URL"));
-        track.languageCode = CIStringValue(CIValue(rawTrack, @"languageCode"));
-        track.kind = CIStringValue(CIValue(rawTrack, @"kind"));
-        track.vssID = CIStringValue(CIValue(rawTrack, @"vssId"));
-        if (track.vssID.length == 0) track.vssID = CIStringValue(CIValue(rawTrack, @"vssID"));
-        if (track.vssID.length == 0) track.vssID = CIStringValue(CIValue(rawTrack, @"VSSID"));
-        track.displayName = CIStringValue(CIValue(rawTrack, @"name"));
-        if (track.displayName.length == 0) track.displayName = CIStringValue(CIValue(rawTrack, @"displayName"));
-        if (track.baseURL.length > 0) [tracks addObject:track];
+    if (tracks.count == 0) {
+        tracks = CITracksFromRawTracks(CIFindCaptionTracks(playerData, 0));
     }
     context.captionTracks = tracks;
     return context.videoID.length > 0 ? context : nil;

@@ -1,4 +1,6 @@
-TARGET := iphone:clang:17.5:15.0
+SDK_VERSION ?= 17.5
+HOST_DEPLOYMENT_VERSION ?= 15.0
+TARGET := iphone:clang:$(SDK_VERSION):$(HOST_DEPLOYMENT_VERSION)
 ARCHS = arm64
 INSTALL_TARGET_PROCESSES = YouTube
 
@@ -16,9 +18,15 @@ CaptionIsland_FILES = \
 	CILyricsAligner.m \
 	CIYouTubeInspector.m \
 	CILRCLIBProvider.m \
-	CIOverlayPresenter.m \
-	CICaptionCoordinator.m
+	CILogStore.m \
+	CILogViewController.m \
+	CIActivityPresenter.m \
+	CICaptionCoordinator.m \
+	CIActivityBridge.swift \
+	Shared/CICaptionActivityAttributes.swift
 CaptionIsland_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore Security
+CaptionIsland_WEAK_FRAMEWORKS = ActivityKit
+CaptionIsland_SWIFT_VERSION = 5
 
 include $(THEOS_MAKE_PATH)/tweak.mk

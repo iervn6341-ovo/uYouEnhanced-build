@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
+#import "CICaptionPresenting.h"
 #import "CIModels.h"
-#import "CIOverlayPresenter.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -13,8 +13,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)playerViewDidDisappear;
 - (void)reloadPreferences;
 - (void)stop;
-// A future ActivityKit bridge can replace the in-app presenter without
-// changing caption selection, networking, or timing logic.
 - (void)setPresenter:(id<CICaptionPresenting>)presenter;
 @end
 

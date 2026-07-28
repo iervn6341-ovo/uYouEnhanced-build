@@ -1,4 +1,5 @@
 #import "CICaptionCoordinator.h"
+#import "CIActivityPresenter.h"
 #import "CICaptionParser.h"
 #import "CIConstants.h"
 #import "CILRCLIBProvider.h"
@@ -6,6 +7,7 @@
 #import "CITextUtilities.h"
 #import "CIToastPresenter.h"
 #import "CIYouTubeInspector.h"
+#import <UIKit/UIKit.h>
 #import <float.h>
 #import <math.h>
 
@@ -23,6 +25,11 @@ typedef NS_ENUM(NSInteger, CILoadStage) {
     CILoadStageASR,
     CILoadStageFinished,
 };
+
+// NSNotFound means that the activity is already showing a gap. This separate
+// sentinel forces the first post-load render (including an intro gap) to reach
+// ActivityKit instead of leaving its loading state on screen.
+static const NSInteger CIUnrenderedCueIndex = NSIntegerMin;
 
 static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     NSArray<CICaptionTrack *> *newTracks,
@@ -58,13 +65,12 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 @property (nonatomic) BOOL loading;
 @property (nonatomic) BOOL resolved;
 @property (nonatomic) CILoadStage loadStage;
-@property (nonatomic, copy) NSString *copyrightNotice;
-@property (nonatomic, copy) NSString *writerCredit;
 @property (nonatomic, copy) NSString *activePlainLyrics;
 @property (nonatomic, copy) NSString *lastLRCLIBQueryKey;
 @property (nonatomic, copy) NSString *lastNoResultVideoID;
 @property (nonatomic) NSTimeInterval contextActivatedAt;
 @property (nonatomic, strong) id<CICaptionPresenting> presenter;
+- (void)ensurePresenterForCurrentContext;
 - (void)tryClockTracks:(NSArray<CICaptionTrack *> *)tracks
                  index:(NSUInteger)index
            plainLyrics:(NSString *)lyrics
@@ -101,15 +107,17 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         _cache.countLimit = 8;
         _cache.totalCostLimit = 6000;
         _cues = @[];
-        _copyrightNotice = @"";
-        _writerCredit = @"";
         _activePlainLyrics = @"";
         _lastLRCLIBQueryKey = @"";
         _lastNoResultVideoID = @"";
         _loadStage = CILoadStageIdle;
-        _displayedCueIndex = NSNotFound;
+        _displayedCueIndex = CIUnrenderedCueIndex;
         _lastSubmittedTime = -DBL_MAX;
-        _presenter = CIOverlayPresenter.sharedPresenter;
+        _presenter = CIActivityPresenter.sharedPresenter;
+        [NSNotificationCenter.defaultCenter addObserver:self
+            selector:@selector(applicationDidBecomeActive:)
+            name:UIApplicationDidBecomeActiveNotification
+            object:nil];
     }
     return self;
 }
@@ -117,6 +125,24 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)setPresenter:(id<CICaptionPresenting>)presenter {
     if (!presenter) return;
     dispatch_async(self.workQueue, ^{ self->_presenter = presenter; });
+}
+
+- (void)applicationDidBecomeActive:(__unused NSNotification *)notification {
+    dispatch_async(self.workQueue, ^{
+        if (!self.context || !CIPreferenceBool(CIEnabledKey, YES)) return;
+        [self ensurePresenterForCurrentContext];
+        self.displayedCueIndex = CIUnrenderedCueIndex;
+        if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
+    });
+}
+
+- (void)ensurePresenterForCurrentContext {
+    if (!self.context.videoID.length) return;
+    if ([self.presenter respondsToSelector:@selector(ensureVideoID:title:)]) {
+        [self.presenter ensureVideoID:self.context.videoID title:self.context.title ?: @""];
+    } else {
+        [self.presenter beginVideoID:self.context.videoID title:self.context.title ?: @""];
+    }
 }
 
 - (NSString *)cacheKeyForContext:(CIVideoContext *)context {
@@ -231,17 +257,16 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.loading = NO;
     self.resolved = NO;
     self.loadStage = CILoadStageIdle;
-    self.copyrightNotice = @"";
-    self.writerCredit = @"";
     self.activePlainLyrics = @"";
-    self.displayedCueIndex = NSNotFound;
+    self.displayedCueIndex = CIUnrenderedCueIndex;
     if (!sameVideo) self.latestPlaybackTime = 0;
-    [self.presenter hide];
     if (!CIPreferenceBool(CIEnabledKey, YES)) {
         self.resolved = YES;
         self.loadStage = CILoadStageFinished;
+        [self.presenter end];
         return;
     }
+    [self.presenter beginVideoID:context.videoID title:context.title ?: @""];
     self.loading = YES;
 
     NSString *cacheKey = [self cacheKeyForContext:context];
@@ -495,15 +520,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.resolved = YES;
     self.loadStage = CILoadStageFinished;
     self.source = source;
-    self.displayedCueIndex = NSNotFound;
+    self.displayedCueIndex = CIUnrenderedCueIndex;
     BOOL cacheable = source == CICaptionSourceYouTubeManual || source == CICaptionSourceYouTubeASR;
     BOOL usesPlainLyrics = source == CICaptionSourceLRCLIBAligned ||
         source == CICaptionSourceLRCLIBEstimated;
     if (!usesPlainLyrics) self.activePlainLyrics = @"";
-    if (cacheable) {
-        self.copyrightNotice = @"";
-        self.writerCredit = @"";
-    }
     if (cacheKey.length > 0 && cacheable) {
         CICaptionResult *result = [CICaptionResult new];
         result.cues = self.cues;
@@ -519,8 +540,6 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.resolved = YES;
     self.loadStage = CILoadStageFinished;
     self.cues = @[];
-    self.copyrightNotice = @"";
-    self.writerCredit = @"";
     self.activePlainLyrics = @"";
     self.displayedCueIndex = NSNotFound;
     [self.presenter hide];
@@ -568,16 +587,26 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 }
 
 - (void)renderAtTime:(NSTimeInterval)time {
-    if (!self.playerVisible || self.suppressed ||
-        !CIPreferenceBool(CIEnabledKey, YES)) { [self.presenter hide]; return; }
+    if (!CIPreferenceBool(CIEnabledKey, YES)) return;
+    if (self.suppressed) {
+        if (self.displayedCueIndex != NSNotFound) {
+            self.displayedCueIndex = NSNotFound;
+            [self.presenter hide];
+        }
+        return;
+    }
     NSInteger index = [self cueIndexAtTime:time];
     if (index == self.displayedCueIndex) return;
     self.displayedCueIndex = index;
     if (index == NSNotFound) [self.presenter hide];
-    else [self.presenter presentText:self.cues[(NSUInteger)index].text
-                              source:self.source
-                     copyrightNotice:self.copyrightNotice
-                        writerCredit:self.writerCredit];
+    else {
+        CICaptionCue *cue = self.cues[(NSUInteger)index];
+        [self.presenter presentText:cue.text
+                             source:self.source
+                           cueStart:cue.startTime
+                             cueEnd:cue.endTime
+                           position:time];
+    }
 }
 
 - (void)updatePlaybackTime:(NSTimeInterval)time {
@@ -595,7 +624,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)playerViewDidAppear {
     dispatch_async(self.workQueue, ^{
         self.playerVisible = YES;
-        [self renderAtTime:self.latestPlaybackTime];
+        if (self.context && CIPreferenceBool(CIEnabledKey, YES)) {
+            [self ensurePresenterForCurrentContext];
+            self.displayedCueIndex = CIUnrenderedCueIndex;
+            if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
+        }
         if (self.resolved && self.cues.count == 0 &&
             NSProcessInfo.processInfo.systemUptime >= self.contextActivatedAt + 5.4) {
             [self deliverNoResultToastForGeneration:self.generation
@@ -607,8 +640,6 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)playerViewDidDisappear {
     dispatch_async(self.workQueue, ^{
         self.playerVisible = NO;
-        self.displayedCueIndex = NSNotFound;
-        [self.presenter hide];
     });
 }
 
@@ -628,7 +659,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     dispatch_async(self.workQueue, ^{
         [self.cache removeAllObjects];
         if (self.context) [self beginContext:self.context force:YES];
-        else [self.presenter hide];
+        else [self.presenter end];
     });
 }
 
@@ -639,15 +670,13 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         [self.lyricsProvider cancel];
         self.context = nil;
         self.cues = @[];
-        self.copyrightNotice = @"";
-        self.writerCredit = @"";
         self.activePlainLyrics = @"";
         self.loading = NO;
         self.resolved = NO;
         self.loadStage = CILoadStageIdle;
         self.playerVisible = NO;
-        self.displayedCueIndex = NSNotFound;
-        [self.presenter hide];
+        self.displayedCueIndex = CIUnrenderedCueIndex;
+        [self.presenter end];
     });
 }
 

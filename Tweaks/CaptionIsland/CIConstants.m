@@ -1,11 +1,10 @@
 #import "CIConstants.h"
+#import "CILogStore.h"
 
 NSString *const CIEnabledKey = @"CaptionIsland.Enabled";
-NSString *const CIOverlayEnabledKey = @"CaptionIsland.OverlayEnabled";
 NSString *const CIExternalLyricsEnabledKey = @"CaptionIsland.ExternalLyricsEnabled";
 NSString *const CIShowSourceBadgeKey = @"CaptionIsland.ShowSourceBadge";
 NSString *const CIPreferredLanguageKey = @"CaptionIsland.PreferredLanguage";
-NSString *const CILyricFindTerritoryKey = @"CaptionIsland.LyricFindTerritory";
 NSString *const CIDebugLoggingKey = @"CaptionIsland.DebugLogging";
 
 BOOL CIPreferenceBool(NSString *key, BOOL defaultValue) {
@@ -31,4 +30,15 @@ NSBundle *CIBundle(void) {
 NSString *CILocalized(NSString *key, NSString *fallback) {
     NSBundle *bundle = CIBundle();
     return bundle ? [bundle localizedStringForKey:key value:fallback table:nil] : fallback;
+}
+
+void CIDebugLog(NSString *format, ...) {
+    if (!CIPreferenceBool(CIDebugLoggingKey, NO) || format.length == 0) return;
+    va_list arguments;
+    va_start(arguments, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:arguments];
+    va_end(arguments);
+    [CILogStore.sharedStore recordLevel:CILogLevelDebug
+                               category:@"Pipeline"
+                                message:message ?: @""];
 }

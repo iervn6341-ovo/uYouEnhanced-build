@@ -8,6 +8,7 @@
 #import <YouTubeHeader/YTSettingsViewController.h>
 #import "CICaptionCoordinator.h"
 #import "CIConstants.h"
+#import "CILogViewController.h"
 
 static const NSInteger CaptionIslandSection = 'capi';
 static const NSInteger YouGroupSettingsSection = 'psyt';
@@ -80,28 +81,18 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
 %hook YTSettingsSectionItemManager
 
 %new(v@:@)
-- (void)ci_updateCaptionIslandSectionWithEntry:(id)entry {
+- (void)ci_updateCaptionIslandSectionWithEntry:(__unused id)entry {
     YTSettingsViewController *settingsViewController = CISettingsControllerForManager(self);
     if (!settingsViewController) return;
 
     NSMutableArray<YTSettingsSectionItem *> *items = [NSMutableArray array];
     [items addObject:[%c(YTSettingsSectionItem)
-        switchItemWithTitle:CILocalized(@"ENABLED", @"Enable Caption Island")
-        titleDescription:CILocalized(@"ENABLED_DESCRIPTION", @"Select captions and lyrics when a video starts.")
+        switchItemWithTitle:CILocalized(@"ENABLED", @"Enable Live Activity")
+        titleDescription:CILocalized(@"ENABLED_DESCRIPTION", @"Show synchronized captions and lyrics in the system Dynamic Island and on the Lock Screen.")
         accessibilityIdentifier:@"CaptionIsland.Enabled"
         switchOn:CIPreferenceBool(CIEnabledKey, YES)
-        switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
+        switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
             CIStoreBool(CIEnabledKey, enabled);
-            return YES;
-        } settingItemId:0]];
-
-    [items addObject:[%c(YTSettingsSectionItem)
-        switchItemWithTitle:CILocalized(@"OVERLAY", @"In-app island overlay")
-        titleDescription:CILocalized(@"OVERLAY_DESCRIPTION", @"Show the current line near the Dynamic Island while YouTube is open.")
-        accessibilityIdentifier:@"CaptionIsland.Overlay"
-        switchOn:CIPreferenceBool(CIOverlayEnabledKey, YES)
-        switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
-            CIStoreBool(CIOverlayEnabledKey, enabled);
             return YES;
         } settingItemId:0]];
 
@@ -112,11 +103,12 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
         titleDescription:CILocalized(@"PREFERRED_LANGUAGE_DESCRIPTION", @"Only original manual CC is selected; auto-translation is never requested.")
         accessibilityIdentifier:@"CaptionIsland.Language"
         detailTextBlock:^NSString *{ return CILanguageTitle(CIPreferredLanguage()); }
-        selectBlock:^BOOL(YTSettingsCell *cell, NSUInteger sectionItemIndex) {
+        selectBlock:^BOOL(__unused YTSettingsCell *cell, __unused NSUInteger sectionItemIndex) {
             NSMutableArray<YTSettingsSectionItem *> *rows = [NSMutableArray array];
             for (NSString *code in languageCodes) {
                 [rows addObject:[%c(YTSettingsSectionItem) checkmarkItemWithTitle:CILanguageTitle(code)
-                    selectBlock:^BOOL(YTSettingsCell *pickerCell, NSUInteger pickerIndex) {
+                    selectBlock:^BOOL(__unused YTSettingsCell *pickerCell,
+                                      __unused NSUInteger pickerIndex) {
                         [NSUserDefaults.standardUserDefaults setObject:code forKey:CIPreferredLanguageKey];
                         [CICaptionCoordinator.sharedCoordinator reloadPreferences];
                         [settingsViewController reloadData];
@@ -138,7 +130,7 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
         titleDescription:CILocalized(@"EXTERNAL_LYRICS_DESCRIPTION", @"Look for synchronized LRCLIB lyrics before YouTube captions.")
         accessibilityIdentifier:@"CaptionIsland.ExternalLyrics"
         switchOn:CIPreferenceBool(CIExternalLyricsEnabledKey, YES)
-        switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
+        switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
             CIStoreBool(CIExternalLyricsEnabledKey, enabled);
             return YES;
         } settingItemId:0]];
@@ -148,20 +140,34 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
         titleDescription:CILocalized(@"SOURCE_BADGE_DESCRIPTION", @"Display CC or ASR beside the current line. LRCLIB is always identified.")
         accessibilityIdentifier:@"CaptionIsland.SourceBadge"
         switchOn:CIPreferenceBool(CIShowSourceBadgeKey, YES)
-        switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
+        switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
             CIStoreBool(CIShowSourceBadgeKey, enabled);
             return YES;
         } settingItemId:0]];
 
     [items addObject:[%c(YTSettingsSectionItem)
-        switchItemWithTitle:CILocalized(@"DEBUG_LOGGING", @"Debug logging")
-        titleDescription:CILocalized(@"DEBUG_LOGGING_DESCRIPTION", @"Log source selection and download failures without logging lyric text.")
+        switchItemWithTitle:CILocalized(@"DEBUG_LOGGING", @"Detailed logging")
+        titleDescription:CILocalized(@"DEBUG_LOGGING_DESCRIPTION", @"Include detailed diagnostics. Lyrics, URLs, cookies, and authorization data are never recorded.")
         accessibilityIdentifier:@"CaptionIsland.Debug"
         switchOn:CIPreferenceBool(CIDebugLoggingKey, NO)
-        switchBlock:^BOOL(YTSettingsCell *cell, BOOL enabled) {
+        switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
             [NSUserDefaults.standardUserDefaults setBool:enabled forKey:CIDebugLoggingKey];
             return YES;
         } settingItemId:0]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(@"LOG_PREVIEW", @"Log Preview")
+        titleDescription:CILocalized(@"LOG_PREVIEW_DESCRIPTION", @"Review, filter, share, or clear Caption Island diagnostics.")
+        accessibilityIdentifier:@"CaptionIsland.LogPreview"
+        detailTextBlock:^NSString * {
+            return CILocalized(@"LOG_PREVIEW_DETAIL", @"Open");
+        }
+        selectBlock:^BOOL(__unused YTSettingsCell *cell,
+                          __unused NSUInteger sectionItemIndex) {
+            CILogViewController *controller = [CILogViewController new];
+            [settingsViewController pushViewController:controller];
+            return YES;
+        }]];
 
     if ([settingsViewController respondsToSelector:@selector(setSectionItems:forCategory:title:icon:titleDescription:headerHidden:)]) {
         YTIIcon *icon = [%c(YTIIcon) new];

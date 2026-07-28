@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <YouTubeHeader/GOOHUDManagerInternal.h>
 #import <YouTubeHeader/YTHUDMessage.h>
+#import <YouTubeHeader/YTPlayerOverlayManager.h>
 #import <YouTubeHeader/YTPlayerViewController.h>
 #import <YouTubeHeader/YTSingleVideoTime.h>
 #import <objc/runtime.h>
@@ -37,10 +38,29 @@ static void CIUpdateSuppression(YTPlayerViewController *controller) {
 }
 
 static void CIHandlePlaybackTime(YTPlayerViewController *controller, YTSingleVideoTime *videoTime) {
-    if (CIActivePlayerController && CIActivePlayerController != controller) return;
+    if (!videoTime || (CIActivePlayerController && CIActivePlayerController != controller)) return;
     CICaptionCoordinator *coordinator = CICaptionCoordinator.sharedCoordinator;
     CIUpdateSuppression(controller);
     if (!controller.isPlayingAd) [coordinator updatePlaybackTime:videoTime.time];
+}
+
+static void CIRefreshCaptionContext(YTPlayerOverlayManager *overlayManager) {
+    if (!NSThread.isMainThread) {
+        __weak YTPlayerOverlayManager *weakManager = overlayManager;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CIRefreshCaptionContext(weakManager);
+        });
+        return;
+    }
+    YTPlayerViewController *controller = CIActivePlayerController;
+    if (!controller) return;
+    if (controller.overlayManager && controller.overlayManager != overlayManager) return;
+    CIVideoContext *updated =
+        [CIYouTubeInspector contextFromPlaybackData:nil playerController:controller];
+    if (updated.videoID.length > 0 &&
+        [updated.videoID isEqualToString:controller.currentVideoID]) {
+        [CICaptionCoordinator.sharedCoordinator activateContext:updated];
+    }
 }
 
 static void CIScheduleCaptionRefresh(YTPlayerViewController *controller,
@@ -81,6 +101,15 @@ static void CIActivatePlayback(YTPlayerViewController *controller, id playbackDa
     CIScheduleCaptionRefresh(controller, context.videoID, 0);
 }
 
+static void CIStopPlayback(YTPlayerViewController *controller) {
+    if (CIActivePlayerController != controller &&
+        ![objc_getAssociatedObject(controller, CIActivePlayerKey) boolValue]) return;
+    objc_setAssociatedObject(controller, CIActivePlayerKey, nil,
+                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (CIActivePlayerController == controller) CIActivePlayerController = nil;
+    [CICaptionCoordinator.sharedCoordinator stop];
+}
+
 %group CaptionIslandActivationHooks
 
 %hook YTPlayerViewController
@@ -108,14 +137,44 @@ static void CIActivatePlayback(YTPlayerViewController *controller, id playbackDa
 
 - (void)dealloc {
     if ([objc_getAssociatedObject(self, CIActivePlayerKey) boolValue]) {
-        [CICaptionCoordinator.sharedCoordinator stop];
-        CIActivePlayerController = nil;
+        CIStopPlayback(self);
     }
     %orig;
 }
 
 %end
 
+
+%end
+
+
+%group CaptionIslandPlaybackFinishHooks
+
+%hook YTPlayerViewController
+
+- (void)playbackController:(id)playbackController
+    didFinishPlaybackAndWillInternallyTransitionToNextPlayback:(BOOL)willTransition {
+    %orig;
+    // Keep the shared Live Activity alive while YouTube advances its queue in
+    // the background. A true stop ends it immediately.
+    if (!willTransition) CIStopPlayback(self);
+}
+
+%end
+
+%end
+
+
+%group CaptionIslandCaptionTrackHooks
+
+%hook YTPlayerOverlayManager
+
+- (void)singleVideo:(id)singleVideo availableCaptionTracksDidChange:(id)tracks {
+    %orig;
+    CIRefreshCaptionContext(self);
+}
+
+%end
 
 %end
 
@@ -160,5 +219,17 @@ static void CIActivatePlayback(YTPlayerViewController *controller, id playbackDa
     SEL legacy = @selector(singleVideo:currentVideoTimeDidChange:);
     if (class_getInstanceMethod(playerClass, legacy)) {
         %init(CaptionIslandLegacyTimeHooks);
+    }
+    SEL finish =
+        @selector(playbackController:didFinishPlaybackAndWillInternallyTransitionToNextPlayback:);
+    if (class_getInstanceMethod(playerClass, finish)) {
+        %init(CaptionIslandPlaybackFinishHooks);
+    }
+    Class overlayManagerClass = NSClassFromString(@"YTPlayerOverlayManager");
+    SEL captionTracksChanged =
+        @selector(singleVideo:availableCaptionTracksDidChange:);
+    if (overlayManagerClass &&
+        class_getInstanceMethod(overlayManagerClass, captionTracksChanged)) {
+        %init(CaptionIslandCaptionTrackHooks);
     }
 }
