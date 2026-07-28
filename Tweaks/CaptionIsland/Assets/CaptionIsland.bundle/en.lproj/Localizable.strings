@@ -24,5 +24,8 @@
 "CLEAR_LOGS" = "Clear Logs";
 "CLEAR_LOGS_CONFIRMATION" = "Remove all Caption Island diagnostic logs?";
 "CANCEL" = "Cancel";
+"BACK" = "Back";
+"REFRESH" = "Refresh";
+"SHARE" = "Share";
 "CLEAR" = "Clear";
 "NO_MATCHING_RESULT" = "No matching results";

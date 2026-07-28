@@ -24,5 +24,8 @@
 "CLEAR_LOGS" = "ログを消去";
 "CLEAR_LOGS_CONFIRMATION" = "Caption Island の診断ログをすべて消去しますか？";
 "CANCEL" = "キャンセル";
+"BACK" = "戻る";
+"REFRESH" = "更新";
+"SHARE" = "共有";
 "CLEAR" = "消去";
 "NO_MATCHING_RESULT" = "一致する結果がありません";

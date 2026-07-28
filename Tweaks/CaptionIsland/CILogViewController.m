@@ -6,14 +6,41 @@
 @property (nonatomic, strong) UISegmentedControl *filterControl;
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UITextView *textView;
+@property (nonatomic, strong) UIButton *refreshButton;
+@property (nonatomic, strong) UIButton *shareButton;
+@property (nonatomic, strong) UIButton *clearButton;
 @end
 
 @implementation CILogViewController
+
+- (UIButton *)actionButtonWithTitle:(NSString *)title
+                         systemImage:(NSString *)systemImage
+                               color:(UIColor *)color
+                              action:(SEL)action {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIButtonConfiguration *configuration = UIButtonConfiguration.tintedButtonConfiguration;
+    configuration.title = title;
+    configuration.image = [UIImage systemImageNamed:systemImage];
+    configuration.imagePlacement = NSDirectionalRectEdgeLeading;
+    configuration.imagePadding = 6;
+    configuration.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+    configuration.baseForegroundColor = color;
+    configuration.baseBackgroundColor = [color colorWithAlphaComponent:0.12];
+    button.configuration = configuration;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = CILocalized(@"LOG_PREVIEW", @"Log Preview");
     self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.navigationItem.hidesBackButton = YES;
+    UIBarButtonItem *backButton = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"chevron.backward"]
+        style:UIBarButtonItemStylePlain target:self action:@selector(closePreview)];
+    backButton.accessibilityLabel = CILocalized(@"BACK", @"Back");
+    self.navigationItem.leftBarButtonItem = backButton;
 
     self.filterControl = [[UISegmentedControl alloc] initWithItems:@[
         CILocalized(@"LOG_ALL", @"All"),
@@ -42,8 +69,30 @@
     self.textView.layer.cornerRadius = 10;
     self.textView.translatesAutoresizingMaskIntoConstraints = NO;
 
+    self.refreshButton = [self
+        actionButtonWithTitle:CILocalized(@"REFRESH", @"Refresh")
+        systemImage:@"arrow.clockwise" color:UIColor.systemBlueColor
+        action:@selector(refresh)];
+    self.shareButton = [self
+        actionButtonWithTitle:CILocalized(@"SHARE", @"Share")
+        systemImage:@"square.and.arrow.up" color:UIColor.systemBlueColor
+        action:@selector(shareLogs)];
+    self.clearButton = [self
+        actionButtonWithTitle:CILocalized(@"CLEAR", @"Clear")
+        systemImage:@"trash" color:UIColor.systemRedColor
+        action:@selector(confirmClear)];
+    UIStackView *actions = [[UIStackView alloc] initWithArrangedSubviews:@[
+        self.refreshButton, self.shareButton, self.clearButton
+    ]];
+    actions.axis = UILayoutConstraintAxisHorizontal;
+    actions.alignment = UIStackViewAlignmentFill;
+    actions.distribution = UIStackViewDistributionFillEqually;
+    actions.spacing = 8;
+    actions.translatesAutoresizingMaskIntoConstraints = NO;
+
     [self.view addSubview:self.filterControl];
     [self.view addSubview:self.statusLabel];
+    [self.view addSubview:actions];
     [self.view addSubview:self.textView];
     UILayoutGuide *guide = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -53,22 +102,15 @@
         [self.statusLabel.topAnchor constraintEqualToAnchor:self.filterControl.bottomAnchor constant:8],
         [self.statusLabel.leadingAnchor constraintEqualToAnchor:self.filterControl.leadingAnchor],
         [self.statusLabel.trailingAnchor constraintEqualToAnchor:self.filterControl.trailingAnchor],
-        [self.textView.topAnchor constraintEqualToAnchor:self.statusLabel.bottomAnchor constant:8],
+        [actions.topAnchor constraintEqualToAnchor:self.statusLabel.bottomAnchor constant:8],
+        [actions.leadingAnchor constraintEqualToAnchor:self.filterControl.leadingAnchor],
+        [actions.trailingAnchor constraintEqualToAnchor:self.filterControl.trailingAnchor],
+        [actions.heightAnchor constraintEqualToConstant:42],
+        [self.textView.topAnchor constraintEqualToAnchor:actions.bottomAnchor constant:10],
         [self.textView.leadingAnchor constraintEqualToAnchor:guide.leadingAnchor constant:8],
         [self.textView.trailingAnchor constraintEqualToAnchor:guide.trailingAnchor constant:-8],
         [self.textView.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-8],
     ]];
-
-    self.navigationItem.rightBarButtonItems = @[
-        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
-                                                     target:self action:@selector(shareLogs)],
-        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
-                                                     target:self action:@selector(refresh)],
-    ];
-    self.navigationItem.leftBarButtonItem =
-        [[UIBarButtonItem alloc] initWithTitle:CILocalized(@"CLEAR", @"Clear")
-                                         style:UIBarButtonItemStylePlain
-                                        target:self action:@selector(confirmClear)];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh)
         name:CILogStoreDidChangeNotification object:nil];
     [self refresh];
@@ -81,6 +123,14 @@
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)closePreview {
+    if (self.navigationController.viewControllers.count > 1) {
+        [self.navigationController popViewControllerAnimated:YES];
+    } else {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 - (NSArray<NSString *> *)filteredLines:(NSArray<NSString *> *)lines {
@@ -114,8 +164,8 @@
     if (logs.length == 0) return;
     UIActivityViewController *controller =
         [[UIActivityViewController alloc] initWithActivityItems:@[logs] applicationActivities:nil];
-    controller.popoverPresentationController.barButtonItem =
-        self.navigationItem.rightBarButtonItems.firstObject;
+    controller.popoverPresentationController.sourceView = self.shareButton;
+    controller.popoverPresentationController.sourceRect = self.shareButton.bounds;
     [self presentViewController:controller animated:YES completion:nil];
 }
 

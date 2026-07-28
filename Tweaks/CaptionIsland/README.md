@@ -18,6 +18,10 @@ ActivityKit Live Activity，把目前字幕顯示在支援機型的系統 Dynami
 支援的字幕 payload 包含 YouTube JSON3、WebVTT、timedtext XML／SRV3，以及
 LRCLIB 標準 LRC 時間碼。
 
+若播放器回報 `isPlayingAd`，或目前 `YTSingleVideo.videoType` 為廣告／內容插播，
+Caption Island 不會建立影片 context 或發出 LRCLIB／字幕請求。廣告在既有查詢期間
+開始時會取消該工作，等內容影片恢復後才重新載入。
+
 ## Live Activity
 
 主 tweak 取得影片與播放時間，ActivityKit bridge 更新同一張 Live Activity；

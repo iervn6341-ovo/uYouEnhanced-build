@@ -24,5 +24,8 @@
 "CLEAR_LOGS" = "清除記錄";
 "CLEAR_LOGS_CONFIRMATION" = "要移除所有字幕動態島的診斷記錄嗎？";
 "CANCEL" = "取消";
+"BACK" = "返回";
+"REFRESH" = "重新整理";
+"SHARE" = "分享";
 "CLEAR" = "清除";
 "NO_MATCHING_RESULT" = "沒有相符的結果";

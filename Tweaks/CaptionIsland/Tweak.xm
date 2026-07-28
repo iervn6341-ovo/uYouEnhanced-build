@@ -8,6 +8,7 @@
 #import "CIBackgroundPlaybackMonitor.h"
 #import "CICaptionCoordinator.h"
 #import "CIConstants.h"
+#import "CIPlaybackState.h"
 #import "CIToastPresenter.h"
 #import "CIYouTubeInspector.h"
 
@@ -31,7 +32,7 @@ void CIShowToast(NSString *text) {
 
 static void CIUpdateSuppression(YTPlayerViewController *controller) {
     NSNumber *previous = objc_getAssociatedObject(controller, CISuppressedStateKey);
-    BOOL suppressed = controller.isPlayingAd;
+    BOOL suppressed = CIPlayerControllerIsAdvertising(controller);
     if (!previous || previous.boolValue != suppressed) {
         objc_setAssociatedObject(controller, CISuppressedStateKey, @(suppressed), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [CICaptionCoordinator.sharedCoordinator setPlaybackSuppressed:suppressed];
@@ -43,7 +44,9 @@ static void CIHandlePlaybackTime(YTPlayerViewController *controller, YTSingleVid
     if (CIBackgroundPlaybackMonitor.sharedMonitor.isSamplingPlaybackInBackground) return;
     CICaptionCoordinator *coordinator = CICaptionCoordinator.sharedCoordinator;
     CIUpdateSuppression(controller);
-    if (!controller.isPlayingAd) [coordinator updatePlaybackTime:videoTime.time];
+    if (!CIPlayerControllerIsAdvertising(controller)) {
+        [coordinator updatePlaybackTime:videoTime.time];
+    }
 }
 
 static void CIRefreshCaptionContext(YTPlayerOverlayManager *overlayManager) {
@@ -56,6 +59,8 @@ static void CIRefreshCaptionContext(YTPlayerOverlayManager *overlayManager) {
     }
     YTPlayerViewController *controller = CIActivePlayerController;
     if (!controller) return;
+    CIUpdateSuppression(controller);
+    if (CIPlayerControllerIsAdvertising(controller)) return;
     if (controller.overlayManager && controller.overlayManager != overlayManager) return;
     CIVideoContext *updated =
         [CIYouTubeInspector contextFromPlaybackData:nil playerController:controller];
@@ -75,6 +80,8 @@ static void CIScheduleCaptionRefresh(YTPlayerViewController *controller,
                    dispatch_get_main_queue(), ^{
         YTPlayerViewController *strongController = weakController;
         if (!strongController || ![[strongController currentVideoID] isEqualToString:videoID]) return;
+        CIUpdateSuppression(strongController);
+        if (CIPlayerControllerIsAdvertising(strongController)) return;
         CIVideoContext *updated = [CIYouTubeInspector contextFromPlaybackData:nil playerController:strongController];
         if ([updated.videoID isEqualToString:videoID]) {
             [CICaptionCoordinator.sharedCoordinator activateContext:updated];
@@ -83,8 +90,37 @@ static void CIScheduleCaptionRefresh(YTPlayerViewController *controller,
     });
 }
 
-static void CIActivatePlayback(YTPlayerViewController *controller, id playbackData) {
+static void CIResolveActivatedPlayback(YTPlayerViewController *controller,
+                                       id playbackData,
+                                       NSString *activationVideoID) {
+    if (!controller || CIActivePlayerController != controller ||
+        ![objc_getAssociatedObject(controller, CIActivePlayerKey) boolValue]) return;
+    NSString *currentVideoID = controller.currentVideoID ?: @"";
+    if (activationVideoID.length > 0 &&
+        ![currentVideoID isEqualToString:activationVideoID]) return;
+
     CICaptionCoordinator *coordinator = CICaptionCoordinator.sharedCoordinator;
+    CIUpdateSuppression(controller);
+    if (CIPlayerControllerIsAdvertising(controller)) {
+        CILog(@"Skipping caption lookup while YouTube is playing an ad.");
+        return;
+    }
+    [coordinator playerViewDidAppear];
+    CIVideoContext *context = [CIYouTubeInspector contextFromPlaybackData:playbackData
+                                                        playerController:controller];
+    if (!context) {
+        [CIBackgroundPlaybackMonitor.sharedMonitor detachPlayerController:controller];
+        [coordinator stop];
+        return;
+    }
+    [coordinator activateContext:context];
+
+    // Caption tracks can arrive shortly after the player response. Use three
+    // bounded snapshots; there is no foreground polling loop.
+    CIScheduleCaptionRefresh(controller, context.videoID, 0);
+}
+
+static void CIActivatePlayback(YTPlayerViewController *controller, id playbackData) {
     if (CIActivePlayerController && CIActivePlayerController != controller) {
         objc_setAssociatedObject(CIActivePlayerController, CIActivePlayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -92,16 +128,22 @@ static void CIActivatePlayback(YTPlayerViewController *controller, id playbackDa
     [CIBackgroundPlaybackMonitor.sharedMonitor attachPlayerController:controller];
     objc_setAssociatedObject(controller, CIActivePlayerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     CIUpdateSuppression(controller);
-    if (controller.isPlayingAd) return;
-    [coordinator playerViewDidAppear];
-    CIVideoContext *context = [CIYouTubeInspector contextFromPlaybackData:playbackData
-                                                        playerController:controller];
-    if (!context) { [coordinator stop]; return; }
-    [coordinator activateContext:context];
+    if (CIPlayerControllerIsAdvertising(controller)) {
+        CILog(@"Skipping caption lookup while YouTube is playing an ad.");
+        return;
+    }
 
-    // Caption tracks can arrive shortly after the player response. Use three
-    // bounded snapshots; there is no polling loop or permanent timer.
-    CIScheduleCaptionRefresh(controller, context.videoID, 0);
+    // YouTube can invoke didActivateVideo a fraction of a second before its
+    // ad state settles. Debounce the expensive lookup, then check isPlayingAd
+    // again so short pre-rolls never become LRCLIB searches.
+    NSString *activationVideoID = controller.currentVideoID ?: @"";
+    __weak YTPlayerViewController *weakController = controller;
+    id retainedPlaybackData = playbackData;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.30 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        CIResolveActivatedPlayback(weakController, retainedPlaybackData,
+                                   activationVideoID);
+    });
 }
 
 static void CIStopPlayback(YTPlayerViewController *controller) {

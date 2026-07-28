@@ -214,6 +214,9 @@ jobs:
           test -f "$app_path/Frameworks/CaptionIsland.dylib"
           caption_minos="$(otool -l "$app_path/Frameworks/CaptionIsland.dylib" | awk '$1 == "minos" { print $2; exit }')"
           test "$caption_minos" = "$MINIMUM_IOS_VERSION"
+          test -f "$app_path/Frameworks/YouTubeDiagnostics.dylib"
+          diagnostics_minos="$(otool -l "$app_path/Frameworks/YouTubeDiagnostics.dylib" | awk '$1 == "minos" { print $2; exit }')"
+          test "$diagnostics_minos" = "$MINIMUM_IOS_VERSION"
           widget_path="$app_path/PlugIns/CaptionIslandWidget.appex"
           test -x "$widget_path/CaptionIslandWidget"
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$widget_path/Info.plist")" = "com.apple.widgetkit-extension"
@@ -234,7 +237,7 @@ jobs:
             esac
             test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension_plist")" = "$MINIMUM_IOS_VERSION"
           done
-          echo "==> CaptionIsland.dylib and native Live Activity extension verified"
+          echo "==> CaptionIsland, YouTubeDiagnostics, and native Live Activity extension verified"
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact }}

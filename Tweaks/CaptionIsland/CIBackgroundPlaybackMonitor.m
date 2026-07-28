@@ -2,6 +2,7 @@
 #import "CICaptionCoordinator.h"
 #import "CIConstants.h"
 #import "CILogStore.h"
+#import "CIPlaybackState.h"
 #import <UIKit/UIKit.h>
 #import <YouTubeHeader/YTPlayerViewController.h>
 #import <math.h>
@@ -187,7 +188,7 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
     // video's lyrics against the next video's timestamp.
     if (![videoID isEqualToString:self.lastVideoID]) return;
 
-    BOOL suppressed = controller.isPlayingAd;
+    BOOL suppressed = CIPlayerControllerIsAdvertising(controller);
     if (!self.hasSuppressionState || self.lastSuppressed != suppressed) {
         self.hasSuppressionState = YES;
         self.lastSuppressed = suppressed;

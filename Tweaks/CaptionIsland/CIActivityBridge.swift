@@ -56,6 +56,26 @@ public final class CIActivityBridge: NSObject {
     private static var commandTail: Task<Void, Never>?
     private static let metadataLogLock = NSLock()
     private static var didReportMissingSupportKey = false
+    private static var didReportBundleIdentifierWarning = false
+    private static let installedWidgetBundleIdentifierWarning: String? = {
+        let appBundle = Bundle.main
+        let appBundleID = appBundle.bundleIdentifier ?? "unknown"
+        let widgetURL = (appBundle.builtInPlugInsURL ??
+            appBundle.bundleURL.appendingPathComponent(
+                "PlugIns",
+                isDirectory: true
+            )).appendingPathComponent(
+                "CaptionIslandWidget.appex",
+                isDirectory: true
+            )
+        guard let widgetBundle = Bundle(url: widgetURL) else { return nil }
+        let widgetBundleID = widgetBundle.bundleIdentifier ?? "unknown"
+        let expectedWidgetBundleID = "\(appBundleID).CaptionIslandWidget"
+        guard widgetBundleID != expectedWidgetBundleID else { return nil }
+        return "widget bundle ID is \(widgetBundleID), expected "
+            + "\(expectedWidgetBundleID). The sideload signer may have "
+            + "rewritten the extension identifier; ActivityKit will still be attempted."
+    }()
     private static let installedTargetMetadataIssue: String? = {
         let appBundle = Bundle.main
         let appBundleID = appBundle.bundleIdentifier ?? "unknown"
@@ -81,10 +101,6 @@ public final class CIActivityBridge: NSObject {
         }
 
         let widgetBundleID = widgetBundle.bundleIdentifier ?? "unknown"
-        let expectedWidgetBundleID = "\(appBundleID).CaptionIslandWidget"
-        guard widgetBundleID == expectedWidgetBundleID else {
-            return "widget bundle ID is \(widgetBundleID), expected \(expectedWidgetBundleID)"
-        }
 
         let widgetSupportValue = widgetBundle.object(
             forInfoDictionaryKey: "NSSupportsLiveActivities"
@@ -210,6 +226,15 @@ public final class CIActivityBridge: NSObject {
     private static func targetSupportsLiveActivities(
         logIfMissing: Bool
     ) -> Bool {
+        if logIfMissing, let warning = installedWidgetBundleIdentifierWarning {
+            metadataLogLock.lock()
+            let shouldReportWarning = !didReportBundleIdentifierWarning
+            didReportBundleIdentifierWarning = true
+            metadataLogLock.unlock()
+            if shouldReportWarning {
+                emit(level: "warning", message: warning)
+            }
+        }
         guard let issue = installedTargetMetadataIssue else { return true }
         guard logIfMissing else { return false }
 

@@ -61,6 +61,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 @property (nonatomic) NSTimeInterval latestPlaybackTime;
 @property (nonatomic) NSTimeInterval lastSubmittedTime;
 @property (nonatomic) BOOL suppressed;
+@property (nonatomic) BOOL loadInterruptedBySuppression;
 @property (nonatomic) BOOL playerVisible;
 @property (nonatomic) BOOL loading;
 @property (nonatomic) BOOL resolved;
@@ -169,7 +170,14 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)activateContext:(CIVideoContext *)context {
     if (!context.videoID.length) return;
     self.lastSubmittedTime = -DBL_MAX;
-    dispatch_async(self.workQueue, ^{ [self beginContext:context force:NO]; });
+    dispatch_async(self.workQueue, ^{
+        if (self.suppressed) {
+            self.context = context;
+            self.loadInterruptedBySuppression = YES;
+            return;
+        }
+        [self beginContext:context force:NO];
+    });
 }
 
 - (void)beginContext:(CIVideoContext *)context force:(BOOL)force {
@@ -648,17 +656,36 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         if (self.suppressed == suppressed) return;
         self.suppressed = suppressed;
         if (suppressed) {
+            if (self.loading) {
+                self.loadInterruptedBySuppression = YES;
+                self.generation++;
+                [self.captionTask cancel];
+                self.captionTask = nil;
+                [self.lyricsProvider cancel];
+                self.loading = NO;
+                self.resolved = NO;
+                self.loadStage = CILoadStageIdle;
+            }
             self.displayedCueIndex = NSNotFound;
             [self.presenter hide];
         }
-        else [self renderAtTime:self.latestPlaybackTime];
+        else if (self.loadInterruptedBySuppression && self.context) {
+            self.loadInterruptedBySuppression = NO;
+            [self beginContext:self.context force:YES];
+        } else {
+            [self renderAtTime:self.latestPlaybackTime];
+        }
     });
 }
 
 - (void)reloadPreferences {
     dispatch_async(self.workQueue, ^{
         [self.cache removeAllObjects];
-        if (self.context) [self beginContext:self.context force:YES];
+        if (self.context && self.suppressed) {
+            self.loadInterruptedBySuppression = YES;
+        } else if (self.context) {
+            [self beginContext:self.context force:YES];
+        }
         else [self.presenter end];
     });
 }
@@ -674,6 +701,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         self.loading = NO;
         self.resolved = NO;
         self.loadStage = CILoadStageIdle;
+        self.loadInterruptedBySuppression = NO;
         self.playerVisible = NO;
         self.displayedCueIndex = CIUnrenderedCueIndex;
         [self.presenter end];

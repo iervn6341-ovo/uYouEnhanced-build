@@ -12,6 +12,7 @@ CaptionIsland_FILES = \
 	Tweak.xm \
 	CISettings.xm \
 	CIBackgroundPlaybackMonitor.m \
+	CIPlaybackState.m \
 	CIConstants.m \
 	CIModels.m \
 	CITextUtilities.m \
