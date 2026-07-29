@@ -154,26 +154,38 @@ public final class CIActivityBridge: NSObject {
         }
     }
 
-    @objc(updateWithText:source:cueStart:cueEnd:position:playing:)
+    @objc(updateWithText:source:cueStart:cueEnd:position:playing:nextText:nextCueStart:nextCueEnd:)
     public static func update(
         text: String,
         source: String,
         cueStart: Double,
         cueEnd: Double,
         position: Double,
-        playing: Bool
+        playing: Bool,
+        nextText: String,
+        nextCueStart: Double,
+        nextCueEnd: Double
     ) {
         guard targetSupportsLiveActivities(logIfMissing: false) else { return }
         let safeText = sanitizedActivityText(text, maximumBytes: 1_024)
+        let safeNextText = sanitizedActivityText(
+            nextText,
+            maximumBytes: 1_024
+        )
         let safeSource = sanitizedActivityText(source, maximumBytes: 64)
         let startMilliseconds = milliseconds(cueStart)
         let endMilliseconds = milliseconds(cueEnd)
+        let nextStartMilliseconds = milliseconds(nextCueStart)
+        let nextEndMilliseconds = milliseconds(nextCueEnd)
         enqueue {
             await CIActivityManager.shared.update(
                 line: safeText,
                 source: safeSource,
                 cueStartMS: startMilliseconds,
                 cueEndMS: endMilliseconds,
+                nextLine: safeNextText,
+                nextCueStartMS: nextStartMilliseconds,
+                nextCueEndMS: nextEndMilliseconds,
                 position: position,
                 isPlaying: playing
             )
@@ -278,10 +290,14 @@ private actor CIActivityManager {
     private var lastSource = ""
     private var lastCueStartMS = 0
     private var lastCueEndMS = 0
+    private var lastNextLine = ""
+    private var lastNextCueStartMS = 0
+    private var lastNextCueEndMS = 0
     private var lastPlaying = true
     private var dismissedVideoID = ""
     private var didLogMissingActivity = false
     private var isStartBlockedByUnsupportedTarget = false
+    private var lastUpdateHeartbeatUptime: TimeInterval = 0
 
     func start(videoID: String, title: String) async {
         guard !isStartBlockedByUnsupportedTarget else { return }
@@ -303,6 +319,9 @@ private actor CIActivityManager {
                 lastSource = ""
                 lastCueStartMS = 0
                 lastCueEndMS = 0
+                lastNextLine = ""
+                lastNextCueStartMS = 0
+                lastNextCueEndMS = 0
                 lastPlaying = true
                 await updateState(waitingState())
                 didLogMissingActivity = false
@@ -326,6 +345,9 @@ private actor CIActivityManager {
                 lastSource = ""
                 lastCueStartMS = 0
                 lastCueEndMS = 0
+                lastNextLine = ""
+                lastNextCueStartMS = 0
+                lastNextCueEndMS = 0
                 lastPlaying = true
                 await updateState(waitingState())
                 didLogMissingActivity = false
@@ -355,6 +377,9 @@ private actor CIActivityManager {
         self.lastSource = ""
         self.lastCueStartMS = 0
         self.lastCueEndMS = 0
+        self.lastNextLine = ""
+        self.lastNextCueStartMS = 0
+        self.lastNextCueEndMS = 0
         self.lastPlaying = true
         let state = boundedState(waitingState())
 
@@ -425,6 +450,9 @@ private actor CIActivityManager {
         source: String,
         cueStartMS: Int,
         cueEndMS: Int,
+        nextLine: String,
+        nextCueStartMS: Int,
+        nextCueEndMS: Int,
         position: Double,
         isPlaying: Bool
     ) async {
@@ -442,6 +470,9 @@ private actor CIActivityManager {
               source != lastSource ||
               cueStartMS != lastCueStartMS ||
               cueEndMS != lastCueEndMS ||
+              nextLine != lastNextLine ||
+              nextCueStartMS != lastNextCueStartMS ||
+              nextCueEndMS != lastNextCueEndMS ||
               isPlaying != lastPlaying else { return }
         let shouldReportSource = lastLine.isEmpty || source != lastSource
         revision += 1
@@ -449,6 +480,9 @@ private actor CIActivityManager {
         lastSource = source
         lastCueStartMS = cueStartMS
         lastCueEndMS = cueEndMS
+        lastNextLine = nextLine
+        lastNextCueStartMS = nextCueStartMS
+        lastNextCueEndMS = nextCueEndMS
         lastPlaying = isPlaying
         let state = CICaptionActivityAttributes.ContentState(
             line: line,
@@ -458,16 +492,16 @@ private actor CIActivityManager {
             isPlaying: isPlaying,
             cueStartMS: cueStartMS,
             cueEndMS: cueEndMS,
+            nextLine: nextLine.isEmpty ? nil : nextLine,
+            nextCueStartMS: nextLine.isEmpty ? nil : nextCueStartMS,
+            nextCueEndMS: nextLine.isEmpty ? nil : nextCueEndMS,
             revision: revision
         )
-        let remaining = max(
-            2.0,
-            min(120.0, Double(cueEndMS) / 1000.0 - position + 2.0)
-        )
-        await updateState(
-            state,
-            staleDate: Date().addingTimeInterval(remaining)
-        )
+        // A stale date marks content as outdated; it does not schedule a
+        // redraw. Per-cue stale dates can make a locally updated activity stale
+        // while iOS is already throttling Always-On rendering, so keep the
+        // activity active and let the next content revision replace it.
+        await updateState(state)
         if shouldReportSource {
             CIActivityBridge.emit(
                 level: "info",
@@ -484,6 +518,9 @@ private actor CIActivityManager {
         lastSource = ""
         lastCueStartMS = 0
         lastCueEndMS = 0
+        lastNextLine = ""
+        lastNextCueStartMS = 0
+        lastNextCueEndMS = 0
         lastPlaying = true
         revision += 1
         await updateState(
@@ -511,9 +548,13 @@ private actor CIActivityManager {
         self.lastSource = ""
         self.lastCueStartMS = 0
         self.lastCueEndMS = 0
+        self.lastNextLine = ""
+        self.lastNextCueStartMS = 0
+        self.lastNextCueEndMS = 0
         self.lastPlaying = true
         self.dismissedVideoID = ""
         self.didLogMissingActivity = false
+        self.lastUpdateHeartbeatUptime = 0
         if endingActivity != nil {
             CIActivityBridge.emit(level: "info", message: "Ended native Live Activity")
         }
@@ -557,6 +598,15 @@ private actor CIActivityManager {
             message: "Submitted Live Activity revision \(safeState.revision) "
                 + "(\(safeState.source.isEmpty ? "gap" : safeState.source))"
         )
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if uptime - lastUpdateHeartbeatUptime >= 30 {
+            lastUpdateHeartbeatUptime = uptime
+            CIActivityBridge.emit(
+                level: "info",
+                message: "Live Activity update pipeline is active at revision "
+                    + "\(safeState.revision) (\(activity.activityState))"
+            )
+        }
     }
 
     private func boundedState(
@@ -582,6 +632,7 @@ private actor CIActivityManager {
         for _ in 0..<16 {
             if encodedSize(state) <= 3_200 { break }
             let lineBytes = state.line.utf8.count
+            let nextLineBytes = state.nextLine?.utf8.count ?? 0
             let titleBytes = state.videoTitle.utf8.count
             let videoIDBytes = state.videoID.utf8.count
             let sourceBytes = state.source.utf8.count
@@ -589,6 +640,11 @@ private actor CIActivityManager {
                 state.line = clippedUTF8(
                     state.line,
                     maximumBytes: max(128, lineBytes * 3 / 4)
+                )
+            } else if nextLineBytes > 96, let nextLine = state.nextLine {
+                state.nextLine = clippedUTF8(
+                    nextLine,
+                    maximumBytes: max(96, nextLineBytes * 3 / 4)
                 )
             } else if titleBytes > 64 {
                 state.videoTitle = clippedUTF8(
@@ -612,6 +668,9 @@ private actor CIActivityManager {
 
         if encodedSize(state) > 3_200 {
             state.line = "…"
+            state.nextLine = nil
+            state.nextCueStartMS = nil
+            state.nextCueEndMS = nil
             state.source = ""
             state.videoID = clippedUTF8(state.videoID, maximumBytes: 32)
             state.videoTitle = clippedUTF8(state.videoTitle, maximumBytes: 48)

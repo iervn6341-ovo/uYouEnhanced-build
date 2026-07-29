@@ -4,6 +4,7 @@
 #import "CILogStore.h"
 #import "CIPlaybackState.h"
 #import "CIYouTubeInspector.h"
+#import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
 #import <YouTubeHeader/YTPlayerViewController.h>
 #import <math.h>
@@ -11,9 +12,32 @@
 static const NSTimeInterval CIBackgroundClockInterval = 0.75;
 static const NSTimeInterval CIBackgroundClockLeeway = 0.15;
 static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
+static const NSTimeInterval CIBackgroundHeartbeatInterval = 30.0;
+static const NSTimeInterval CINowPlayingSynchronizationInterval = 12.0;
+static const NSTimeInterval CINowPlayingRetryInterval = 3.0;
+
+static double CIQuantizedPlaybackRate(double rate) {
+    if (!isfinite(rate) || rate <= 0) return 0;
+    static const double commonRates[] = {
+        0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0
+    };
+    double closest = 1.0;
+    double smallestDifference = HUGE_VAL;
+    for (NSUInteger index = 0;
+         index < sizeof(commonRates) / sizeof(commonRates[0]);
+         index++) {
+        double difference = fabs(rate - commonRates[index]);
+        if (difference < smallestDifference) {
+            smallestDifference = difference;
+            closest = commonRates[index];
+        }
+    }
+    return closest;
+}
 
 @interface CIBackgroundPlaybackMonitor ()
 @property (nonatomic, weak, nullable) YTPlayerViewController *playerController;
+@property (nonatomic, strong, nullable) YTPlayerViewController *backgroundControllerLease;
 @property (atomic, strong, nullable) dispatch_source_t timer;
 @property (nonatomic) BOOL applicationIsBackgrounded;
 @property (nonatomic) BOOL hasSuppressionState;
@@ -24,6 +48,25 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
 @property (nonatomic) BOOL didLogAvailability;
 @property (nonatomic) BOOL didLogClockProgress;
 @property (nonatomic) BOOL didWarnAboutMissingClock;
+@property (nonatomic) BOOL didLogNowPlayingSynchronization;
+@property (nonatomic) BOOL didWarnAboutMissingNowPlayingInfo;
+@property (nonatomic) BOOL didLogNativeBackgroundClock;
+@property (nonatomic) BOOL hasNativePlaybackTime;
+@property (nonatomic) NSTimeInterval lastNativePlaybackTime;
+@property (nonatomic) NSTimeInterval lastNativePlaybackUptime;
+@property (nonatomic) NSTimeInterval lastHeartbeatUptime;
+@property (nonatomic) NSTimeInterval lastTimerCallbackUptime;
+@property (nonatomic) NSTimeInterval lastNowPlayingSynchronizationUptime;
+@property (nonatomic) NSTimeInterval lastNowPlayingAttemptUptime;
+@property (nonatomic) NSTimeInterval lastPlaybackProgressUptime;
+@property (nonatomic) BOOL hasPublishedNowPlayingRate;
+@property (nonatomic) double lastPublishedNowPlayingRate;
+@property (nonatomic) NSUInteger controllerLeaseGeneration;
+- (void)synchronizeNowPlayingAtTime:(NSTimeInterval)playbackTime
+                           duration:(NSTimeInterval)duration
+                       playbackRate:(double)playbackRate
+                             uptime:(NSTimeInterval)uptime;
+- (void)scheduleControllerLeaseRelease;
 @end
 
 @implementation CIBackgroundPlaybackMonitor
@@ -42,10 +85,12 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
         _applicationIsBackgrounded =
             UIApplication.sharedApplication.applicationState == UIApplicationStateBackground;
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
+        [center addObserver:self selector:@selector(applicationWillResignActive:)
+                      name:UIApplicationWillResignActiveNotification object:nil];
         [center addObserver:self selector:@selector(applicationDidEnterBackground:)
                       name:UIApplicationDidEnterBackgroundNotification object:nil];
-        [center addObserver:self selector:@selector(applicationWillEnterForeground:)
-                      name:UIApplicationWillEnterForegroundNotification object:nil];
+        [center addObserver:self selector:@selector(applicationDidBecomeActive:)
+                      name:UIApplicationDidBecomeActiveNotification object:nil];
     }
     return self;
 }
@@ -72,6 +117,10 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
 
     BOOL changedController = self.playerController != controller;
     self.playerController = controller;
+    if (self.applicationIsBackgrounded || self.backgroundControllerLease) {
+        self.backgroundControllerLease = controller;
+        self.controllerLeaseGeneration++;
+    }
     if (changedController ||
         ![self.lastVideoID isEqualToString:controller.currentVideoID ?: @""]) {
         [self resetClockState];
@@ -89,36 +138,130 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
         });
         return;
     }
-    if (self.playerController != controller) return;
+    if (self.playerController != controller &&
+        self.backgroundControllerLease != controller) return;
     self.playerController = nil;
+    self.backgroundControllerLease = nil;
+    self.controllerLeaseGeneration++;
     [self resetClockState];
     [self stopTimerWithReason:@"playback stopped"];
 }
 
+- (void)applicationWillResignActive:(__unused NSNotification *)notification {
+    // Acquire the lease before YouTube swaps its inline player graph for PiP.
+    // The ordinary weak reference can otherwise disappear during that gap.
+    self.backgroundControllerLease = self.playerController;
+    self.controllerLeaseGeneration++;
+    [CICaptionCoordinator.sharedCoordinator prepareForExternalPlayback];
+}
+
 - (void)applicationDidEnterBackground:(__unused NSNotification *)notification {
     self.applicationIsBackgrounded = YES;
+    if (!self.backgroundControllerLease) {
+        self.backgroundControllerLease = self.playerController;
+        self.controllerLeaseGeneration++;
+    }
+    self.didLogNativeBackgroundClock = NO;
+    self.hasNativePlaybackTime = NO;
     [self resetClockState];
     [self startTimerIfNeeded];
 }
 
-- (void)applicationWillEnterForeground:(__unused NSNotification *)notification {
+- (void)applicationDidBecomeActive:(__unused NSNotification *)notification {
     self.applicationIsBackgrounded = NO;
     [self stopTimerWithReason:@"foreground callbacks resumed"];
+    [self scheduleControllerLeaseRelease];
+}
+
+- (void)scheduleControllerLeaseRelease {
+    // PiP restoration can briefly use the previous player graph after the app
+    // becomes active. Release on a short delay, but only if it is still safe.
+    NSUInteger generation = self.controllerLeaseGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.applicationIsBackgrounded ||
+            UIApplication.sharedApplication.applicationState !=
+                UIApplicationStateActive) return;
+        if (strongSelf.controllerLeaseGeneration != generation) {
+            [strongSelf scheduleControllerLeaseRelease];
+            return;
+        }
+        strongSelf.backgroundControllerLease = nil;
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"Background"
+            message:@"Released the background player controller lease."];
+    });
 }
 
 - (void)resetClockState {
     self.hasPlaybackTime = NO;
     self.lastPlaybackTime = 0;
     self.hasSuppressionState = NO;
-    self.lastVideoID = self.playerController.currentVideoID ?: @"";
+    YTPlayerViewController *controller =
+        self.backgroundControllerLease ?: self.playerController;
+    self.lastVideoID = controller.currentVideoID ?: @"";
     self.didLogClockProgress = NO;
+    self.hasNativePlaybackTime = NO;
+    self.lastNativePlaybackTime = 0;
+    self.lastNativePlaybackUptime = 0;
+    self.lastHeartbeatUptime = 0;
+    self.lastTimerCallbackUptime = 0;
+    self.lastNowPlayingSynchronizationUptime = 0;
+    self.lastNowPlayingAttemptUptime = 0;
+    self.lastPlaybackProgressUptime = 0;
+    self.hasPublishedNowPlayingRate = NO;
+    self.lastPublishedNowPlayingRate = 0;
+}
+
+- (void)observeNativePlaybackTime:(NSTimeInterval)playbackTime
+                 playerController:(YTPlayerViewController *)controller {
+    if (!self.applicationIsBackgrounded || !controller ||
+        !isfinite(playbackTime) || playbackTime < 0) return;
+
+    NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
+    double estimatedRate = 1.0;
+    BOOL hadNativePlaybackTime = self.hasNativePlaybackTime;
+    NSTimeInterval mediaDelta = hadNativePlaybackTime
+        ? playbackTime - self.lastNativePlaybackTime : 0;
+    BOOL nativeTimeChanged = !hadNativePlaybackTime ||
+        fabs(mediaDelta) >= CIBackgroundMinimumTimeChange;
+    if (self.hasNativePlaybackTime) {
+        NSTimeInterval elapsed = uptime - self.lastNativePlaybackUptime;
+        if (elapsed > 0 && mediaDelta > CIBackgroundMinimumTimeChange) {
+            estimatedRate = mediaDelta / elapsed;
+        }
+    }
+    if (!isfinite(estimatedRate) || estimatedRate < 0.25 ||
+        estimatedRate > 4.0) {
+        estimatedRate = 1.0;
+    }
+    self.hasNativePlaybackTime = YES;
+    self.lastNativePlaybackTime = playbackTime;
+    self.lastNativePlaybackUptime = uptime;
+    if (!nativeTimeChanged) return;
+    self.lastPlaybackProgressUptime = uptime;
+
+    [self synchronizeNowPlayingAtTime:playbackTime
+                            duration:controller.currentVideoTotalMediaTime
+                        playbackRate:estimatedRate
+                              uptime:uptime];
+    if (!self.didLogNativeBackgroundClock) {
+        self.didLogNativeBackgroundClock = YES;
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            message:@"YouTube native playback callbacks remain active in Picture in Picture or the background."];
+    }
 }
 
 - (void)startTimerIfNeeded {
+    YTPlayerViewController *controller =
+        self.backgroundControllerLease ?: self.playerController;
     if (self.timer || !self.applicationIsBackgrounded ||
-        !self.playerController || !CIPreferenceBool(CIEnabledKey, YES)) return;
+        !controller || !CIPreferenceBool(CIEnabledKey, YES)) return;
 
-    if (![self.playerController respondsToSelector:@selector(currentVideoMediaTime)]) {
+    if (![controller respondsToSelector:@selector(currentVideoMediaTime)]) {
         if (!self.didWarnAboutMissingClock) {
             self.didWarnAboutMissingClock = YES;
             [CILogStore.sharedStore recordLevel:CILogLevelWarning
@@ -160,7 +303,7 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
     dispatch_source_cancel(timer);
     self.timer = nil;
     if (reason.length > 0) {
-        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Background"
             format:@"Background playback clock stopped: %@.", reason];
     }
@@ -172,7 +315,8 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
         return;
     }
 
-    YTPlayerViewController *controller = self.playerController;
+    YTPlayerViewController *controller =
+        self.backgroundControllerLease ?: self.playerController;
     if (!controller) {
         [self stopTimerWithReason:@"player released"];
         return;
@@ -208,20 +352,107 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
 
     NSTimeInterval playbackTime = controller.currentVideoMediaTime;
     if (!isfinite(playbackTime) || playbackTime < 0) return;
-    if (self.hasPlaybackTime &&
-        fabs(playbackTime - self.lastPlaybackTime) < CIBackgroundMinimumTimeChange) return;
+    NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
+    NSTimeInterval callbackGap = self.lastTimerCallbackUptime > 0
+        ? uptime - self.lastTimerCallbackUptime : 0;
+    self.lastTimerCallbackUptime = uptime;
+    if (self.lastHeartbeatUptime == 0 ||
+        uptime - self.lastHeartbeatUptime >= CIBackgroundHeartbeatInterval) {
+        self.lastHeartbeatUptime = uptime;
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            format:@"Background clock heartbeat at %.1fs (callback gap %.1fs).",
+                   playbackTime, callbackGap];
+    }
 
     BOOL clockAdvanced = self.hasPlaybackTime &&
         playbackTime > self.lastPlaybackTime + CIBackgroundMinimumTimeChange;
+    NSTimeInterval mediaDelta = self.hasPlaybackTime
+        ? playbackTime - self.lastPlaybackTime : 0;
+    BOOL clockChanged = !self.hasPlaybackTime ||
+        fabs(playbackTime - self.lastPlaybackTime) >= CIBackgroundMinimumTimeChange;
+    if (!clockChanged) {
+        if (self.lastPlaybackProgressUptime > 0 &&
+            uptime - self.lastPlaybackProgressUptime >= 3.0) {
+            [self synchronizeNowPlayingAtTime:playbackTime
+                                    duration:controller.currentVideoTotalMediaTime
+                                playbackRate:0
+                                      uptime:uptime];
+        }
+        return;
+    }
     self.hasPlaybackTime = YES;
     self.lastPlaybackTime = playbackTime;
     [CICaptionCoordinator.sharedCoordinator updatePlaybackTime:playbackTime];
+    double estimatedRate = callbackGap > 0 && clockAdvanced
+        ? mediaDelta / callbackGap : 1.0;
+    if (!isfinite(estimatedRate) || estimatedRate < 0.25 ||
+        estimatedRate > 4.0) {
+        estimatedRate = 1.0;
+    }
+    self.lastPlaybackProgressUptime = uptime;
+    [self synchronizeNowPlayingAtTime:playbackTime
+                            duration:controller.currentVideoTotalMediaTime
+                        playbackRate:estimatedRate
+                              uptime:uptime];
 
     if (clockAdvanced && !self.didLogClockProgress) {
         self.didLogClockProgress = YES;
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Background"
             message:@"YouTube playback clock is advancing in the background."];
+    }
+}
+
+- (void)synchronizeNowPlayingAtTime:(NSTimeInterval)playbackTime
+                           duration:(NSTimeInterval)duration
+                       playbackRate:(double)playbackRate
+                             uptime:(NSTimeInterval)uptime {
+    playbackRate = CIQuantizedPlaybackRate(playbackRate);
+    BOOL rateChanged = !self.hasPublishedNowPlayingRate ||
+        fabs(playbackRate - self.lastPublishedNowPlayingRate) >= 0.08;
+    if (!self.hasPublishedNowPlayingRate &&
+        self.lastNowPlayingAttemptUptime > 0 &&
+        uptime - self.lastNowPlayingAttemptUptime <
+            CINowPlayingRetryInterval) return;
+    if (self.hasPublishedNowPlayingRate && !rateChanged &&
+        self.lastNowPlayingAttemptUptime > 0 &&
+        uptime - self.lastNowPlayingAttemptUptime <
+            CINowPlayingRetryInterval) return;
+    if (!rateChanged && self.lastNowPlayingSynchronizationUptime > 0 &&
+        uptime - self.lastNowPlayingSynchronizationUptime <
+            CINowPlayingSynchronizationInterval) return;
+    self.lastNowPlayingAttemptUptime = uptime;
+
+    MPNowPlayingInfoCenter *center = MPNowPlayingInfoCenter.defaultCenter;
+    NSDictionary<NSString *, id> *existing = center.nowPlayingInfo;
+    if (existing.count == 0) {
+        if (!self.didWarnAboutMissingNowPlayingInfo) {
+            self.didWarnAboutMissingNowPlayingInfo = YES;
+            [CILogStore.sharedStore recordLevel:CILogLevelWarning
+                category:@"Background"
+                message:@"YouTube has not published Now Playing metadata, so the Lock Screen elapsed-time display cannot be synchronized yet."];
+        }
+        return;
+    }
+
+    NSMutableDictionary<NSString *, id> *updated = existing.mutableCopy;
+    updated[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(playbackTime);
+    updated[MPNowPlayingInfoPropertyPlaybackRate] = @(playbackRate);
+    updated[MPNowPlayingInfoPropertyDefaultPlaybackRate] = @1.0;
+    if (isfinite(duration) && duration > 0) {
+        updated[MPMediaItemPropertyPlaybackDuration] = @(duration);
+    }
+    center.nowPlayingInfo = updated;
+    self.lastNowPlayingSynchronizationUptime = uptime;
+    self.hasPublishedNowPlayingRate = YES;
+    self.lastPublishedNowPlayingRate = playbackRate;
+
+    if (!self.didLogNowPlayingSynchronization) {
+        self.didLogNowPlayingSynchronization = YES;
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            message:@"Synchronized the Lock Screen Now Playing clock without replacing YouTube's media controls."];
     }
 }
 

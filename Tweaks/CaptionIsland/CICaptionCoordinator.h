@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)playbackDidFinish;
 - (void)playerViewDidAppear;
 - (void)playerViewDidDisappear;
+- (void)prepareForExternalPlayback;
 - (void)reloadPreferences;
 - (void)stop;
 - (void)setPresenter:(id<CICaptionPresenting>)presenter;

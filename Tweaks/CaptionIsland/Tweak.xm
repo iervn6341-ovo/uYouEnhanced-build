@@ -8,12 +8,14 @@
 #import "CIBackgroundPlaybackMonitor.h"
 #import "CICaptionCoordinator.h"
 #import "CIConstants.h"
+#import "CILogStore.h"
 #import "CIPlaybackState.h"
 #import "CIToastPresenter.h"
 #import "CIYouTubeInspector.h"
 
 static const void *CISuppressedStateKey = &CISuppressedStateKey;
 static const void *CIActivePlayerKey = &CIActivePlayerKey;
+static const void *CIRetiredPlayerKey = &CIRetiredPlayerKey;
 static __weak YTPlayerViewController *CIActivePlayerController;
 static NSUInteger CIPlaybackLifecycleGeneration;
 
@@ -40,14 +42,81 @@ static void CIUpdateSuppression(YTPlayerViewController *controller) {
     }
 }
 
-static void CIHandlePlaybackTime(YTPlayerViewController *controller, YTSingleVideoTime *videoTime) {
-    if (!videoTime || (CIActivePlayerController && CIActivePlayerController != controller)) return;
-    if (CIBackgroundPlaybackMonitor.sharedMonitor.isSamplingPlaybackInBackground) return;
+static NSString *CIPlayerVideoID(YTPlayerViewController *controller) {
+    if (!controller) return @"";
+    NSString *videoID = controller.currentVideoID;
+    if (videoID.length == 0) videoID = controller.contentVideoID;
+    return videoID ?: @"";
+}
+
+static BOOL CIRebindPlayerForTimeCallback(YTPlayerViewController *controller) {
+    if ([objc_getAssociatedObject(controller, CIRetiredPlayerKey) boolValue]) {
+        return NO;
+    }
+    YTPlayerViewController *activeController = CIActivePlayerController;
+    if (!activeController) {
+        if (![objc_getAssociatedObject(controller, CIActivePlayerKey) boolValue]) {
+            return NO;
+        }
+        CIActivePlayerController = controller;
+        [CIBackgroundPlaybackMonitor.sharedMonitor attachPlayerController:controller];
+        return YES;
+    }
+    if (activeController == controller) return YES;
+    if (UIApplication.sharedApplication.applicationState ==
+            UIApplicationStateActive &&
+        ![CIBackgroundPlaybackMonitor.sharedMonitor
+            isSamplingPlaybackInBackground]) return NO;
+
+    NSString *activeVideoID = CIPlayerVideoID(activeController);
+    NSString *callbackVideoID = CIPlayerVideoID(controller);
+    if (activeVideoID.length == 0 ||
+        ![activeVideoID isEqualToString:callbackVideoID]) return NO;
+
+    objc_setAssociatedObject(activeController, CIActivePlayerKey, nil,
+                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(activeController, CIRetiredPlayerKey, @YES,
+                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller, CIActivePlayerKey, @YES,
+                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller, CIRetiredPlayerKey, nil,
+                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CIActivePlayerController = controller;
+    CIPlaybackLifecycleGeneration++;
+    [CIBackgroundPlaybackMonitor.sharedMonitor attachPlayerController:controller];
+    [CICaptionCoordinator.sharedCoordinator prepareForExternalPlayback];
+    [CILogStore.sharedStore recordLevel:CILogLevelInfo
+        category:@"Background"
+        format:@"Rebound caption timing to the Picture in Picture player for video %@.",
+               callbackVideoID];
+    return YES;
+}
+
+static void CIHandlePlaybackTimeValue(YTPlayerViewController *controller,
+                                      NSTimeInterval playbackTime) {
+    if (!controller || !CIRebindPlayerForTimeCallback(controller)) return;
     CICaptionCoordinator *coordinator = CICaptionCoordinator.sharedCoordinator;
     CIUpdateSuppression(controller);
     if (!CIPlayerControllerIsAdvertising(controller)) {
-        [coordinator updatePlaybackTime:videoTime.time];
+        [CIBackgroundPlaybackMonitor.sharedMonitor
+            observeNativePlaybackTime:playbackTime
+                     playerController:controller];
+        [coordinator updatePlaybackTime:playbackTime];
     }
+}
+
+static void CIHandlePlaybackTime(YTPlayerViewController *controller,
+                                 YTSingleVideoTime *videoTime) {
+    if (!videoTime) return;
+    NSTimeInterval playbackTime = videoTime.time;
+    if (!NSThread.isMainThread) {
+        YTPlayerViewController *retainedController = controller;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CIHandlePlaybackTimeValue(retainedController, playbackTime);
+        });
+        return;
+    }
+    CIHandlePlaybackTimeValue(controller, playbackTime);
 }
 
 static void CIRefreshCaptionContext(YTPlayerOverlayManager *overlayManager) {
@@ -125,10 +194,12 @@ static void CIActivatePlayback(YTPlayerViewController *controller, id playbackDa
     CIPlaybackLifecycleGeneration++;
     if (CIActivePlayerController && CIActivePlayerController != controller) {
         objc_setAssociatedObject(CIActivePlayerController, CIActivePlayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(CIActivePlayerController, CIRetiredPlayerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     CIActivePlayerController = controller;
     [CIBackgroundPlaybackMonitor.sharedMonitor attachPlayerController:controller];
     objc_setAssociatedObject(controller, CIActivePlayerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller, CIRetiredPlayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     CIUpdateSuppression(controller);
     if (CIPlayerControllerIsAdvertising(controller)) {
         CILog(@"Skipping caption lookup while YouTube is playing an ad.");
@@ -153,6 +224,8 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
         ![objc_getAssociatedObject(controller, CIActivePlayerKey) boolValue]) return;
     objc_setAssociatedObject(controller, CIActivePlayerKey, nil,
                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller, CIRetiredPlayerKey, nil,
+                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (CIActivePlayerController == controller) CIActivePlayerController = nil;
     CIPlaybackLifecycleGeneration++;
     [CIBackgroundPlaybackMonitor.sharedMonitor detachPlayerController:controller];
@@ -174,11 +247,38 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     %orig;
     if ([objc_getAssociatedObject(self, CIActivePlayerKey) boolValue]) {
         [CICaptionCoordinator.sharedCoordinator playerViewDidDisappear];
+        [CICaptionCoordinator.sharedCoordinator prepareForExternalPlayback];
     }
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
+    if ([objc_getAssociatedObject(self, CIRetiredPlayerKey) boolValue]) {
+        YTPlayerViewController *activeController = CIActivePlayerController;
+        NSString *videoID = CIPlayerVideoID(self);
+        NSString *activeVideoID = CIPlayerVideoID(activeController);
+        if (videoID.length > 0 &&
+            (!activeController || [videoID isEqualToString:activeVideoID])) {
+            if (activeController && activeController != self) {
+                objc_setAssociatedObject(activeController, CIActivePlayerKey,
+                                         nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                objc_setAssociatedObject(activeController, CIRetiredPlayerKey,
+                                         @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            objc_setAssociatedObject(self, CIRetiredPlayerKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(self, CIActivePlayerKey, @YES,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            CIActivePlayerController = self;
+            CIPlaybackLifecycleGeneration++;
+            [CIBackgroundPlaybackMonitor.sharedMonitor
+                attachPlayerController:self];
+            [CILogStore.sharedStore recordLevel:CILogLevelInfo
+                category:@"Background"
+                format:@"Restored caption timing to the foreground player for video %@.",
+                       videoID];
+        }
+    }
     if ([objc_getAssociatedObject(self, CIActivePlayerKey) boolValue]) {
         [CICaptionCoordinator.sharedCoordinator playerViewDidAppear];
     }

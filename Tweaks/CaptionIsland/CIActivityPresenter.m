@@ -70,13 +70,31 @@ static NSNotificationName const CIActivityBridgeLogNotification =
            cueStart:(NSTimeInterval)cueStart
              cueEnd:(NSTimeInterval)cueEnd
            position:(NSTimeInterval)position {
+    [self presentText:text
+               source:source
+             cueStart:cueStart
+               cueEnd:cueEnd
+             position:position
+             nextText:@""
+         nextCueStart:0
+           nextCueEnd:0];
+}
+
+- (void)presentText:(NSString *)text
+             source:(CICaptionSource)source
+           cueStart:(NSTimeInterval)cueStart
+             cueEnd:(NSTimeInterval)cueEnd
+           position:(NSTimeInterval)position
+           nextText:(NSString *)nextText
+       nextCueStart:(NSTimeInterval)nextCueStart
+         nextCueEnd:(NSTimeInterval)nextCueEnd {
     if (!CIPreferenceBool(CIEnabledKey, YES) || text.length == 0) {
         [self hide];
         return;
     }
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(
-        @"updateWithText:source:cueStart:cueEnd:position:playing:");
+        @"updateWithText:source:cueStart:cueEnd:position:playing:nextText:nextCueStart:nextCueEnd:");
     if (![bridge respondsToSelector:selector]) return;
     BOOL LRCLIBSource = source == CICaptionSourceLRCLIBSynced ||
         source == CICaptionSourceLRCLIBAligned ||
@@ -84,8 +102,10 @@ static NSNotificationName const CIActivityBridgeLogNotification =
     NSString *sourceLabel = (LRCLIBSource ||
         CIPreferenceBool(CIShowSourceBadgeKey, YES))
         ? CICaptionSourceLabel(source) : @"";
-    ((void (*)(id, SEL, NSString *, NSString *, double, double, double, BOOL))objc_msgSend)(
-        bridge, selector, text, sourceLabel, cueStart, cueEnd, position, YES);
+    ((void (*)(id, SEL, NSString *, NSString *, double, double, double, BOOL,
+               NSString *, double, double))objc_msgSend)(
+        bridge, selector, text, sourceLabel, cueStart, cueEnd, position, YES,
+        nextText ?: @"", nextCueStart, nextCueEnd);
 }
 
 - (void)hide {

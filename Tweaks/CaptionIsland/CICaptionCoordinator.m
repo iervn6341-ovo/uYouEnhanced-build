@@ -83,6 +83,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 @property (nonatomic, copy) NSString *lastNoResultVideoID;
 @property (nonatomic) NSUInteger captionRequestToken;
 @property (nonatomic) NSTimeInterval contextActivatedAt;
+@property (nonatomic) NSTimeInterval lastExternalPreparationUptime;
 @property (nonatomic, strong) id<CICaptionPresenting> presenter;
 - (void)ensurePresenterForCurrentContext;
 - (void)tryClockTracks:(NSArray<CICaptionTrack *> *)tracks
@@ -724,11 +725,27 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     if (index == NSNotFound) [self.presenter hide];
     else {
         CICaptionCue *cue = self.cues[(NSUInteger)index];
-        [self.presenter presentText:cue.text
-                             source:self.source
-                           cueStart:cue.startTime
-                             cueEnd:cue.endTime
-                           position:time];
+        NSUInteger nextIndex = (NSUInteger)index + 1;
+        CICaptionCue *nextCue = nextIndex < self.cues.count
+            ? self.cues[nextIndex] : nil;
+        SEL extendedSelector =
+            @selector(presentText:source:cueStart:cueEnd:position:nextText:nextCueStart:nextCueEnd:);
+        if ([self.presenter respondsToSelector:extendedSelector]) {
+            [self.presenter presentText:cue.text
+                                 source:self.source
+                               cueStart:cue.startTime
+                                 cueEnd:cue.endTime
+                               position:time
+                               nextText:nextCue.text ?: @""
+                           nextCueStart:nextCue ? nextCue.startTime : 0
+                             nextCueEnd:nextCue ? nextCue.endTime : 0];
+        } else {
+            [self.presenter presentText:cue.text
+                                 source:self.source
+                               cueStart:cue.startTime
+                                 cueEnd:cue.endTime
+                               position:time];
+        }
     }
 }
 
@@ -763,6 +780,23 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)playerViewDidDisappear {
     dispatch_async(self.workQueue, ^{
         self.playerVisible = NO;
+    });
+}
+
+- (void)prepareForExternalPlayback {
+    dispatch_async(self.workQueue, ^{
+        if (!self.context || !CIPreferenceBool(CIEnabledKey, YES) ||
+            self.suppressed) return;
+        NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
+        if (self.lastExternalPreparationUptime > 0 &&
+            uptime - self.lastExternalPreparationUptime < 1.0) return;
+        self.lastExternalPreparationUptime = uptime;
+        [self ensurePresenterForCurrentContext];
+        self.displayedCueIndex = CIUnrenderedCueIndex;
+        if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            message:@"Prepared caption activity for Lock Screen or Picture in Picture playback."];
     });
 }
 

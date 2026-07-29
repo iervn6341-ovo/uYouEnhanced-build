@@ -9,6 +9,85 @@ struct CaptionIslandWidgetBundle: WidgetBundle {
     }
 }
 
+private struct CaptionLyricStack: View {
+    enum Presentation {
+        case dynamicIsland
+        case lockScreen
+    }
+
+    let currentLine: String
+    let nextLine: String
+    let revision: Int
+    let presentation: Presentation
+
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(currentLine)
+                .font(currentFont)
+                .foregroundStyle(.white)
+                .lineLimit(currentLineLimit)
+                .minimumScaleFactor(0.76)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .id("current-\(revision)")
+                .transition(
+                    .asymmetric(
+                        insertion: .push(from: .bottom).combined(with: .opacity),
+                        removal: .push(from: .top).combined(with: .opacity)
+                    )
+                )
+
+            if !nextLine.isEmpty {
+                Text(nextLine)
+                    .font(nextFont)
+                    .foregroundStyle(.white.opacity(0.58))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id("next-\(revision)")
+                    .transition(
+                        .asymmetric(
+                            insertion: .push(from: .bottom).combined(with: .opacity),
+                            removal: .push(from: .top).combined(with: .opacity)
+                        )
+                    )
+            }
+        }
+        // WidgetKit intentionally disables animations on Always-On displays.
+        // Supplying nil there avoids asking the renderer to do work it will
+        // discard; awake Lock Screen and Dynamic Island updates still slide.
+        .animation(
+            isLuminanceReduced ? nil : .easeInOut(duration: 0.42),
+            value: revision
+        )
+    }
+
+    private var currentFont: Font {
+        switch presentation {
+        case .dynamicIsland:
+            return .title3.weight(.semibold)
+        case .lockScreen:
+            return .title3.weight(.bold)
+        }
+    }
+
+    private var nextFont: Font {
+        switch presentation {
+        case .dynamicIsland:
+            return .subheadline.weight(.medium)
+        case .lockScreen:
+            return .subheadline.weight(.medium)
+        }
+    }
+
+    private var currentLineLimit: Int {
+        presentation == .dynamicIsland ? 2 : 3
+    }
+}
+
 struct CaptionIslandLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: CICaptionActivityAttributes.self) { context in
@@ -28,15 +107,13 @@ struct CaptionIslandLiveActivity: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(displayedLine(context))
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .lineLimit(4)
-                            .minimumScaleFactor(0.78)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id(context.state.revision)
+                    VStack(alignment: .leading, spacing: 8) {
+                        CaptionLyricStack(
+                            currentLine: displayedLine(context),
+                            nextLine: displayedNextLine(context),
+                            revision: context.state.revision,
+                            presentation: .dynamicIsland
+                        )
                         Text(context.state.videoTitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -44,13 +121,13 @@ struct CaptionIslandLiveActivity: Widget {
                     }
                     .frame(
                         maxWidth: .infinity,
-                        minHeight: 82,
+                        minHeight: 110,
                         alignment: .topLeading
                     )
                     .padding(.top, 6)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(
-                        "\(context.state.videoTitle)，\(displayedLine(context))"
+                        accessibilityText(context)
                     )
                 }
             } compactLeading: {
@@ -89,27 +166,30 @@ struct CaptionIslandLiveActivity: Widget {
                 .foregroundStyle(.white)
                 .padding(.top, 2)
             VStack(alignment: .leading, spacing: 6) {
-                Text(context.state.videoTitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(displayedLine(context))
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(4)
-                    .minimumScaleFactor(0.78)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .id(context.state.revision)
-                if !context.state.source.isEmpty {
-                    sourceBadge(context.state.source)
+                HStack(spacing: 8) {
+                    Text(context.state.videoTitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if !context.state.source.isEmpty {
+                        sourceBadge(context.state.source)
+                    }
                 }
+                CaptionLyricStack(
+                    currentLine: displayedLine(context),
+                    nextLine: displayedNextLine(context),
+                    revision: context.state.revision,
+                    presentation: .lockScreen
+                )
             }
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 106, alignment: .topLeading)
+        .frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
         .padding(.horizontal, 8)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText(context))
     }
 
     private func compactText(_ text: String) -> String {
@@ -125,6 +205,23 @@ struct CaptionIslandLiveActivity: Widget {
         // marks a local update stale. This is especially important on an
         // Always-On display, where the system may defer visual refreshes.
         return context.state.line
+    }
+
+    private func displayedNextLine(
+        _ context: ActivityViewContext<CICaptionActivityAttributes>
+    ) -> String {
+        context.state.nextLine?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func accessibilityText(
+        _ context: ActivityViewContext<CICaptionActivityAttributes>
+    ) -> String {
+        let next = displayedNextLine(context)
+        if next.isEmpty {
+            return "\(context.state.videoTitle)，\(displayedLine(context))"
+        }
+        return "\(context.state.videoTitle)，\(displayedLine(context))，下一句，\(next)"
     }
 
     @ViewBuilder

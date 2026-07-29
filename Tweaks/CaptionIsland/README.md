@@ -26,19 +26,31 @@ Caption Island 不會建立影片 context 或發出 LRCLIB／字幕請求。廣�
 
 主 tweak 取得影片與播放時間，ActivityKit bridge 更新同一張 Live Activity；
 Widget extension 負責 Dynamic Island 的 compact、minimal、expanded 版面與鎖定畫面。
-換片時會沿用現有 Activity，避免反覆收合與展開。只有字幕 cue 改變時才送出更新。
+expanded 與鎖定畫面會同時顯示目前句和字體較小的下一句；清醒狀態換句時使用
+push／淡入淡出過渡。換片時會沿用現有 Activity，避免反覆收合與展開。只有字幕 cue
+改變時才送出更新。
 
 本 Tweak 最低需要 iOS 17.5。沒有 Dynamic Island 的裝置仍可在鎖定畫面看到
-Live Activity。進入背景或鎖定畫面後，Tweak 會停用前景的高頻 callback，改為每
-0.75 秒讀取一次 YouTube 播放時間；只有時間前進且字幕 cue 改變時才更新 Activity。
-回到前景、停止播放或播放器釋放後，背景計時器會立即停止。
+Live Activity。進入 PiP、背景或鎖定畫面時，仍會優先接受 YouTube 的原生播放時間
+callback，並另外以每 0.75 秒一次的低頻計時器作 fallback；兩條路徑最後都由
+Coordinator 去重，只有字幕 cue 改變時才更新 Activity。進入背景前會短暫保留目前
+播放器，避免 PiP 切換視圖時釋放時間來源；回到 App 完全 active 後才停止 fallback
+並釋放引用。
+
+背景同步也會在 YouTube 已提供的 Now Playing dictionary 上補正 elapsed time、
+duration 與 playback rate，不取代標題、封面或 Remote Command，因此鎖定畫面的時間
+可由系統持續推進，播放控制仍由 YouTube 處理。
 
 此機制需要 YouTube 的背景音訊仍在播放，讓 App 保有系統核准的背景執行時間。若
 App 被強制關閉或被系統完全暫停，畫面會停在最後狀態；本 Tweak 不會播放無聲音訊來
 規避系統限制。完全不依賴 App 程序的更新需要額外的 ActivityKit push server。
 
 「螢幕關閉」時面板本身不會發光：iPhone 11 會在喚醒鎖定畫面時看到最新字幕；
-支援 Always-On Display 的機型則仍由 iOS 的 AOD 顯示規則決定是否持續顯示。
+支援 Always-On Display 的機型則仍由 iOS 的 AOD 顯示規則決定刷新頻率。iOS 會節流
+類似逐句歌詞的本機 Live Activity 更新，而且 AOD 不播放 WidgetKit 動畫；因此本
+Tweak 會一次提供目前句與下一句並避免把每句標成 stale，但仍不能保證 AOD 逐句即時
+重畫。需要可靠高頻更新時，必須改用具備正確 APNs entitlement 的 ActivityKit push
+server，單靠 `NSSupportsLiveActivitiesFrequentUpdates` 不會放寬本機更新。
 
 ## 設定
 
@@ -64,6 +76,9 @@ Debug 只有在「詳細記錄」開啟時才會加入。預覽頁會在新事�
 
 Log 僅供診斷來源選擇、下載與 ActivityKit 狀態；不保存完整歌詞、字幕 URL、
 Cookie、API key、token 或 Authorization 內容，且會在寫入前再次遮蔽這些資料。
+背景期間每 30 秒會記錄低頻 clock heartbeat，並分別記錄 YouTube 原生 callback、
+Live Activity revision 與 Now Playing 同步是否仍在工作，方便區分 App 已被暫停與
+ActivityKit 只延後 AOD 畫面刷新。
 
 ## LRCLIB 匹配
 
@@ -79,8 +94,11 @@ LRCLIB 內容不跨影片寫入磁碟快取。若要公開發行，仍應自行�
 - 一條 utility QoS serial queue 管理字幕狀態；
 - 同時間最多一個字幕下載與一個 LRCLIB request，換片會取消舊工作；
 - YouTube 字幕使用最多 8 筆的記憶體快取，LRCLIB 歌詞不做磁碟快取；
-- 前景沿用 YouTube callback（最多約 5 Hz）；背景改用單一 0.75 秒計時器並提供
-  0.15 秒系統容差，時間未改變時不提交任何字幕工作；
+- 前景與 PiP／背景都保留 YouTube callback（Coordinator 最多接受約 5 Hz）；背景
+  另外使用單一 0.75 秒 fallback 計時器並提供 0.15 秒系統容差，時間未改變時不提交
+  任何字幕工作；
+- Now Playing 的一般校正最多每 12 秒一次，播放／暫停或倍速狀態改變則立即更新，
+  之後由 iOS 依 playback rate 自行推進時間；
 - 不擷取音訊、不使用 CoreML，也不進行裝置端語音辨識或無聲音訊保活。
 
 ## 建置與驗證
