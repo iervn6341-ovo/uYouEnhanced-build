@@ -60,6 +60,7 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) NSTimeInterval lastNowPlayingSynchronizationUptime;
 @property (nonatomic) NSTimeInterval lastNowPlayingAttemptUptime;
 @property (nonatomic) NSTimeInterval lastPlaybackProgressUptime;
+@property (nonatomic) NSTimeInterval lastPlaybackAdvanceUptime;
 @property (nonatomic) BOOL hasPublishedNowPlayingRate;
 @property (nonatomic) double lastPublishedNowPlayingRate;
 @property (nonatomic) NSUInteger controllerLeaseGeneration;
@@ -109,6 +110,15 @@ static double CIQuantizedPlaybackRate(double rate) {
 
 - (BOOL)isSamplingPlaybackInBackground {
     return self.timer != nil;
+}
+
+- (BOOL)playbackAdvancedWithinInterval:(NSTimeInterval)interval {
+    if (!isfinite(interval) || interval <= 0 ||
+        self.lastPlaybackAdvanceUptime <= 0) return NO;
+    NSTimeInterval elapsed =
+        NSProcessInfo.processInfo.systemUptime -
+        self.lastPlaybackAdvanceUptime;
+    return elapsed >= 0 && elapsed <= interval;
 }
 
 - (void)attachPlayerController:(YTPlayerViewController *)controller {
@@ -283,6 +293,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.lastNowPlayingSynchronizationUptime = 0;
     self.lastNowPlayingAttemptUptime = 0;
     self.lastPlaybackProgressUptime = 0;
+    self.lastPlaybackAdvanceUptime = 0;
     self.hasPublishedNowPlayingRate = NO;
     self.lastPublishedNowPlayingRate = 0;
 }
@@ -314,6 +325,10 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.lastNativePlaybackUptime = uptime;
     if (!nativeTimeChanged) return;
     self.lastPlaybackProgressUptime = uptime;
+    if (hadNativePlaybackTime &&
+        mediaDelta > CIBackgroundMinimumTimeChange) {
+        self.lastPlaybackAdvanceUptime = uptime;
+    }
 
     [self synchronizeNowPlayingAtTime:playbackTime
                             duration:controller.currentVideoTotalMediaTime
@@ -463,6 +478,9 @@ static double CIQuantizedPlaybackRate(double rate) {
         estimatedRate = 1.0;
     }
     self.lastPlaybackProgressUptime = uptime;
+    if (clockAdvanced) {
+        self.lastPlaybackAdvanceUptime = uptime;
+    }
     [self synchronizeNowPlayingAtTime:playbackTime
                             duration:controller.currentVideoTotalMediaTime
                         playbackRate:estimatedRate

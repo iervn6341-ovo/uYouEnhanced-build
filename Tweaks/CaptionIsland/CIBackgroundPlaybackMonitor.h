@@ -22,6 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
     (YTPlayerViewController *)controller;
 - (void)observeNativePlaybackTime:(NSTimeInterval)playbackTime
                  playerController:(YTPlayerViewController *)controller;
+- (BOOL)playbackAdvancedWithinInterval:(NSTimeInterval)interval;
 
 @end
 
