@@ -18,6 +18,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)attachPlayerController:(YTPlayerViewController *)controller;
 - (void)detachPlayerController:(YTPlayerViewController *)controller;
+- (void)prepareForPictureInPictureWithPlayerController:
+    (YTPlayerViewController *)controller;
 - (void)observeNativePlaybackTime:(NSTimeInterval)playbackTime
                  playerController:(YTPlayerViewController *)controller;
 

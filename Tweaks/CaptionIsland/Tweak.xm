@@ -1,7 +1,10 @@
 #import <Foundation/Foundation.h>
+#import <AVKit/AVKit.h>
 #import <YouTubeHeader/GOOHUDManagerInternal.h>
+#import <YouTubeHeader/MLPIPController.h>
 #import <YouTubeHeader/YTHUDMessage.h>
 #import <YouTubeHeader/YTPlayerOverlayManager.h>
+#import <YouTubeHeader/YTPlayerPIPController.h>
 #import <YouTubeHeader/YTPlayerViewController.h>
 #import <YouTubeHeader/YTSingleVideoTime.h>
 #import <objc/runtime.h>
@@ -18,6 +21,7 @@ static const void *CIActivePlayerKey = &CIActivePlayerKey;
 static const void *CIRetiredPlayerKey = &CIRetiredPlayerKey;
 static __weak YTPlayerViewController *CIActivePlayerController;
 static NSUInteger CIPlaybackLifecycleGeneration;
+static NSUInteger CIPictureInPicturePreparationGeneration;
 
 void CIShowToast(NSString *text) {
     if (text.length == 0) return;
@@ -47,6 +51,51 @@ static NSString *CIPlayerVideoID(YTPlayerViewController *controller) {
     NSString *videoID = controller.currentVideoID;
     if (videoID.length == 0) videoID = controller.contentVideoID;
     return videoID ?: @"";
+}
+
+static void CIPrepareForPictureInPicture(NSString *source,
+                                         NSUInteger generation,
+                                         BOOL shouldLog) {
+    if (generation != CIPictureInPicturePreparationGeneration) return;
+    YTPlayerViewController *controller = CIActivePlayerController;
+    if (!controller || CIPlayerVideoID(controller).length == 0) {
+        if (shouldLog) {
+            [CILogStore.sharedStore recordLevel:CILogLevelWarning
+                category:@"Background"
+                format:@"Picture in Picture started through %@, but no active YouTube player was available yet.",
+                       source];
+        }
+        return;
+    }
+    [CIBackgroundPlaybackMonitor.sharedMonitor
+        prepareForPictureInPictureWithPlayerController:controller];
+    if (shouldLog) {
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            format:@"Detected Picture in Picture through %@ for video %@.",
+                   source, CIPlayerVideoID(controller)];
+    }
+}
+
+static void CISchedulePictureInPicturePreparation(NSString *source) {
+    NSUInteger generation = ++CIPictureInPicturePreparationGeneration;
+    NSTimeInterval delays[] = {0, 0.35, 1.0};
+    for (NSUInteger index = 0; index < 3; index++) {
+        dispatch_after(
+            dispatch_time(
+                DISPATCH_TIME_NOW,
+                (int64_t)(delays[index] * NSEC_PER_SEC)
+            ),
+            dispatch_get_main_queue(),
+            ^{
+                CIPrepareForPictureInPicture(
+                    source ?: @"unknown source",
+                    generation,
+                    index == 0
+                );
+            }
+        );
+    }
 }
 
 static BOOL CIRebindPlayerForTimeCallback(YTPlayerViewController *controller) {
@@ -296,6 +345,74 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 
 %end
 
+%group CaptionIslandAVKitPiPHooks
+
+%hook AVPictureInPictureController
+
+- (void)startPictureInPicture {
+    %orig;
+    CISchedulePictureInPicturePreparation(@"AVPictureInPictureController");
+}
+
+%end
+
+%end
+
+%group CaptionIslandMLActivatePiPHooks
+
+%hook MLPIPController
+
+- (void)activatePiPController {
+    %orig;
+    CISchedulePictureInPicturePreparation(@"MLPIPController");
+}
+
+%end
+
+%end
+
+%group CaptionIslandMLStartPiPHooks
+
+%hook MLPIPController
+
+- (BOOL)startPictureInPicture {
+    BOOL started = %orig;
+    if (started) {
+        CISchedulePictureInPicturePreparation(@"MLPIPController legacy start");
+    }
+    return started;
+}
+
+%end
+
+%end
+
+%group CaptionIslandYTModernPiPHooks
+
+%hook YTPlayerPIPController
+
+- (void)maybeEnablePictureInPicture {
+    %orig;
+    CISchedulePictureInPicturePreparation(@"YTPlayerPIPController");
+}
+
+%end
+
+%end
+
+%group CaptionIslandYTLegacyPiPHooks
+
+%hook YTPlayerPIPController
+
+- (void)maybeInvokePictureInPicture {
+    %orig;
+    CISchedulePictureInPicturePreparation(@"YTPlayerPIPController legacy start");
+}
+
+%end
+
+%end
+
 
 %group CaptionIslandPlaybackFinishHooks
 
@@ -402,5 +519,34 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     if (overlayManagerClass &&
         class_getInstanceMethod(overlayManagerClass, captionTracksChanged)) {
         %init(CaptionIslandCaptionTrackHooks);
+    }
+    Class AVPiPClass = NSClassFromString(@"AVPictureInPictureController");
+    if (AVPiPClass &&
+        class_getInstanceMethod(AVPiPClass, @selector(startPictureInPicture))) {
+        %init(CaptionIslandAVKitPiPHooks);
+    }
+    Class MLPiPClass = NSClassFromString(@"MLPIPController");
+    if (MLPiPClass &&
+        class_getInstanceMethod(MLPiPClass, @selector(activatePiPController))) {
+        %init(CaptionIslandMLActivatePiPHooks);
+    }
+    if (MLPiPClass &&
+        class_getInstanceMethod(MLPiPClass, @selector(startPictureInPicture))) {
+        %init(CaptionIslandMLStartPiPHooks);
+    }
+    Class YTPiPClass = NSClassFromString(@"YTPlayerPIPController");
+    if (YTPiPClass &&
+        class_getInstanceMethod(
+            YTPiPClass,
+            @selector(maybeEnablePictureInPicture)
+        )) {
+        %init(CaptionIslandYTModernPiPHooks);
+    }
+    if (YTPiPClass &&
+        class_getInstanceMethod(
+            YTPiPClass,
+            @selector(maybeInvokePictureInPicture)
+        )) {
+        %init(CaptionIslandYTLegacyPiPHooks);
     }
 }

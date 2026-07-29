@@ -125,6 +125,18 @@ static NSNotificationName const CIActivityBridgeLogNotification =
     self.title = @"";
 }
 
+- (void)endForProcessTermination {
+    Class bridge = [self bridgeClass];
+    SEL selector = NSSelectorFromString(@"endAllImmediatelyForTermination");
+    if ([bridge respondsToSelector:selector]) {
+        ((void (*)(id, SEL))objc_msgSend)(bridge, selector);
+    } else {
+        [self end];
+    }
+    self.videoID = @"";
+    self.title = @"";
+}
+
 - (void)activityBridgeDidLog:(NSNotification *)notification {
     NSDictionary *info = notification.userInfo;
     NSString *message = [info[@"message"] isKindOfClass:NSString.class]

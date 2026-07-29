@@ -27,7 +27,7 @@ CaptionIsland_FILES = \
 	CIActivityBridge.swift \
 	Shared/CICaptionActivityAttributes.swift
 CaptionIsland_CFLAGS = -fobjc-arc
-CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore Security ActivityKit MediaPlayer
+CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore Security ActivityKit MediaPlayer AVKit
 CaptionIsland_SWIFT_VERSION = 5
 
 include $(THEOS_MAKE_PATH)/tweak.mk

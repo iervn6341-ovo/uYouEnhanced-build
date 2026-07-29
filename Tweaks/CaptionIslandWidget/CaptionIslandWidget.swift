@@ -19,11 +19,12 @@ private struct CaptionLyricStack: View {
     let nextLine: String
     let revision: Int
     let presentation: Presentation
+    let condensed: Bool
 
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: condensed ? 5 : 8) {
             Text(currentLine)
                 .font(currentFont)
                 .foregroundStyle(.white)
@@ -43,7 +44,7 @@ private struct CaptionLyricStack: View {
                 Text(nextLine)
                     .font(nextFont)
                     .foregroundStyle(.white.opacity(0.58))
-                    .lineLimit(2)
+                    .lineLimit(nextLineLimit)
                     .minimumScaleFactor(0.82)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -68,7 +69,9 @@ private struct CaptionLyricStack: View {
     private var currentFont: Font {
         switch presentation {
         case .dynamicIsland:
-            return .title3.weight(.semibold)
+            return condensed
+                ? .headline.weight(.semibold)
+                : .title3.weight(.semibold)
         case .lockScreen:
             return .title3.weight(.bold)
         }
@@ -84,7 +87,16 @@ private struct CaptionLyricStack: View {
     }
 
     private var currentLineLimit: Int {
-        presentation == .dynamicIsland ? 2 : 3
+        switch presentation {
+        case .dynamicIsland:
+            return condensed ? 2 : 3
+        case .lockScreen:
+            return 3
+        }
+    }
+
+    private var nextLineLimit: Int {
+        presentation == .dynamicIsland && condensed ? 1 : 2
     }
 }
 
@@ -100,36 +112,51 @@ struct CaptionIslandLiveActivity: Widget {
                     Label(captionLabel(), systemImage: "captions.bubble.fill")
                         .font(.caption.bold())
                         .foregroundStyle(.white)
+                        .lineLimit(1)
                 }
+                .contentMargins(.leading, 16)
+                .contentMargins(.top, 8)
                 DynamicIslandExpandedRegion(.trailing) {
                     if !context.state.source.isEmpty {
                         sourceBadge(context.state.source)
                     }
                 }
+                .contentMargins(.trailing, 14)
+                .contentMargins(.top, 8)
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        CaptionLyricStack(
-                            currentLine: displayedLine(context),
-                            nextLine: displayedNextLine(context),
-                            revision: context.state.revision,
-                            presentation: .dynamicIsland
+                    ViewThatFits(in: .vertical) {
+                        if !hasDenseExpandedLyrics(context) {
+                            expandedCaptionBody(
+                                context,
+                                showsVideoTitle: true,
+                                condensed: false
+                            )
+                        }
+                        expandedCaptionBody(
+                            context,
+                            showsVideoTitle: false,
+                            condensed: false
                         )
-                        Text(context.state.videoTitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        expandedCaptionBody(
+                            context,
+                            showsVideoTitle: false,
+                            condensed: true
+                        )
                     }
                     .frame(
                         maxWidth: .infinity,
-                        minHeight: 110,
+                        minHeight: expandedMinimumHeight(context),
                         alignment: .topLeading
                     )
-                    .padding(.top, 6)
+                    .padding(.top, 4)
+                    .padding(.bottom, 6)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(
                         accessibilityText(context)
                     )
                 }
+                .contentMargins([.leading, .trailing], 14)
+                .contentMargins(.bottom, 12)
             } compactLeading: {
                 if context.state.source.isEmpty {
                     Image(systemName: "captions.bubble.fill")
@@ -180,13 +207,15 @@ struct CaptionIslandLiveActivity: Widget {
                     currentLine: displayedLine(context),
                     nextLine: displayedNextLine(context),
                     revision: context.state.revision,
-                    presentation: .lockScreen
+                    presentation: .lockScreen,
+                    condensed: false
                 )
             }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
-        .padding(.horizontal, 8)
+        .padding(.leading, 14)
+        .padding(.trailing, 10)
         .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText(context))
@@ -201,17 +230,70 @@ struct CaptionIslandLiveActivity: Widget {
     private func displayedLine(
         _ context: ActivityViewContext<CICaptionActivityAttributes>
     ) -> String {
-        // Keep the most recently received lyric visible when iOS temporarily
-        // marks a local update stale. This is especially important on an
-        // Always-On display, where the system may defer visual refreshes.
+        // If a background-audio ActivityKit update is deferred, the stale date
+        // supplied with the previous revision lets WidgetKit promote its
+        // already-delivered next line at the cue boundary.
+        if context.isStale {
+            let next = context.state.nextLine?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !next.isEmpty { return next }
+        }
         return context.state.line
     }
 
     private func displayedNextLine(
         _ context: ActivityViewContext<CICaptionActivityAttributes>
     ) -> String {
-        context.state.nextLine?
+        if context.isStale { return "" }
+        return context.state.nextLine?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    @ViewBuilder
+    private func expandedCaptionBody(
+        _ context: ActivityViewContext<CICaptionActivityAttributes>,
+        showsVideoTitle: Bool,
+        condensed: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: condensed ? 5 : 8) {
+            CaptionLyricStack(
+                currentLine: displayedLine(context),
+                nextLine: displayedNextLine(context),
+                revision: context.state.revision,
+                presentation: .dynamicIsland,
+                condensed: condensed
+            )
+            if showsVideoTitle {
+                Text(context.state.videoTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func hasDenseExpandedLyrics(
+        _ context: ActivityViewContext<CICaptionActivityAttributes>
+    ) -> Bool {
+        let currentCount = displayedLine(context).count
+        let nextCount = displayedNextLine(context).count
+        return currentCount > 28 ||
+            nextCount > 32 ||
+            currentCount + nextCount > 48
+    }
+
+    private func expandedMinimumHeight(
+        _ context: ActivityViewContext<CICaptionActivityAttributes>
+    ) -> CGFloat {
+        let totalCharacters =
+            displayedLine(context).count + displayedNextLine(context).count
+        if totalCharacters > 72 { return 132 }
+        if totalCharacters > 36 { return 112 }
+        return displayedNextLine(context).isEmpty ? 88 : 100
     }
 
     private func accessibilityText(

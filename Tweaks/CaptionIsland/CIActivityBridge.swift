@@ -211,6 +211,23 @@ public final class CIActivityBridge: NSObject {
         }
     }
 
+    /// Process termination has a very small execution window. Bypass the
+    /// ordinary serialized command tail so queued lyric updates can't delay
+    /// the immediate ActivityKit dismissal request.
+    @objc(endAllImmediatelyForTermination)
+    public static func endAllImmediatelyForTermination() {
+        let completion = DispatchSemaphore(value: 0)
+        Task.detached(priority: .high) {
+            let activities =
+                Activity<CICaptionActivityAttributes>.activities
+            for activity in activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+            completion.signal()
+        }
+        _ = completion.wait(timeout: .now() + 0.8)
+    }
+
     fileprivate static func emit(level: String, message: String) {
         DispatchQueue.main.async {
             NotificationCenter.default.post(
@@ -497,11 +514,17 @@ private actor CIActivityManager {
             nextCueEndMS: nextLine.isEmpty ? nil : nextCueEndMS,
             revision: revision
         )
-        // A stale date marks content as outdated; it does not schedule a
-        // redraw. Per-cue stale dates can make a locally updated activity stale
-        // while iOS is already throttling Always-On rendering, so keep the
-        // activity active and let the next content revision replace it.
-        await updateState(state)
+        // Background-audio processes can have subsequent local ActivityKit
+        // updates deferred after the screen turns off. Pre-schedule one
+        // system-owned handoff so the already-delivered next line can replace
+        // the current line at its cue boundary even if the host update is
+        // temporarily budgeted. A later normal update clears the stale state.
+        let staleDate = nextLineHandoffDate(
+            position: position,
+            nextCueStartMS: nextCueStartMS,
+            isPlaying: isPlaying
+        )
+        await updateState(state, staleDate: staleDate)
         if shouldReportSource {
             CIActivityBridge.emit(
                 level: "info",
@@ -607,6 +630,20 @@ private actor CIActivityManager {
                     + "\(safeState.revision) (\(activity.activityState))"
             )
         }
+    }
+
+    private func nextLineHandoffDate(
+        position: Double,
+        nextCueStartMS: Int,
+        isPlaying: Bool
+    ) -> Date? {
+        guard isPlaying, position.isFinite, position >= 0,
+              nextCueStartMS > 0 else {
+            return nil
+        }
+        let delay = Double(nextCueStartMS) / 1_000.0 - position
+        guard delay >= 0.25, delay <= 120 else { return nil }
+        return Date().addingTimeInterval(delay)
     }
 
     private func boundedState(

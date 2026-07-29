@@ -1,4 +1,5 @@
 #import "CIBackgroundPlaybackMonitor.h"
+#import "CIActivityPresenter.h"
 #import "CICaptionCoordinator.h"
 #import "CIConstants.h"
 #import "CILogStore.h"
@@ -62,11 +63,13 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) BOOL hasPublishedNowPlayingRate;
 @property (nonatomic) double lastPublishedNowPlayingRate;
 @property (nonatomic) NSUInteger controllerLeaseGeneration;
+@property (nonatomic) NSTimeInterval lastPiPPreparationUptime;
 - (void)synchronizeNowPlayingAtTime:(NSTimeInterval)playbackTime
                            duration:(NSTimeInterval)duration
                        playbackRate:(double)playbackRate
                              uptime:(NSTimeInterval)uptime;
 - (void)scheduleControllerLeaseRelease;
+- (void)endActivityForLifecycleReason:(NSString *)reason;
 @end
 
 @implementation CIBackgroundPlaybackMonitor
@@ -91,6 +94,10 @@ static double CIQuantizedPlaybackRate(double rate) {
                       name:UIApplicationDidEnterBackgroundNotification object:nil];
         [center addObserver:self selector:@selector(applicationDidBecomeActive:)
                       name:UIApplicationDidBecomeActiveNotification object:nil];
+        [center addObserver:self selector:@selector(applicationWillTerminate:)
+                      name:UIApplicationWillTerminateNotification object:nil];
+        [center addObserver:self selector:@selector(sceneDidDisconnect:)
+                      name:UISceneDidDisconnectNotification object:nil];
     }
     return self;
 }
@@ -147,6 +154,42 @@ static double CIQuantizedPlaybackRate(double rate) {
     [self stopTimerWithReason:@"playback stopped"];
 }
 
+- (void)prepareForPictureInPictureWithPlayerController:
+    (YTPlayerViewController *)controller {
+    if (!controller) return;
+    if (!NSThread.isMainThread) {
+        YTPlayerViewController *retainedController = controller;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self prepareForPictureInPictureWithPlayerController:
+                retainedController];
+        });
+        return;
+    }
+
+    [self attachPlayerController:controller];
+    self.backgroundControllerLease = controller;
+    self.controllerLeaseGeneration++;
+    NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
+    BOOL shouldLog = self.lastPiPPreparationUptime == 0 ||
+        uptime - self.lastPiPPreparationUptime >= 1.0;
+    self.lastPiPPreparationUptime = uptime;
+
+    CICaptionCoordinator *coordinator =
+        CICaptionCoordinator.sharedCoordinator;
+    [coordinator prepareForExternalPlayback];
+    NSTimeInterval playbackTime = controller.currentVideoMediaTime;
+    if (isfinite(playbackTime) && playbackTime >= 0) {
+        [coordinator updatePlaybackTime:playbackTime];
+    }
+    [self startTimerIfNeeded];
+
+    if (shouldLog) {
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            message:@"Pinned the active YouTube player for Picture in Picture caption timing."];
+    }
+}
+
 - (void)applicationWillResignActive:(__unused NSNotification *)notification {
     // Acquire the lease before YouTube swaps its inline player graph for PiP.
     // The ordinary weak reference can otherwise disappear during that gap.
@@ -171,6 +214,35 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.applicationIsBackgrounded = NO;
     [self stopTimerWithReason:@"foreground callbacks resumed"];
     [self scheduleControllerLeaseRelease];
+}
+
+- (void)applicationWillTerminate:(__unused NSNotification *)notification {
+    [self endActivityForLifecycleReason:@"YouTube is terminating"];
+}
+
+- (void)sceneDidDisconnect:(NSNotification *)notification {
+    UIScene *disconnectedScene =
+        [notification.object isKindOfClass:UIScene.class]
+            ? notification.object : nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (scene != disconnectedScene &&
+            scene.activationState != UISceneActivationStateUnattached) {
+            return;
+        }
+    }
+    [self endActivityForLifecycleReason:
+        @"YouTube's last scene was closed from the app switcher"];
+}
+
+- (void)endActivityForLifecycleReason:(NSString *)reason {
+    [CILogStore.sharedStore recordLevel:CILogLevelInfo
+        category:@"Activity"
+        format:@"%@; requesting immediate Live Activity dismissal.", reason];
+    [self stopTimerWithReason:nil];
+    self.playerController = nil;
+    self.backgroundControllerLease = nil;
+    self.controllerLeaseGeneration++;
+    [CIActivityPresenter.sharedPresenter endForProcessTermination];
 }
 
 - (void)scheduleControllerLeaseRelease {

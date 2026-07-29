@@ -35,22 +35,33 @@ Live Activity。進入 PiP、背景或鎖定畫面時，仍會優先接受 YouTu
 callback，並另外以每 0.75 秒一次的低頻計時器作 fallback；兩條路徑最後都由
 Coordinator 去重，只有字幕 cue 改變時才更新 Activity。進入背景前會短暫保留目前
 播放器，避免 PiP 切換視圖時釋放時間來源；回到 App 完全 active 後才停止 fallback
-並釋放引用。
+並釋放引用。AVKit、YouTube 現代與舊版 PiP 啟動入口也會直接觸發同一套準備流程，
+避免只靠 `viewDidDisappear` 而錯過自動 PiP。
 
 背景同步也會在 YouTube 已提供的 Now Playing dictionary 上補正 elapsed time、
 duration 與 playback rate，不取代標題、封面或 Remote Command，因此鎖定畫面的時間
 可由系統持續推進，播放控制仍由 YouTube 處理。
 
 此機制需要 YouTube 的背景音訊仍在播放，讓 App 保有系統核准的背景執行時間。若
-App 被強制關閉或被系統完全暫停，畫面會停在最後狀態；本 Tweak 不會播放無聲音訊來
-規避系統限制。完全不依賴 App 程序的更新需要額外的 ActivityKit push server。
+使用者從多工畫面關閉 YouTube 時，`UISceneDidDisconnectNotification` 會略過排隊中
+的歌詞更新並立即要求 ActivityKit 移除所有 Caption Island Activity；
+`UIApplicationWillTerminateNotification` 則作為第二層清理。若 iOS 在沒有 scene
+callback 的極端狀況直接終止程序，要讓程序外部仍能可靠結束 Activity，仍需要額外的
+ActivityKit push server。本 Tweak 不會播放無聲音訊來規避系統限制。
 
 「螢幕關閉」時面板本身不會發光：iPhone 11 會在喚醒鎖定畫面時看到最新字幕；
 支援 Always-On Display 的機型則仍由 iOS 的 AOD 顯示規則決定刷新頻率。iOS 會節流
 類似逐句歌詞的本機 Live Activity 更新，而且 AOD 不播放 WidgetKit 動畫；因此本
-Tweak 會一次提供目前句與下一句並避免把每句標成 stale，但仍不能保證 AOD 逐句即時
-重畫。需要可靠高頻更新時，必須改用具備正確 APNs entitlement 的 ActivityKit push
-server，單靠 `NSSupportsLiveActivitiesFrequentUpdates` 不會放寬本機更新。
+Tweak 會一次提供目前句與下一句，並把下一句開始時間設為一次性的 stale handoff：
+若背景更新恰好被延後，WidgetKit 仍可把已送達的下一句提升成目前句。這只能涵蓋一個
+cue 邊界，仍不能保證 AOD 長時間逐句即時重畫。需要可靠高頻更新時，必須改用具備正確
+APNs entitlement 的 ActivityKit push server，單靠
+`NSSupportsLiveActivitiesFrequentUpdates` 不會放寬本機更新。
+
+expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並使用三階段
+`ViewThatFits`：一般內容顯示影片標題，長歌詞優先隱藏標題，極長歌詞再縮小字級與
+行數，避免最底部被系統上限裁切。leading／trailing／bottom region 都保留額外安全
+邊距，避免字幕 icon 貼近圓角或 TrueDepth 區域。
 
 ## 設定
 
