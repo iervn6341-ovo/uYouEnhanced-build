@@ -547,15 +547,11 @@ private actor CIActivityManager {
             staleDate: staleDate,
             relevanceScore: 1
         )
-        // Supplying an explicit timestamp (available before our iOS 17.5
-        // minimum) lets ActivityKit order rapid local cue changes correctly.
-        // No alert configuration is used, so lyric updates never light the
-        // display or interrupt the system Now Playing experience.
-        await activity.update(
-            content,
-            alertConfiguration: nil,
-            timestamp: Date()
-        )
+        // Use the baseline ActivityKit update API because some standalone
+        // Theos iOS 17.5 SDK distributions don't expose the newer timestamp
+        // overload in their Swift interface. Revision remains part of every
+        // state, so rapid cue changes are still distinct and ordered.
+        await activity.update(content)
         CIActivityBridge.emit(
             level: "debug",
             message: "Submitted Live Activity revision \(safeState.revision) "
