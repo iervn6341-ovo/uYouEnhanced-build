@@ -376,7 +376,11 @@ private actor CIActivityManager {
         do {
             activity = try Activity.request(
                 attributes: attributes,
-                content: ActivityContent(state: state, staleDate: nil),
+                content: ActivityContent(
+                    state: state,
+                    staleDate: nil,
+                    relevanceScore: 1
+                ),
                 pushType: nil
             )
             didLogMissingActivity = false
@@ -439,6 +443,7 @@ private actor CIActivityManager {
               cueStartMS != lastCueStartMS ||
               cueEndMS != lastCueEndMS ||
               isPlaying != lastPlaying else { return }
+        let shouldReportSource = lastLine.isEmpty || source != lastSource
         revision += 1
         lastLine = line
         lastSource = source
@@ -455,11 +460,21 @@ private actor CIActivityManager {
             cueEndMS: cueEndMS,
             revision: revision
         )
-        let remaining = max(5.0, min(300.0, Double(cueEndMS) / 1000.0 - position + 12.0))
+        let remaining = max(
+            2.0,
+            min(120.0, Double(cueEndMS) / 1000.0 - position + 2.0)
+        )
         await updateState(
             state,
             staleDate: Date().addingTimeInterval(remaining)
         )
+        if shouldReportSource {
+            CIActivityBridge.emit(
+                level: "info",
+                message: "Live Activity is displaying source "
+                    + (source.isEmpty ? "unlabeled captions" : source)
+            )
+        }
     }
 
     func showGap(title: String) async {
@@ -527,8 +542,24 @@ private actor CIActivityManager {
     ) async {
         guard let activity else { return }
         let safeState = boundedState(state, attributes: activity.attributes)
+        let content = ActivityContent(
+            state: safeState,
+            staleDate: staleDate,
+            relevanceScore: 1
+        )
+        // Supplying an explicit timestamp (available before our iOS 17.5
+        // minimum) lets ActivityKit order rapid local cue changes correctly.
+        // No alert configuration is used, so lyric updates never light the
+        // display or interrupt the system Now Playing experience.
         await activity.update(
-            ActivityContent(state: safeState, staleDate: staleDate)
+            content,
+            alertConfiguration: nil,
+            timestamp: Date()
+        )
+        CIActivityBridge.emit(
+            level: "debug",
+            message: "Submitted Live Activity revision \(safeState.revision) "
+                + "(\(safeState.source.isEmpty ? "gap" : safeState.source))"
         )
     }
 

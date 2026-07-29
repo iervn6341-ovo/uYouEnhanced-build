@@ -92,6 +92,14 @@ int main(void) {
         CIAssert([titleOnlyItems[@"track_name"] isEqualToString:@"Precious Star Dreamer"] &&
             titleOnlyItems[@"artist_name"] == nil,
             @"title-only lookup must not send a YouTube channel as artist_name");
+        NSURLComponents *titleOnlyKeywordComponents = [NSURLComponents componentsWithURL:
+            [provider searchURLForTitle:@"Precious Star Dreamer" artist:@"" broad:YES]
+            resolvingAgainstBaseURL:NO];
+        CIAssert(titleOnlyKeywordComponents.queryItems.count == 1 &&
+            [titleOnlyKeywordComponents.queryItems.firstObject.name isEqualToString:@"q"] &&
+            [titleOnlyKeywordComponents.queryItems.firstObject.value
+                isEqualToString:@"Precious Star Dreamer"],
+            @"title-only keyword lookup should match LRCLIB's web search mode");
 
         error = nil;
         NSArray *titleOnlyCandidates = @[

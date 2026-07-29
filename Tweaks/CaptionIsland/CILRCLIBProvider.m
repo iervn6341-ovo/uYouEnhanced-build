@@ -632,7 +632,12 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             completion:completion];
         return;
     }
-    [self startSearchForTitle:cleanTitle artist:cleanArtist duration:duration broad:NO
+    // With no trustworthy artist metadata, mirror LRCLIB's keyword search.
+    // This is the same query mode used by its web search and exposes records
+    // that a track_name-only response may omit from its 20-result limit.
+    BOOL titleOnlySearch = cleanArtist.length == 0;
+    [self startSearchForTitle:cleanTitle artist:cleanArtist duration:duration
+        broad:titleOnlySearch
         token:token completion:completion];
 }
 

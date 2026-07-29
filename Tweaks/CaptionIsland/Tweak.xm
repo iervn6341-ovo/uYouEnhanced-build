@@ -15,6 +15,7 @@
 static const void *CISuppressedStateKey = &CISuppressedStateKey;
 static const void *CIActivePlayerKey = &CIActivePlayerKey;
 static __weak YTPlayerViewController *CIActivePlayerController;
+static NSUInteger CIPlaybackLifecycleGeneration;
 
 void CIShowToast(NSString *text) {
     if (text.length == 0) return;
@@ -121,6 +122,7 @@ static void CIResolveActivatedPlayback(YTPlayerViewController *controller,
 }
 
 static void CIActivatePlayback(YTPlayerViewController *controller, id playbackData) {
+    CIPlaybackLifecycleGeneration++;
     if (CIActivePlayerController && CIActivePlayerController != controller) {
         objc_setAssociatedObject(CIActivePlayerController, CIActivePlayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
@@ -152,6 +154,7 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     objc_setAssociatedObject(controller, CIActivePlayerKey, nil,
                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (CIActivePlayerController == controller) CIActivePlayerController = nil;
+    CIPlaybackLifecycleGeneration++;
     [CIBackgroundPlaybackMonitor.sharedMonitor detachPlayerController:controller];
     [CICaptionCoordinator.sharedCoordinator stop];
 }
@@ -201,9 +204,30 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 - (void)playbackController:(id)playbackController
     didFinishPlaybackAndWillInternallyTransitionToNextPlayback:(BOOL)willTransition {
     %orig;
-    // Keep the shared Live Activity alive while YouTube advances its queue in
-    // the background. A true stop ends it immediately.
-    if (!willTransition) CIStopPlayback(self);
+    // Ending a Live Activity prevents a background autoplay item from starting
+    // a replacement, because ActivityKit only allows ordinary starts while the
+    // host is foregrounded. Keep this activity reusable across the queue.
+    NSUInteger finishGeneration = ++CIPlaybackLifecycleGeneration;
+    [CICaptionCoordinator.sharedCoordinator playbackDidFinish];
+    if (willTransition) return;
+
+    // A genuinely finished session is cleaned up after a grace period. Any
+    // replay/new activation invalidates this block, while controller teardown
+    // still ends the activity immediately.
+    NSString *finishedVideoID = self.currentVideoID ?: @"";
+    __weak YTPlayerViewController *weakController = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(90 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        YTPlayerViewController *controller = weakController;
+        if (!controller ||
+            finishGeneration != CIPlaybackLifecycleGeneration ||
+            ![objc_getAssociatedObject(controller, CIActivePlayerKey) boolValue] ||
+            ![controller.currentVideoID isEqualToString:finishedVideoID]) return;
+        NSTimeInterval position = controller.currentVideoMediaTime;
+        NSTimeInterval duration = controller.currentVideoTotalMediaTime;
+        if (duration > 0 && position >= 0 && position + 2.0 < duration) return;
+        CIStopPlayback(controller);
+    });
 }
 
 %end

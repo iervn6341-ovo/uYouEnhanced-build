@@ -3,6 +3,7 @@
 #import "CICaptionParser.h"
 #import "CIConstants.h"
 #import "CILRCLIBProvider.h"
+#import "CILogStore.h"
 #import "CILyricsAligner.h"
 #import "CITextUtilities.h"
 #import "CIToastPresenter.h"
@@ -30,6 +31,17 @@ typedef NS_ENUM(NSInteger, CILoadStage) {
 // sentinel forces the first post-load render (including an intro gap) to reach
 // ActivityKit instead of leaving its loading state on screen.
 static const NSInteger CIUnrenderedCueIndex = NSIntegerMin;
+
+static void CIPipelineLog(CILogLevel level, NSString *format, ...) {
+    if (format.length == 0) return;
+    va_list arguments;
+    va_start(arguments, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:arguments];
+    va_end(arguments);
+    [CILogStore.sharedStore recordLevel:level
+                               category:@"Pipeline"
+                                message:message ?: @""];
+}
 
 static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     NSArray<CICaptionTrack *> *newTracks,
@@ -311,7 +323,9 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         return;
     }
     self.lastLRCLIBQueryKey = queryKey;
-    CILog(@"Searching LRCLIB for title \"%@\" (video %.1fs)", songTitle, context.duration);
+    CIPipelineLog(CILogLevelInfo,
+        @"Searching LRCLIB for title \"%@\" only (video %.1fs)",
+        songTitle, context.duration);
     __weak typeof(self) weakSelf = self;
     [self.lyricsProvider fetchLyricsForTitle:songTitle artist:@"" duration:context.duration
                                   completion:^(CILRCLIBResult *result, NSError *error) {
@@ -319,15 +333,17 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
             typeof(self) self = weakSelf;
             if (!self || generation != self.generation) return;
             if (!result) {
-                CILog(@"LRCLIB lookup failed: %@", error.localizedDescription);
+                CIPipelineLog(CILogLevelInfo, @"LRCLIB lookup returned no match: %@",
+                    error.localizedDescription ?: @"unknown error");
                 [self loadManualCCForContext:self.context ?: context generation:generation
                                     cacheKey:cacheKey ASRFallbackCues:@[]];
                 return;
             }
-            CILog(@"LRCLIB selected #%ld %@ — %@ (%.1fs, delta %.1fs, %@)",
+            CIPipelineLog(CILogLevelInfo,
+                @"Selected source LRCLIB %@: #%ld %@ — %@ (%.1fs, delta %.1fs)",
+                result.syncedCues.count > 0 ? @"Synced" : @"Plain",
                 (long)result.recordID, result.artistName, result.trackName,
-                result.trackDuration, result.durationDifference,
-                result.syncedCues.count > 0 ? @"synced" : @"plain");
+                result.trackDuration, result.durationDifference);
             if (result.syncedCues.count > 0) {
                 [self installCues:result.syncedCues source:CICaptionSourceLRCLIBSynced
                       generation:generation cacheKey:cacheKey];
@@ -457,7 +473,8 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         }
         return;
     }
-    CILog(@"Loading manual caption %@ for %@", manual.languageCode, context.videoID);
+    CIPipelineLog(CILogLevelInfo, @"Trying source YouTube CC (%@) for %@",
+        manual.languageCode, context.videoID);
     [self fetchTrack:manual generation:generation completion:^(NSArray<CICaptionCue *> *cues) {
         if (cues.count > 0) {
             [self installCues:cues source:CICaptionSourceYouTubeManual
@@ -485,19 +502,22 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     CICaptionTrack *ASR = [CIYouTubeInspector automaticTrackInContext:context
                                                     preferredLanguage:CIPreferredLanguage()];
     if (!ASR) {
-        CILog(@"No source ASR track found among %lu YouTube caption track(s) for %@",
+        CIPipelineLog(CILogLevelInfo,
+            @"No source YouTube ASR track found among %lu caption track(s) for %@",
             (unsigned long)context.captionTracks.count, context.videoID);
         [self finishWithoutCaptionsForGeneration:generation];
         return;
     }
-    CILog(@"Loading ASR fallback %@ for %@", ASR.languageCode, context.videoID);
+    CIPipelineLog(CILogLevelInfo, @"Trying source YouTube ASR (%@) for %@",
+        ASR.languageCode, context.videoID);
     [self fetchTrack:ASR generation:generation completion:^(NSArray<CICaptionCue *> *cues) {
         if (cues.count > 0) {
-            CILog(@"Loaded %lu ASR cue(s) for %@",
+            CIPipelineLog(CILogLevelInfo, @"Loaded %lu YouTube ASR cue(s) for %@",
                 (unsigned long)cues.count, context.videoID);
             [self installCues:cues source:CICaptionSourceYouTubeASR generation:generation cacheKey:cacheKey];
         } else {
-            CILog(@"ASR track produced no usable cues for %@", context.videoID);
+            CIPipelineLog(CILogLevelInfo,
+                @"YouTube ASR produced no usable cues for %@", context.videoID);
             [self finishWithoutCaptionsForGeneration:generation];
         }
     }];
@@ -620,7 +640,8 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.displayedCueIndex = CIUnrenderedCueIndex;
     CICaptionCue *firstCue = self.cues.firstObject;
     CICaptionCue *lastCue = self.cues.lastObject;
-    CILog(@"Installed %@ timeline with %lu cue(s), %.1fs–%.1fs (playback %.1fs)",
+    CIPipelineLog(CILogLevelInfo,
+        @"Installed source %@ with %lu cue(s), timeline %.1fs–%.1fs (playback %.1fs)",
         CICaptionSourceLabel(source), (unsigned long)self.cues.count,
         firstCue.startTime, lastCue.endTime, self.latestPlaybackTime);
     BOOL cacheable = source == CICaptionSourceYouTubeManual || source == CICaptionSourceYouTubeASR;
@@ -742,6 +763,16 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)playerViewDidDisappear {
     dispatch_async(self.workQueue, ^{
         self.playerVisible = NO;
+    });
+}
+
+- (void)playbackDidFinish {
+    dispatch_async(self.workQueue, ^{
+        self.lastSubmittedTime = -DBL_MAX;
+        self.displayedCueIndex = NSNotFound;
+        if (self.context && CIPreferenceBool(CIEnabledKey, YES)) {
+            [self.presenter hide];
+        }
     });
 }
 

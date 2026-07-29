@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)activateContext:(CIVideoContext *)context;
 - (void)updatePlaybackTime:(NSTimeInterval)time;
 - (void)setPlaybackSuppressed:(BOOL)suppressed;
+- (void)playbackDidFinish;
 - (void)playerViewDidAppear;
 - (void)playerViewDidDisappear;
 - (void)reloadPreferences;

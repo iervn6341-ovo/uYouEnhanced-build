@@ -3,6 +3,7 @@
 #import "CIConstants.h"
 #import "CILogStore.h"
 #import "CIPlaybackState.h"
+#import "CIYouTubeInspector.h"
 #import <UIKit/UIKit.h>
 #import <YouTubeHeader/YTPlayerViewController.h>
 #import <math.h>
@@ -179,15 +180,6 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
 
     NSString *videoID = controller.currentVideoID ?: @"";
     if (videoID.length == 0) return;
-    if (self.lastVideoID.length == 0) {
-        [self resetClockState];
-        self.lastVideoID = videoID;
-    }
-    // Wait for didActivateVideo before moving the clock to a new item. This
-    // prevents a brief autoplay transition from rendering the previous
-    // video's lyrics against the next video's timestamp.
-    if (![videoID isEqualToString:self.lastVideoID]) return;
-
     BOOL suppressed = CIPlayerControllerIsAdvertising(controller);
     if (!self.hasSuppressionState || self.lastSuppressed != suppressed) {
         self.hasSuppressionState = YES;
@@ -195,6 +187,24 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
         [CICaptionCoordinator.sharedCoordinator setPlaybackSuppressed:suppressed];
     }
     if (suppressed) return;
+
+    if (self.lastVideoID.length == 0) {
+        [self resetClockState];
+        self.lastVideoID = videoID;
+    }
+    if (![videoID isEqualToString:self.lastVideoID]) {
+        // Some YouTube versions omit didActivateVideo while autoplay advances
+        // with the screen locked. Recover the new context from the live player
+        // instead of freezing the previous video's timeline.
+        CIVideoContext *context =
+            [CIYouTubeInspector contextFromPlaybackData:nil playerController:controller];
+        if (![context.videoID isEqualToString:videoID]) return;
+        [self resetClockState];
+        [CICaptionCoordinator.sharedCoordinator activateContext:context];
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            format:@"Detected background transition to video %@.", videoID];
+    }
 
     NSTimeInterval playbackTime = controller.currentVideoMediaTime;
     if (!isfinite(playbackTime) || playbackTime < 0) return;
@@ -209,7 +219,7 @@ static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
 
     if (clockAdvanced && !self.didLogClockProgress) {
         self.didLogClockProgress = YES;
-        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Background"
             message:@"YouTube playback clock is advancing in the background."];
     }
