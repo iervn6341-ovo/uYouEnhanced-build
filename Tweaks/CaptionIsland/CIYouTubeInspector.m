@@ -87,6 +87,30 @@ static BOOL CITrackIsTranslated(CICaptionTrack *track) {
     return NO;
 }
 
+static NSURL *CITrackURLWithFormat(CICaptionTrack *track, NSString *format) {
+    NSURLComponents *components = [NSURLComponents componentsWithString:track.baseURL];
+    if (!components) return nil;
+    NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray array];
+    for (NSURLQueryItem *item in components.queryItems ?: @[]) {
+        NSString *name = item.name.lowercaseString;
+        // Raw source tracks do not contain tlang. Reject translated wrappers
+        // outright so their language label can never be mistaken for source CC.
+        if ([name isEqualToString:@"tlang"]) return nil;
+        if (format.length > 0 && [name isEqualToString:@"fmt"]) continue;
+        [items addObject:item];
+    }
+    if (format.length == 0) {
+        // Avoid reserializing signed query values. Even equivalent percent
+        // encoding can invalidate a URL whose exact bytes were signed.
+        return [NSURL URLWithString:track.baseURL];
+    }
+    if (format.length > 0) {
+        [items addObject:[NSURLQueryItem queryItemWithName:@"fmt" value:format]];
+    }
+    components.queryItems = items;
+    return components.URL;
+}
+
 static NSArray<CICaptionTrack *> *CITracksFromRawTracks(id rawTracks) {
     if (![rawTracks isKindOfClass:NSArray.class]) return @[];
     NSMutableArray<CICaptionTrack *> *tracks =
@@ -186,20 +210,35 @@ static NSArray<CICaptionTrack *> *CITracksFromRawTracks(id rawTracks) {
 }
 
 + (NSURL *)requestURLForTrack:(CICaptionTrack *)track {
-    NSURLComponents *components = [NSURLComponents componentsWithString:track.baseURL];
-    if (!components) return nil;
-    NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray array];
-    for (NSURLQueryItem *item in components.queryItems ?: @[]) {
-        NSString *name = item.name.lowercaseString;
-        // Raw source tracks do not contain tlang. Reject translated wrappers
-        // outright so their language label can never be mistaken for source CC.
-        if ([name isEqualToString:@"tlang"]) return nil;
-        if ([name isEqualToString:@"fmt"]) continue;
-        [items addObject:item];
+    return CITrackURLWithFormat(track, @"json3");
+}
+
++ (NSArray<NSURL *> *)requestURLsForTrack:(CICaptionTrack *)track {
+    NSMutableArray<NSURL *> *URLs = [NSMutableArray arrayWithCapacity:3];
+    NSMutableSet<NSString *> *seen = [NSMutableSet setWithCapacity:3];
+    NSURL *originalURL = CITrackURLWithFormat(track, nil);
+    NSURLComponents *originalComponents = originalURL
+        ? [NSURLComponents componentsWithURL:originalURL resolvingAgainstBaseURL:NO] : nil;
+    NSString *originalFormat = @"";
+    for (NSURLQueryItem *item in originalComponents.queryItems) {
+        if ([item.name.lowercaseString isEqualToString:@"fmt"]) {
+            originalFormat = item.value.lowercaseString ?: @"";
+            break;
+        }
     }
-    [items addObject:[NSURLQueryItem queryItemWithName:@"fmt" value:@"json3"]];
-    components.queryItems = items;
-    return components.URL;
+    // Prefer YouTube's signed URL exactly as supplied. Some app/player
+    // versions return an empty body after fmt is replaced, even though their
+    // original XML/SRV3 endpoint remains valid.
+    for (NSString *format in @[@"", @"json3", @"vtt"]) {
+        if (format.length > 0 && [format isEqualToString:originalFormat]) continue;
+        NSURL *URL = format.length == 0
+            ? originalURL : CITrackURLWithFormat(track, format);
+        NSString *key = URL.absoluteString ?: @"";
+        if (key.length == 0 || [seen containsObject:key]) continue;
+        [seen addObject:key];
+        [URLs addObject:URL];
+    }
+    return URLs.copy;
 }
 
 @end

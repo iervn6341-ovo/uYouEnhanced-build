@@ -77,6 +77,14 @@ int main(void) {
         NSURL *requestURL = [CIYouTubeInspector requestURLForTrack:manual];
         CIAssert([requestURL.absoluteString containsString:@"fmt=json3"],
             @"caption requests should explicitly ask for JSON3");
+        NSArray<NSURL *> *requestURLs =
+            [CIYouTubeInspector requestURLsForTrack:manual];
+        CIAssert(requestURLs.count == 3 &&
+            [requestURLs.firstObject.absoluteString isEqualToString:manualURL.absoluteString],
+            @"caption fallback should try YouTube's unmodified signed URL first");
+        CIAssert([requestURLs[1].absoluteString containsString:@"fmt=json3"] &&
+            [requestURLs[2].absoluteString containsString:@"fmt=vtt"],
+            @"caption fallback should retry JSON3 and WebVTT formats");
 
         CICaptionTrack *translated = [CICaptionTrack new];
         translated.baseURL =
@@ -88,6 +96,8 @@ int main(void) {
             @"YouTube auto-translated tracks must never count as manual CC");
         CIAssert([CIYouTubeInspector requestURLForTrack:translated] == nil,
             @"translated timedtext URLs should be rejected before download");
+        CIAssert([CIYouTubeInspector requestURLsForTrack:translated].count == 0,
+            @"translated timedtext URLs must not enter the format fallback");
 
         NSLog(@"YouTube inspector smoke passed");
     }

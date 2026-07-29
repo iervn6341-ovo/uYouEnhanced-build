@@ -11,6 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable CICaptionTrack *)automaticTrackInContext:(CIVideoContext *)context
                                    preferredLanguage:(NSString *)preferredLanguage;
 + (nullable NSURL *)requestURLForTrack:(CICaptionTrack *)track;
++ (NSArray<NSURL *> *)requestURLsForTrack:(CICaptionTrack *)track;
 @end
 
 NS_ASSUME_NONNULL_END

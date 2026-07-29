@@ -49,6 +49,8 @@ swift test --package-path uYouEnhanced-build/Tweaks/CaptionIslandTests
 `ObjC/LRCLIBProviderSmoke.m` 會直接連結正式的 `CILRCLIBProvider.m`，以虛構搜尋結果驗證：
 
 - 時長相近時優先選擇有效 `syncedLyrics`；
+- 只使用清理後的影片標題查詢時，不送出 YouTube 頻道名稱，並依時長選擇候選；
+- 移除影片標題內所有 `[…]`／`【…】` 區塊及已知版本、歌詞、字幕 suffix；
 - 同步版本的時長明顯較差時，保留最接近的 `plainLyrics`；
 - 排除錯歌手、未知時長、過短、裁切後不完整及 placeholder-only 的候選；
 - LRC 會轉成可跟隨 media time 的 cue；
@@ -56,3 +58,6 @@ swift test --package-path uYouEnhanced-build/Tweaks/CaptionIslandTests
 - instrumental、低可信候選與錯誤 JSON root 都會安全拒絕。
 
 測試不會呼叫網路或寫入歌詞快取。
+
+YouTube inspector smoke test 也會驗證字幕 URL 依序採用原始簽名 URL、JSON3、
+WebVTT fallback，並阻止自動翻譯 `tlang` URL 進入下載流程。

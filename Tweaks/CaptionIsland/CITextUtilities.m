@@ -99,23 +99,46 @@ double CITextSimilarity(NSString *lhs, NSString *rhs) {
 
 static NSString *CIRemoveVideoDecorations(NSString *value) {
     if (value.length == 0) return @"";
+    // Square-bracket blocks are explicitly treated as YouTube decorations.
+    // Unknown separators and ordinary parentheses remain part of the title so
+    // a real song name is not shortened merely because it is styled.
     NSArray<NSString *> *patterns = @[
-        @"(?i)\\s*[\\[(（【].*?(official|music video|mv|lyrics?|audio|visualizer|hd|4k).*?[\\])）】]",
-        @"(?i)\\s*[-|｜]\\s*(official|music video|lyrics?|audio|visualizer).*$"
+        // Remove all ASCII/full-width square-bracket and lenticular-bracket
+        // blocks, not just leading ones: [HD], ［字幕］, 【ウマ娘】, etc.
+        @"\\[[^\\]\\r\\n]*\\]|［[^］\\r\\n]*］|【[^】\\r\\n]*】",
+        // Remove a trailing bracket only when it contains a known video,
+        // version, lyric, subtitle, or transliteration marker.
+        @"(?i)\\s*[\\[(（【][^\\])）】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\])）】\\r\\n]*[\\])）】]\\s*$",
+        // A pipe normally separates the actual title from upload metadata.
+        // Unknown pipe suffixes are retained instead of being guessed away.
+        @"(?i)\\s*[|｜]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
+        // The same metadata is sometimes introduced with a dash.
+        @"(?i)\\s*[-–—]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$"
     ];
     NSString *result = value;
     for (NSString *pattern in patterns) {
         NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
         result = [regex stringByReplacingMatchesInString:result options:0 range:NSMakeRange(0, result.length) withTemplate:@""];
+        result = CICleanCaptionText(result);
     }
+    NSCharacterSet *edgeSeparators = [NSCharacterSet characterSetWithCharactersInString:@" \t-|｜–—:："];
+    result = [result stringByTrimmingCharactersInSet:edgeSeparators];
     return CICleanCaptionText(result);
+}
+
+NSString *CISongTitleFromVideoTitle(NSString *videoTitle) {
+    NSString *original = CICleanCaptionText(videoTitle ?: @"");
+    NSString *cleaned = CIRemoveVideoDecorations(original);
+    // Regex cleanup is heuristic. Never turn a usable YouTube title into an
+    // empty LRCLIB query when the entire title was a decorative-looking block.
+    return cleaned.length > 0 ? cleaned : original;
 }
 
 void CISplitSongMetadata(NSString *videoTitle,
                          NSString *videoAuthor,
                          NSString **songTitle,
                          NSString **artist) {
-    NSString *title = CIRemoveVideoDecorations(videoTitle ?: @"");
+    NSString *title = CISongTitleFromVideoTitle(videoTitle);
     NSString *author = CICleanCaptionText(videoAuthor ?: @"");
     NSRegularExpression *channelSuffix = [NSRegularExpression
         regularExpressionWithPattern:@"(?i)(?:\\s*[-–—]\\s*topic|\\s*vevo|\\s+official(?:\\s+artist)?(?:\\s+channel)?)$"

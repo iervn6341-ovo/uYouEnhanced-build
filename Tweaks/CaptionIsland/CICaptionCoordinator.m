@@ -69,6 +69,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 @property (nonatomic, copy) NSString *activePlainLyrics;
 @property (nonatomic, copy) NSString *lastLRCLIBQueryKey;
 @property (nonatomic, copy) NSString *lastNoResultVideoID;
+@property (nonatomic) NSUInteger captionRequestToken;
 @property (nonatomic) NSTimeInterval contextActivatedAt;
 @property (nonatomic, strong) id<CICaptionPresenting> presenter;
 - (void)ensurePresenterForCurrentContext;
@@ -80,6 +81,12 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
               cacheKey:(NSString *)cacheKey
     manualFallbackCues:(NSArray<CICaptionCue *> *)manualFallbackCues
        ASRFallbackCues:(NSArray<CICaptionCue *> *)ASRFallbackCues;
+- (void)fetchTrack:(CICaptionTrack *)track
+        requestURLs:(NSArray<NSURL *> *)requestURLs
+              index:(NSUInteger)index
+              token:(NSUInteger)token
+         generation:(NSUInteger)generation
+         completion:(void (^)(NSArray<CICaptionCue *> *cues))completion;
 @end
 
 @implementation CICaptionCoordinator
@@ -160,11 +167,9 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 
 - (NSString *)LRCLIBQueryKeyForContext:(CIVideoContext *)context {
     if (!context) return @"";
-    NSString *title;
-    NSString *artist;
-    CISplitSongMetadata(context.title, context.author, &title, &artist);
+    NSString *title = CISongTitleFromVideoTitle(context.title);
     if (title.length == 0) return @"";
-    return [self LRCLIBQueryKeyForTitle:title artist:artist duration:context.duration];
+    return [self LRCLIBQueryKeyForTitle:title artist:@"" duration:context.duration];
 }
 
 - (void)activateContext:(CIVideoContext *)context {
@@ -292,15 +297,13 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         return;
     }
 
-    NSString *songTitle;
-    NSString *artist;
-    CISplitSongMetadata(context.title, context.author, &songTitle, &artist);
+    NSString *songTitle = CISongTitleFromVideoTitle(context.title);
     if (songTitle.length == 0) {
         [self loadManualCCForContext:context generation:generation cacheKey:cacheKey
                    ASRFallbackCues:@[]];
         return;
     }
-    NSString *queryKey = [self LRCLIBQueryKeyForTitle:songTitle artist:artist
+    NSString *queryKey = [self LRCLIBQueryKeyForTitle:songTitle artist:@""
                                              duration:context.duration];
     if ([self.lastLRCLIBQueryKey isEqualToString:queryKey]) {
         [self loadManualCCForContext:context generation:generation cacheKey:cacheKey
@@ -308,9 +311,9 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         return;
     }
     self.lastLRCLIBQueryKey = queryKey;
-    CILog(@"Searching LRCLIB for %@ — %@ (video %.1fs)", artist, songTitle, context.duration);
+    CILog(@"Searching LRCLIB for title \"%@\" (video %.1fs)", songTitle, context.duration);
     __weak typeof(self) weakSelf = self;
-    [self.lyricsProvider fetchLyricsForTitle:songTitle artist:artist duration:context.duration
+    [self.lyricsProvider fetchLyricsForTitle:songTitle artist:@"" duration:context.duration
                                   completion:^(CILRCLIBResult *result, NSError *error) {
         dispatch_async(weakSelf.workQueue, ^{
             typeof(self) self = weakSelf;
@@ -481,12 +484,20 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     }
     CICaptionTrack *ASR = [CIYouTubeInspector automaticTrackInContext:context
                                                     preferredLanguage:CIPreferredLanguage()];
-    if (!ASR) { [self finishWithoutCaptionsForGeneration:generation]; return; }
+    if (!ASR) {
+        CILog(@"No source ASR track found among %lu YouTube caption track(s) for %@",
+            (unsigned long)context.captionTracks.count, context.videoID);
+        [self finishWithoutCaptionsForGeneration:generation];
+        return;
+    }
     CILog(@"Loading ASR fallback %@ for %@", ASR.languageCode, context.videoID);
     [self fetchTrack:ASR generation:generation completion:^(NSArray<CICaptionCue *> *cues) {
         if (cues.count > 0) {
+            CILog(@"Loaded %lu ASR cue(s) for %@",
+                (unsigned long)cues.count, context.videoID);
             [self installCues:cues source:CICaptionSourceYouTubeASR generation:generation cacheKey:cacheKey];
         } else {
+            CILog(@"ASR track produced no usable cues for %@", context.videoID);
             [self finishWithoutCaptionsForGeneration:generation];
         }
     }];
@@ -497,25 +508,103 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
          completion:(void (^)(NSArray<CICaptionCue *> *cues))completion {
     if (generation != self.generation) return;
     [self.captionTask cancel];
-    NSURL *URL = [CIYouTubeInspector requestURLForTrack:track];
-    if (!URL) { completion(@[]); return; }
+    self.captionRequestToken++;
+    NSUInteger token = self.captionRequestToken;
+    NSArray<NSURL *> *requestURLs = [CIYouTubeInspector requestURLsForTrack:track];
+    if (requestURLs.count == 0) {
+        CILog(@"Caption track has no usable source URL (%@, %@)",
+            track.languageCode, track.isAutomatic ? @"ASR" : @"manual");
+        completion(@[]);
+        return;
+    }
+    [self fetchTrack:track requestURLs:requestURLs index:0 token:token
+          generation:generation completion:completion];
+}
+
+- (void)fetchTrack:(CICaptionTrack *)track
+        requestURLs:(NSArray<NSURL *> *)requestURLs
+              index:(NSUInteger)index
+              token:(NSUInteger)token
+         generation:(NSUInteger)generation
+         completion:(void (^)(NSArray<CICaptionCue *> *cues))completion {
+    if (generation != self.generation || token != self.captionRequestToken) return;
+    if (index >= requestURLs.count) {
+        CILog(@"Caption formats exhausted without usable cues (%@, %@)",
+            track.languageCode, track.isAutomatic ? @"ASR" : @"manual");
+        completion(@[]);
+        return;
+    }
+    NSURL *URL = requestURLs[index];
+    NSURLComponents *components = [NSURLComponents componentsWithURL:URL
+                                             resolvingAgainstBaseURL:NO];
+    NSString *format = @"default";
+    for (NSURLQueryItem *item in components.queryItems) {
+        if ([item.name.lowercaseString isEqualToString:@"fmt"] && item.value.length > 0) {
+            format = item.value;
+            break;
+        }
+    }
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:URL
+        cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:6.0];
+    [request setValue:@"application/json, text/vtt, text/xml, */*"
+        forHTTPHeaderField:@"Accept"];
     __weak typeof(self) weakSelf = self;
-    self.captionTask = [self.captionSession dataTaskWithURL:URL completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    __block NSURLSessionDataTask *task;
+    task = [self.captionSession dataTaskWithRequest:request
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         dispatch_async(weakSelf.workQueue, ^{
             typeof(self) self = weakSelf;
-            if (!self || generation != self.generation) return;
-            if (error) { CILog(@"Caption download failed: %@", error.localizedDescription); completion(@[]); return; }
+            if (!self || generation != self.generation ||
+                token != self.captionRequestToken || self.captionTask != task) return;
+            self.captionTask = nil;
+            if (error) {
+                CILog(@"Caption %@ request failed (%@): %@",
+                    format, track.isAutomatic ? @"ASR" : @"manual",
+                    error.localizedDescription);
+                [self fetchTrack:track requestURLs:requestURLs index:index + 1
+                    token:token generation:generation completion:completion];
+                return;
+            }
             if ([response isKindOfClass:NSHTTPURLResponse.class]) {
                 NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
-                if (status < 200 || status >= 300) { completion(@[]); return; }
+                if (status < 200 || status >= 300) {
+                    CILog(@"Caption %@ request returned HTTP %ld (%@)",
+                        format, (long)status, track.isAutomatic ? @"ASR" : @"manual");
+                    if (status == 429) {
+                        completion(@[]);
+                    } else {
+                        [self fetchTrack:track requestURLs:requestURLs index:index + 1
+                            token:token generation:generation completion:completion];
+                    }
+                    return;
+                }
             }
-            if (data.length > 8 * 1024 * 1024) { completion(@[]); return; }
+            if (data.length == 0) {
+                CILog(@"Caption %@ response was empty (%@)",
+                    format, track.isAutomatic ? @"ASR" : @"manual");
+                [self fetchTrack:track requestURLs:requestURLs index:index + 1
+                    token:token generation:generation completion:completion];
+                return;
+            }
+            if (data.length > 8 * 1024 * 1024) {
+                CILog(@"Caption response exceeded the 8 MiB safety limit");
+                completion(@[]);
+                return;
+            }
             NSString *MIMEType = [(NSHTTPURLResponse *)response MIMEType];
             NSArray *cues = [CICaptionParser parseYouTubeData:data MIMEType:MIMEType];
-            completion(cues ?: @[]);
+            if (cues.count > 0) {
+                completion(cues);
+                return;
+            }
+            CILog(@"Caption %@ response contained no parseable cues (%lu bytes, MIME %@)",
+                format, (unsigned long)data.length, MIMEType ?: @"unknown");
+            [self fetchTrack:track requestURLs:requestURLs index:index + 1
+                token:token generation:generation completion:completion];
         });
     }];
-    [self.captionTask resume];
+    self.captionTask = task;
+    [task resume];
 }
 
 - (void)installCues:(NSArray<CICaptionCue *> *)cues
@@ -529,6 +618,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.loadStage = CILoadStageFinished;
     self.source = source;
     self.displayedCueIndex = CIUnrenderedCueIndex;
+    CICaptionCue *firstCue = self.cues.firstObject;
+    CICaptionCue *lastCue = self.cues.lastObject;
+    CILog(@"Installed %@ timeline with %lu cue(s), %.1fs–%.1fs (playback %.1fs)",
+        CICaptionSourceLabel(source), (unsigned long)self.cues.count,
+        firstCue.startTime, lastCue.endTime, self.latestPlaybackTime);
     BOOL cacheable = source == CICaptionSourceYouTubeManual || source == CICaptionSourceYouTubeASR;
     BOOL usesPlainLyrics = source == CICaptionSourceLRCLIBAligned ||
         source == CICaptionSourceLRCLIBEstimated;

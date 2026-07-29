@@ -52,6 +52,29 @@ int main(void) {
             @"common YouTube decorations should be removed before lookup");
         CIAssert([splitArtist isEqualToString:@"Example Artist"],
             @"Unicode title separators should provide the canonical artist");
+        CIAssert([CISongTitleFromVideoTitle(
+            @"【ウマ娘】Precious Star Dreamer | Full Ver.【パート分け/歌詞】")
+            isEqualToString:@"Precious Star Dreamer"],
+            @"series labels and known version/lyric suffixes should be removed");
+        CIAssert([CISongTitleFromVideoTitle(@"Precious Star Dreamer【歌詞・パート分け】")
+            isEqualToString:@"Precious Star Dreamer"],
+            @"a trailing Japanese lyric marker should be removed");
+        CIAssert([CISongTitleFromVideoTitle(@"Precious Star Dreamer | Official Audio")
+            isEqualToString:@"Precious Star Dreamer"],
+            @"a known pipe-delimited upload marker should be removed");
+        CIAssert([CISongTitleFromVideoTitle(@"Song | Another Song")
+            isEqualToString:@"Song | Another Song"],
+            @"an unknown pipe suffix should remain part of the title");
+        CIAssert([CISongTitleFromVideoTitle(
+            @"[HD] Precious [Romaji] Star Dreamer ［歌詞］")
+            isEqualToString:@"Precious Star Dreamer"],
+            @"all ASCII and full-width square-bracket blocks should be removed");
+        CIAssert([CISongTitleFromVideoTitle(@"【アイドル】")
+            isEqualToString:@"【アイドル】"],
+            @"a bracketed title with no remaining text must not become empty");
+        CIAssert([CISongTitleFromVideoTitle(@"Artist - Song")
+            isEqualToString:@"Artist - Song"],
+            @"title-only lookup must not reinterpret an ordinary artist-title string");
         NSURLComponents *broadComponents = [NSURLComponents componentsWithURL:
             [provider searchURLForTitle:@"Example Song" artist:@"Example Artist" broad:YES]
             resolvingAgainstBaseURL:NO];
@@ -59,6 +82,30 @@ int main(void) {
         CIAssert([broadQuery containsString:@"Example Artist"] &&
             [broadQuery containsString:@"Example Song"],
             @"broad lookup should constrain the query with both artist and title");
+        NSURLComponents *titleOnlyComponents = [NSURLComponents componentsWithURL:
+            [provider searchURLForTitle:@"Precious Star Dreamer" artist:@"" broad:NO]
+            resolvingAgainstBaseURL:NO];
+        NSMutableDictionary<NSString *, NSString *> *titleOnlyItems = [NSMutableDictionary dictionary];
+        for (NSURLQueryItem *item in titleOnlyComponents.queryItems) {
+            titleOnlyItems[item.name] = item.value;
+        }
+        CIAssert([titleOnlyItems[@"track_name"] isEqualToString:@"Precious Star Dreamer"] &&
+            titleOnlyItems[@"artist_name"] == nil,
+            @"title-only lookup must not send a YouTube channel as artist_name");
+
+        error = nil;
+        NSArray *titleOnlyCandidates = @[
+            CIRecord(8, @"Precious Star Dreamer", @"Unrelated Artist", 267.0,
+                @"Distant plain\nSecond line", nil),
+            CIRecord(9, @"Precious Star Dreamer", @"Correct Database Artist", 252.2,
+                @"Closest synced\nSecond line",
+                @"[00:01.00]Closest synced\n[03:20.00]Second line"),
+        ];
+        CILRCLIBResult *titleOnlyResult = [provider lyricsResultFromSearchData:
+            CIJSONData(titleOnlyCandidates) title:@"Precious Star Dreamer" artist:@""
+            videoDuration:252.0 error:&error];
+        CIAssert(titleOnlyResult.recordID == 9 && error == nil,
+            @"an empty artist should rank title matches by the closest duration");
 
         NSArray *nearbyVersions = @[
             CIRecord(10, @"Example Song", @"Example Artist", 210.0,
