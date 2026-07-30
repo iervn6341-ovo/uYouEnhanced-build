@@ -22,7 +22,7 @@ on:
         required: true
         type: string
       bundle_id:
-        description: "Modify the bundle ID"
+        description: "Bundle ID (AOD push requires an explicit App ID owned by your paid Apple Developer Team)"
         default: "com.google.ios.youtube"
         required: true
         type: string
@@ -68,6 +68,17 @@ jobs:
           ref: ${{ github.event.inputs.commit_id || github.ref }}
           submodules: recursive
 
+      - name: Explain Caption Island APNs Requirement
+        env:
+          REQUESTED_BUNDLE_ID: ${{ inputs.bundle_id }}
+        run: |
+          if test "$REQUESTED_BUNDLE_ID" = "com.google.ios.youtube"; then
+            echo "::warning::Caption Island AOD push will not work with Google's com.google.ios.youtube App ID. This choice supports local Live Activity updates only."
+          else
+            echo "::notice::A custom bundle ID is necessary but not sufficient for AOD push; it must be an explicit App ID owned by the Apple Developer Team used for final signing."
+          fi
+          echo "::notice::This workflow does not have your provisioning profiles or APNs key. The final signer must preserve the custom host/widget IDs and a provisioning-authorized aps-environment entitlement."
+
       - name: Test Caption Island
         run: |
           cd ${{ github.workspace }}/main
@@ -90,6 +101,15 @@ jobs:
             Tweaks/CaptionIsland/CITextUtilities.m \
             -o "$smoke_dir/LRCLIBProviderSmoke"
           "$smoke_dir/LRCLIBProviderSmoke"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIslandTests/ObjC/VideoEligibilitySmoke.m \
+            Tweaks/CaptionIsland/CIVideoEligibility.m \
+            -o "$smoke_dir/VideoEligibilitySmoke"
+          "$smoke_dir/VideoEligibilitySmoke"
+          node --check Services/CaptionIslandPushServer/server.mjs
+          npm test --prefix Services/CaptionIslandPushServer
+          sh -n Scripts/verify-caption-island-push-signing.sh
 
       - name: Install Dependencies
         run: brew install ldid dpkg make
@@ -237,6 +257,10 @@ jobs:
             esac
             test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension_plist")" = "$MINIMUM_IOS_VERSION"
           done
+          if test "$host_id" = "com.google.ios.youtube"; then
+            echo "::warning::This unsigned artifact can use local Live Activity updates, but APNs Live Activity push requires a final signer-owned explicit bundle ID instead of com.google.ios.youtube."
+          fi
+          echo "::notice::Run Scripts/verify-caption-island-push-signing.sh against the finally signed IPA; this build-stage check cannot validate the sideload signer's provisioning profile or aps-environment."
           echo "==> CaptionIsland, YouTubeDiagnostics, and native Live Activity extension verified"
 
       - name: Upload Artifact

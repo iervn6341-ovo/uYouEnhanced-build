@@ -8,6 +8,7 @@
 #import "CITextUtilities.h"
 #import "CIToastPresenter.h"
 #import "CIYouTubeInspector.h"
+#import "CIVideoEligibility.h"
 #import <UIKit/UIKit.h>
 #import <float.h>
 #import <math.h>
@@ -72,8 +73,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 @property (nonatomic) NSInteger displayedCueIndex;
 @property (nonatomic) NSTimeInterval latestPlaybackTime;
 @property (nonatomic) NSTimeInterval lastSubmittedTime;
+@property (nonatomic) BOOL playbackPlaying;
+@property (nonatomic) double playbackRate;
 @property (nonatomic) BOOL suppressed;
 @property (nonatomic) BOOL loadInterruptedBySuppression;
+@property (atomic) BOOL policyExcluded;
 @property (nonatomic) BOOL playerVisible;
 @property (nonatomic) BOOL loading;
 @property (nonatomic) BOOL resolved;
@@ -81,6 +85,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 @property (nonatomic, copy) NSString *activePlainLyrics;
 @property (nonatomic, copy) NSString *lastLRCLIBQueryKey;
 @property (nonatomic, copy) NSString *lastNoResultVideoID;
+@property (nonatomic, copy) NSString *policyExclusionSignature;
 @property (nonatomic) NSUInteger captionRequestToken;
 @property (nonatomic) NSTimeInterval contextActivatedAt;
 @property (nonatomic) NSTimeInterval lastExternalPreparationUptime;
@@ -131,9 +136,12 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         _activePlainLyrics = @"";
         _lastLRCLIBQueryKey = @"";
         _lastNoResultVideoID = @"";
+        _policyExclusionSignature = @"";
         _loadStage = CILoadStageIdle;
         _displayedCueIndex = CIUnrenderedCueIndex;
         _lastSubmittedTime = -DBL_MAX;
+        _playbackPlaying = YES;
+        _playbackRate = 1.0;
         _presenter = CIActivityPresenter.sharedPresenter;
         [NSNotificationCenter.defaultCenter addObserver:self
             selector:@selector(applicationDidBecomeActive:)
@@ -150,7 +158,12 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 
 - (void)applicationDidBecomeActive:(__unused NSNotification *)notification {
     dispatch_async(self.workQueue, ^{
-        if (!self.context || !CIPreferenceBool(CIEnabledKey, YES)) return;
+        if (!self.context ||
+            !CIPreferenceBool(CIEnabledKey, YES)) return;
+        if (self.policyExcluded) {
+            [self.presenter end];
+            return;
+        }
         [self ensurePresenterForCurrentContext];
         self.displayedCueIndex = CIUnrenderedCueIndex;
         if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
@@ -158,7 +171,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 }
 
 - (void)ensurePresenterForCurrentContext {
-    if (!self.context.videoID.length) return;
+    if (!self.context.videoID.length || self.policyExcluded) return;
     if ([self.presenter respondsToSelector:@selector(ensureVideoID:title:)]) {
         [self.presenter ensureVideoID:self.context.videoID title:self.context.title ?: @""];
     } else {
@@ -198,19 +211,106 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     });
 }
 
+- (BOOL)excludeContextIfNeeded:(CIVideoContext *)context {
+    CIVideoExclusionReason reason = CIVideoExclusionReasonNone;
+    NSInteger maximumMinutes = CIMaximumVideoDurationMinutes();
+    BOOL featureEnabled = CIPreferenceBool(CIEnabledKey, YES);
+    if (featureEnabled) {
+        reason = CIVideoExclusionReasonForPlayback(
+            context.isShorts,
+            CIPreferenceBool(CIDisableForShortsKey, YES),
+            context.duration,
+            maximumMinutes
+        );
+    }
+    if (reason == CIVideoExclusionReasonNone) {
+        if (self.policyExcluded) {
+            self.policyExcluded = NO;
+            self.policyExclusionSignature = @"";
+            self.lastNoResultVideoID = @"";
+            if (featureEnabled) {
+                CIPipelineLog(CILogLevelInfo,
+                    @"Caption activity is eligible again for video %@ after a settings or metadata change.",
+                    context.videoID);
+            }
+        }
+        return NO;
+    }
+
+    NSString *signature = [NSString stringWithFormat:@"%@|%ld|%ld",
+        context.videoID, (long)reason, (long)maximumMinutes];
+    BOOL exclusionChanged =
+        !self.policyExcluded ||
+        ![self.policyExclusionSignature isEqualToString:signature];
+    self.context = context;
+    self.policyExcluded = YES;
+    self.policyExclusionSignature = signature;
+    if (!exclusionChanged) return YES;
+
+    self.generation++;
+    [self.captionTask cancel];
+    self.captionTask = nil;
+    [self.lyricsProvider cancel];
+    self.cues = @[];
+    self.activePlainLyrics = @"";
+    self.loading = NO;
+    self.resolved = YES;
+    self.loadStage = CILoadStageFinished;
+    self.loadInterruptedBySuppression = NO;
+    self.displayedCueIndex = CIUnrenderedCueIndex;
+    if (UIApplication.sharedApplication.applicationState ==
+        UIApplicationStateActive) {
+        [self.presenter end];
+    } else {
+        // Keep an already-running activity dormant during background
+        // autoplay. ActivityKit cannot ordinarily start a replacement from
+        // the background when the next eligible video begins.
+        if ([self.presenter respondsToSelector:
+                @selector(
+                    clearRemoteTimelineAtPosition:
+                    duration:
+                )]) {
+            [self.presenter
+                clearRemoteTimelineAtPosition:
+                    self.latestPlaybackTime
+                                      duration:
+                    context.duration];
+        }
+        [self.presenter hide];
+    }
+
+    if (reason == CIVideoExclusionReasonShorts) {
+        CIPipelineLog(CILogLevelInfo,
+            @"Caption activity is disabled for Shorts video %@.",
+            context.videoID);
+    } else {
+        CIPipelineLog(CILogLevelInfo,
+            @"Caption activity is disabled for video %@ because its %.1f-minute duration exceeds the %ld-minute limit.",
+            context.videoID, context.duration / 60.0, (long)maximumMinutes);
+    }
+    return YES;
+}
+
 - (void)beginContext:(CIVideoContext *)context force:(BOOL)force {
     BOOL sameVideo = [self.context.videoID isEqualToString:context.videoID];
     BOOL hasRicherTracks = context.captionTracks.count > self.context.captionTracks.count;
     BOOL hasRicherMetadata = context.title.length > self.context.title.length ||
         context.author.length > self.context.author.length ||
-        (context.duration > 0 && self.context.duration <= 0);
+        (context.duration > 0 && self.context.duration <= 0) ||
+        context.isShorts != self.context.isShorts;
     if (sameVideo) {
         if (context.title.length == 0) context.title = self.context.title;
         if (context.author.length == 0) context.author = self.context.author;
         if (self.context.duration > 0 && context.duration <= 0) context.duration = self.context.duration;
+        context.shorts =
+            context.isShorts || self.context.isShorts;
         context.captionTracks = CIMergedCaptionTracks(
             context.captionTracks, self.context.captionTracks);
     }
+    BOOL wasPolicyExcluded = self.policyExcluded;
+    if ([self excludeContextIfNeeded:context]) return;
+    if (wasPolicyExcluded) force = YES;
+
     CICaptionTrack *oldManual = self.context
         ? [CIYouTubeInspector manualTrackInContext:self.context preferredLanguage:CIPreferredLanguage()] : nil;
     CICaptionTrack *newManual = [CIYouTubeInspector manualTrackInContext:context preferredLanguage:CIPreferredLanguage()];
@@ -270,6 +370,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         self.contextActivatedAt = NSProcessInfo.processInfo.systemUptime;
         self.lastLRCLIBQueryKey = @"";
         self.lastNoResultVideoID = @"";
+        // A finished previous context must not pin an autoplaying next video
+        // in a stopped state before YouTube emits fresh callbacks. Preserve
+        // the last confirmed playback rate because YouTube carries speed
+        // choices across videos.
+        self.playbackPlaying = YES;
     } else if (force) {
         self.lastLRCLIBQueryKey = @"";
     }
@@ -293,6 +398,33 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         return;
     }
     [self.presenter beginVideoID:context.videoID title:context.title ?: @""];
+    if ([self.presenter respondsToSelector:
+            @selector(
+                clearRemoteTimelineAtPosition:
+                duration:
+            )]) {
+        [self.presenter
+            clearRemoteTimelineAtPosition:
+                self.latestPlaybackTime
+                                  duration:
+                context.duration];
+    }
+    if ([self.presenter respondsToSelector:
+            @selector(
+                synchronizeRemotePlaybackAtPosition:
+                playing:
+                rate:
+                force:
+            )]) {
+        [self.presenter
+            synchronizeRemotePlaybackAtPosition:
+                self.latestPlaybackTime
+                                    playing:
+                                        self.playbackPlaying
+                                       rate:
+                                        self.playbackRate
+                                      force:YES];
+    }
     self.loading = YES;
 
     NSString *cacheKey = [self cacheKeyForContext:context];
@@ -655,6 +787,38 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         result.source = source;
         [self.cache setObject:result forKey:cacheKey cost:self.cues.count];
     }
+    if ([self.presenter respondsToSelector:
+            @selector(
+                configureRemoteTimelineWithCues:
+                source:
+                position:
+                duration:
+            )]) {
+        [self.presenter
+            configureRemoteTimelineWithCues:self.cues
+                                     source:self.source
+                                   position:self.latestPlaybackTime
+                                   duration:self.context.duration];
+        if ([self.presenter respondsToSelector:
+                @selector(
+                    synchronizeRemotePlaybackAtPosition:
+                    playing:
+                    rate:
+                    force:
+                )]) {
+            // Timeline installation and clock synchronization are enqueued in
+            // order by the Swift bridge. This restores a pause or non-1× rate
+            // that may have been observed while lyrics were still loading.
+            [self.presenter
+                synchronizeRemotePlaybackAtPosition:
+                    self.latestPlaybackTime
+                                        playing:
+                                            self.playbackPlaying
+                                           rate:
+                                            self.playbackRate
+                                          force:YES];
+        }
+    }
     [self renderAtTime:self.latestPlaybackTime];
 }
 
@@ -666,6 +830,17 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.cues = @[];
     self.activePlainLyrics = @"";
     self.displayedCueIndex = NSNotFound;
+    if ([self.presenter respondsToSelector:
+            @selector(
+                clearRemoteTimelineAtPosition:
+                duration:
+            )]) {
+        [self.presenter
+            clearRemoteTimelineAtPosition:
+                self.latestPlaybackTime
+                                  duration:
+                self.context.duration];
+    }
     [self.presenter hide];
 
     NSString *videoID = self.context.videoID ?: @"";
@@ -680,6 +855,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)deliverNoResultToastForGeneration:(NSUInteger)generation
                                   videoID:(NSString *)videoID {
     if (!CIPreferenceBool(CIEnabledKey, YES) ||
+        self.policyExcluded ||
         generation != self.generation || self.cues.count > 0 ||
         !self.resolved || videoID.length == 0 ||
         ![self.context.videoID isEqualToString:videoID] ||
@@ -711,7 +887,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 }
 
 - (void)renderAtTime:(NSTimeInterval)time {
-    if (!CIPreferenceBool(CIEnabledKey, YES)) return;
+    if (!CIPreferenceBool(CIEnabledKey, YES) || self.policyExcluded) return;
     if (self.suppressed) {
         if (self.displayedCueIndex != NSNotFound) {
             self.displayedCueIndex = NSNotFound;
@@ -750,21 +926,144 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 }
 
 - (void)updatePlaybackTime:(NSTimeInterval)time {
-    if (!CIPreferenceBool(CIEnabledKey, YES) || !isfinite(time) || time < 0) return;
+    if (!CIPreferenceBool(CIEnabledKey, YES) ||
+        self.policyExcluded || !isfinite(time) || time < 0) return;
     // YouTube may report time many times per second. Five samples per second is
     // enough for captions; rendering still happens only when the cue changes.
     if (time >= self.lastSubmittedTime && time - self.lastSubmittedTime < 0.18) return;
     self.lastSubmittedTime = time;
     dispatch_async(self.workQueue, ^{
         self.latestPlaybackTime = time;
+        if ([self.presenter respondsToSelector:
+                @selector(
+                    synchronizeRemotePlaybackAtPosition:
+                    playing:
+                    rate:
+                    force:
+                )]) {
+            [self.presenter
+                synchronizeRemotePlaybackAtPosition:time
+                                            playing:
+                                                self.playbackPlaying
+                                               rate:
+                                                self.playbackRate
+                                              force:NO];
+        }
         [self renderAtTime:time];
+    });
+}
+
+- (void)synchronizePlaybackAtPosition:
+            (NSTimeInterval)position
+                              playing:(BOOL)playing
+                                 rate:(double)rate
+                                force:(BOOL)force {
+    if (!isfinite(position) || position < 0) return;
+    double safeRate =
+        isfinite(rate) && rate >= 0.25 && rate <= 4.0
+            ? rate : 1.0;
+    dispatch_async(self.workQueue, ^{
+        self.latestPlaybackTime = position;
+        self.playbackPlaying = playing;
+        self.playbackRate = safeRate;
+        if ([self.presenter respondsToSelector:
+                @selector(
+                    synchronizeRemotePlaybackAtPosition:
+                    playing:
+                    rate:
+                    force:
+                )]) {
+            [self.presenter
+                synchronizeRemotePlaybackAtPosition:position
+                                            playing:playing
+                                               rate:safeRate
+                                              force:force];
+        }
+    });
+}
+
+- (void)synchronizeRemotePlaybackCriticalAtPosition:
+            (NSTimeInterval)position
+                                            playing:(BOOL)playing
+                                               rate:(double)rate
+                                    expectedVideoID:
+                                        (NSString *)expectedVideoID
+                                         completion:
+                                             (void (^)(BOOL attempted))
+                                                 completion {
+    if (!isfinite(position) || position < 0 ||
+        expectedVideoID.length == 0) {
+        if (completion) {
+            dispatch_async(
+                dispatch_get_main_queue(),
+                ^{ completion(NO); }
+            );
+        }
+        return;
+    }
+    double safeRate =
+        isfinite(rate) && rate >= 0.25 && rate <= 4.0
+            ? rate : 1.0;
+    NSString *capturedVideoID = [expectedVideoID copy];
+    dispatch_async(self.workQueue, ^{
+        if (![self.context.videoID
+                isEqualToString:capturedVideoID]) {
+            if (completion) {
+                dispatch_async(
+                    dispatch_get_main_queue(),
+                    ^{ completion(NO); }
+                );
+            }
+            return;
+        }
+        self.latestPlaybackTime = position;
+        self.playbackPlaying = playing;
+        self.playbackRate = safeRate;
+        if ([self.presenter respondsToSelector:
+                @selector(
+                    synchronizeRemotePlaybackCriticalAtPosition:
+                    playing:
+                    rate:
+                    expectedVideoID:
+                    completion:
+                )]) {
+            [self.presenter
+                synchronizeRemotePlaybackCriticalAtPosition:position
+                                                    playing:playing
+                                                       rate:safeRate
+                                            expectedVideoID:
+                                                capturedVideoID
+                                                 completion:
+                                                     completion ?: ^(__unused BOOL attempted) {}];
+            return;
+        }
+        if ([self.presenter respondsToSelector:
+                @selector(
+                    synchronizeRemotePlaybackAtPosition:
+                    playing:
+                    rate:
+                    force:
+                )]) {
+            [self.presenter
+                synchronizeRemotePlaybackAtPosition:position
+                                            playing:playing
+                                               rate:safeRate
+                                              force:YES];
+        }
+        if (completion) {
+            dispatch_async(
+                dispatch_get_main_queue(),
+                ^{ completion(NO); }
+            );
+        }
     });
 }
 
 - (void)playerViewDidAppear {
     dispatch_async(self.workQueue, ^{
         self.playerVisible = YES;
-        if (self.context && CIPreferenceBool(CIEnabledKey, YES)) {
+        if (self.context && !self.policyExcluded &&
+            CIPreferenceBool(CIEnabledKey, YES)) {
             [self ensurePresenterForCurrentContext];
             self.displayedCueIndex = CIUnrenderedCueIndex;
             if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
@@ -786,12 +1085,28 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)prepareForExternalPlayback {
     dispatch_async(self.workQueue, ^{
         if (!self.context || !CIPreferenceBool(CIEnabledKey, YES) ||
-            self.suppressed) return;
+            self.suppressed || self.policyExcluded) return;
         NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
         if (self.lastExternalPreparationUptime > 0 &&
             uptime - self.lastExternalPreparationUptime < 1.0) return;
         self.lastExternalPreparationUptime = uptime;
         [self ensurePresenterForCurrentContext];
+        if ([self.presenter respondsToSelector:
+                @selector(
+                    synchronizeRemotePlaybackAtPosition:
+                    playing:
+                    rate:
+                    force:
+                )]) {
+            [self.presenter
+                synchronizeRemotePlaybackAtPosition:
+                    self.latestPlaybackTime
+                                            playing:
+                                                self.playbackPlaying
+                                               rate:
+                                                self.playbackRate
+                                              force:YES];
+        }
         self.displayedCueIndex = CIUnrenderedCueIndex;
         if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
@@ -805,6 +1120,22 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         self.lastSubmittedTime = -DBL_MAX;
         self.displayedCueIndex = NSNotFound;
         if (self.context && CIPreferenceBool(CIEnabledKey, YES)) {
+            self.playbackPlaying = NO;
+            if ([self.presenter respondsToSelector:
+                    @selector(
+                        synchronizeRemotePlaybackAtPosition:
+                        playing:
+                        rate:
+                        force:
+                    )]) {
+                [self.presenter
+                    synchronizeRemotePlaybackAtPosition:
+                        self.latestPlaybackTime
+                                                playing:NO
+                                                   rate:
+                                                    self.playbackRate
+                                                  force:YES];
+            }
             [self.presenter hide];
         }
     });
@@ -826,12 +1157,44 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                 self.loadStage = CILoadStageIdle;
             }
             self.displayedCueIndex = NSNotFound;
+            self.playbackPlaying = NO;
+            if ([self.presenter respondsToSelector:
+                    @selector(
+                        synchronizeRemotePlaybackAtPosition:
+                        playing:
+                        rate:
+                        force:
+                    )]) {
+                [self.presenter
+                    synchronizeRemotePlaybackAtPosition:
+                        self.latestPlaybackTime
+                                                playing:NO
+                                                   rate:
+                                                    self.playbackRate
+                                                  force:YES];
+            }
             [self.presenter hide];
         }
         else if (self.loadInterruptedBySuppression && self.context) {
             self.loadInterruptedBySuppression = NO;
             [self beginContext:self.context force:YES];
         } else {
+            self.playbackPlaying = YES;
+            if ([self.presenter respondsToSelector:
+                    @selector(
+                        synchronizeRemotePlaybackAtPosition:
+                        playing:
+                        rate:
+                        force:
+                    )]) {
+                [self.presenter
+                    synchronizeRemotePlaybackAtPosition:
+                        self.latestPlaybackTime
+                                                playing:YES
+                                                   rate:
+                                                    self.playbackRate
+                                                  force:YES];
+            }
             [self renderAtTime:self.latestPlaybackTime];
         }
     });
@@ -861,6 +1224,8 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         self.resolved = NO;
         self.loadStage = CILoadStageIdle;
         self.loadInterruptedBySuppression = NO;
+        self.policyExcluded = NO;
+        self.policyExclusionSignature = @"";
         self.playerVisible = NO;
         self.displayedCueIndex = CIUnrenderedCueIndex;
         [self.presenter end];

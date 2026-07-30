@@ -4,6 +4,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface CIYouTubeInspector : NSObject
++ (void)markPlayerControllerAsShorts:(id)playerController;
 + (nullable CIVideoContext *)contextFromPlaybackData:(nullable id)playbackData
                                     playerController:(nullable id)playerController;
 + (nullable CICaptionTrack *)manualTrackInContext:(CIVideoContext *)context

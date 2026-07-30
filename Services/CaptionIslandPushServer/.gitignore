@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+*.p8
+*.state
+*.state.*
+*.tmp
+relay-state*
+

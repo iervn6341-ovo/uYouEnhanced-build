@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 #import <YouTubeHeader/YTIIcon.h>
 #import <YouTubeHeader/YTSettingsGroupData.h>
@@ -13,8 +14,28 @@
 static const NSInteger CaptionIslandSection = 'capi';
 static const NSInteger YouGroupSettingsSection = 'psyt';
 
+static void CIRefreshPushConfiguration(void) {
+    Class bridge = NSClassFromString(@"CIActivityBridge");
+    SEL selector =
+        NSSelectorFromString(@"refreshPushConfiguration");
+    if ([bridge respondsToSelector:selector]) {
+        ((void (*)(id, SEL))objc_msgSend)(
+            bridge,
+            selector
+        );
+    }
+}
+
 static void CIStoreBool(NSString *key, BOOL value) {
     [NSUserDefaults.standardUserDefaults setBool:value forKey:key];
+    [CICaptionCoordinator.sharedCoordinator reloadPreferences];
+    if ([key isEqualToString:CIPushRelayEnabledKey]) {
+        CIRefreshPushConfiguration();
+    }
+}
+
+static void CIStoreInteger(NSString *key, NSInteger value) {
+    [NSUserDefaults.standardUserDefaults setInteger:value forKey:key];
     [CICaptionCoordinator.sharedCoordinator reloadPreferences];
 }
 
@@ -22,6 +43,337 @@ static NSString *CILanguageTitle(NSString *code) {
     if ([code isEqualToString:@"en"]) return CILocalized(@"LANGUAGE_ENGLISH", @"English");
     if ([code isEqualToString:@"ja"]) return CILocalized(@"LANGUAGE_JAPANESE", @"Japanese");
     return CILocalized(@"LANGUAGE_TRADITIONAL_CHINESE", @"Traditional Chinese");
+}
+
+static NSString *CIDurationLimitTitle(NSInteger minutes) {
+    if (minutes == 0) {
+        return CILocalized(@"DURATION_UNLIMITED", @"No limit");
+    }
+    if (minutes == 1) {
+        return CILocalized(@"DURATION_ONE_MINUTE", @"1 minute");
+    }
+    return [NSString stringWithFormat:
+        CILocalized(@"DURATION_MINUTES_FORMAT", @"%ld minutes"),
+        (long)minutes];
+}
+
+static NSString *CIPushRelayDetail(void) {
+    if (!CIPreferenceBool(CIPushRelayEnabledKey, NO)) {
+        return CILocalized(
+            @"PUSH_RELAY_DISABLED",
+            @"Off"
+        );
+    }
+    if (!CIPushRelayConfigurationIsReady()) {
+        return CILocalized(
+            @"PUSH_RELAY_NEEDS_SETUP",
+            @"Setup required"
+        );
+    }
+    NSURL *URL = [NSURL URLWithString:
+        CIPushRelayURLString()];
+    return URL.host.length > 0
+        ? URL.host
+        : CILocalized(@"PUSH_RELAY_READY", @"Ready");
+}
+
+static BOOL CIPushRelayCredentialsAreReady(void) {
+    NSString *token = CIPushRelayAccessToken();
+    return CIPushRelayURLString().length > 0 &&
+        [token lengthOfBytesUsingEncoding:NSUTF8StringEncoding] >= 32;
+}
+
+static BOOL CIPushRelayHasSignerOwnedBundleID(void) {
+    return ![NSBundle.mainBundle.bundleIdentifier
+        isEqualToString:@"com.google.ios.youtube"];
+}
+
+static void CIPresentPushRelayError(
+    UIViewController *controller,
+    NSString *message
+) {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:CILocalized(
+            @"PUSH_RELAY_ERROR",
+            @"AOD Push Relay"
+        )
+        message:message
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"OK", @"OK")
+                  style:UIAlertActionStyleDefault
+                handler:nil]];
+    [controller presentViewController:alert
+                             animated:YES
+                           completion:nil];
+}
+
+static void CIPresentPushRelayErrorWhenReady(
+    UIViewController *controller,
+    NSString *message,
+    NSUInteger attemptsRemaining
+) {
+    __weak UIViewController *weakController = controller;
+    dispatch_after(
+        dispatch_time(
+            DISPATCH_TIME_NOW,
+            (int64_t)(0.1 * NSEC_PER_SEC)
+        ),
+        dispatch_get_main_queue(),
+        ^{
+            UIViewController *strongController = weakController;
+            if (!strongController) return;
+            if (strongController.presentedViewController) {
+                if (attemptsRemaining > 0) {
+                    CIPresentPushRelayErrorWhenReady(
+                        strongController,
+                        message,
+                        attemptsRemaining - 1
+                    );
+                }
+                return;
+            }
+            if (strongController.viewIfLoaded.window) {
+                CIPresentPushRelayError(
+                    strongController,
+                    message
+                );
+            }
+        }
+    );
+}
+
+static void CISchedulePushRelayError(
+    UIViewController *controller,
+    NSString *message
+) {
+    CIPresentPushRelayErrorWhenReady(
+        controller,
+        message,
+        15
+    );
+}
+
+static void CIPresentPushRelayConfiguration(
+    YTSettingsViewController *settingsViewController,
+    BOOL enableAfterSaving
+) {
+    NSString *configurationDescription = enableAfterSaving
+        ? CILocalized(
+            @"PUSH_RELAY_ENABLE_CONFIRMATION",
+            @"Enter your HTTPS relay URL and access token. Saving enables caption timeline uploads to that relay; it sends the current and next line through Apple APNs. iOS may delay or throttle delivery."
+        )
+        : CILocalized(
+            @"PUSH_RELAY_CONFIGURATION_DESCRIPTION",
+            @"Store your HTTPS relay URL and access token. Saving here does not enable uploads; use the separate AOD remote updates switch."
+        );
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:CILocalized(
+            @"PUSH_RELAY_CONFIGURATION",
+            @"AOD Push Relay"
+        )
+        message:configurationDescription
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:
+        ^(UITextField *field) {
+            field.placeholder = @"https://relay.example.com";
+            field.text = [NSUserDefaults.standardUserDefaults
+                stringForKey:CIPushRelayURLKey] ?: @"";
+            field.keyboardType =
+                UIKeyboardTypeURL;
+            field.autocapitalizationType =
+                UITextAutocapitalizationTypeNone;
+            field.autocorrectionType =
+                UITextAutocorrectionTypeNo;
+        }];
+    [alert addTextFieldWithConfigurationHandler:
+        ^(UITextField *field) {
+            field.placeholder =
+                CIPushRelayAccessToken().length > 0
+                    ? CILocalized(
+                        @"PUSH_RELAY_TOKEN_STORED",
+                        @"Access token stored; leave blank to keep it"
+                    )
+                    : CILocalized(
+                        @"PUSH_RELAY_TOKEN",
+                        @"Relay access token"
+                    );
+            field.secureTextEntry = YES;
+            field.autocapitalizationType =
+                UITextAutocapitalizationTypeNone;
+            field.autocorrectionType =
+                UITextAutocorrectionTypeNo;
+        }];
+    __weak UIAlertController *weakAlert = alert;
+    __weak YTSettingsViewController *weakSettingsViewController =
+        settingsViewController;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"CANCEL", @"Cancel")
+                  style:UIAlertActionStyleCancel
+                handler:^(__unused UIAlertAction *action) {
+                    if (!enableAfterSaving) return;
+                    YTSettingsViewController *strongSettingsViewController =
+                        weakSettingsViewController;
+                    CIStoreBool(CIPushRelayEnabledKey, NO);
+                    [strongSettingsViewController reloadData];
+                }]];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CILocalized(
+            @"PUSH_RELAY_CLEAR",
+            @"Clear"
+        )
+                  style:UIAlertActionStyleDestructive
+                handler:^(__unused UIAlertAction *action) {
+                    YTSettingsViewController *strongSettingsViewController =
+                        weakSettingsViewController;
+                    if (!CISetPushRelayAccessToken(nil)) {
+                        CISchedulePushRelayError(
+                            strongSettingsViewController,
+                            CILocalized(
+                                @"PUSH_RELAY_KEYCHAIN_CLEAR_FAILED",
+                                @"The stored access token could not be removed from Keychain."
+                            )
+                        );
+                        return;
+                    }
+                    [NSUserDefaults.standardUserDefaults
+                        removeObjectForKey:CIPushRelayURLKey];
+                    [NSUserDefaults.standardUserDefaults
+                        setBool:NO
+                         forKey:CIPushRelayEnabledKey];
+                    [CICaptionCoordinator.sharedCoordinator
+                        reloadPreferences];
+                    CIRefreshPushConfiguration();
+                    [strongSettingsViewController reloadData];
+                }]];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CILocalized(
+            @"PUSH_RELAY_SAVE",
+            @"Save"
+        )
+                  style:UIAlertActionStyleDefault
+                handler:^(__unused UIAlertAction *action) {
+                    UIAlertController *strongAlert = weakAlert;
+                    YTSettingsViewController *strongSettingsViewController =
+                        weakSettingsViewController;
+                    if (!strongAlert ||
+                        !strongSettingsViewController) {
+                        return;
+                    }
+                    NSString *URLString =
+                        [strongAlert.textFields.firstObject.text
+                            stringByTrimmingCharactersInSet:
+                                NSCharacterSet
+                                    .whitespaceAndNewlineCharacterSet];
+                    NSURLComponents *components =
+                        [NSURLComponents
+                            componentsWithString:URLString];
+                    BOOL valid =
+                        [components.scheme.lowercaseString
+                            isEqualToString:@"https"] &&
+                        components.host.length > 0 &&
+                        components.user.length == 0 &&
+                        components.password.length == 0 &&
+                        components.query.length == 0 &&
+                        components.fragment.length == 0;
+                    if (!valid) {
+                        CISchedulePushRelayError(
+                            strongSettingsViewController,
+                            CILocalized(
+                                @"PUSH_RELAY_HTTPS_REQUIRED",
+                                @"Use an HTTPS URL without credentials, query parameters, or fragments."
+                            )
+                        );
+                        return;
+                    }
+                    NSString *newToken =
+                        [(strongAlert.textFields.lastObject.text ?: @"")
+                            stringByTrimmingCharactersInSet:
+                                NSCharacterSet
+                                    .whitespaceAndNewlineCharacterSet];
+                    if (newToken.length > 0 &&
+                        [newToken lengthOfBytesUsingEncoding:
+                            NSUTF8StringEncoding] < 32) {
+                        CISchedulePushRelayError(
+                            strongSettingsViewController,
+                            CILocalized(
+                                @"PUSH_RELAY_TOKEN_TOO_SHORT",
+                                @"Use a relay access token containing at least 32 bytes."
+                            )
+                        );
+                        return;
+                    }
+                    if (newToken.length > 0 &&
+                        !CISetPushRelayAccessToken(newToken)) {
+                        CISchedulePushRelayError(
+                            strongSettingsViewController,
+                            CILocalized(
+                                @"PUSH_RELAY_KEYCHAIN_FAILED",
+                                @"The access token could not be saved to Keychain."
+                            )
+                        );
+                        return;
+                    }
+                    if (newToken.length == 0) {
+                        NSString *storedToken =
+                            CIPushRelayAccessToken();
+                        NSUInteger storedTokenBytes =
+                            [storedToken lengthOfBytesUsingEncoding:
+                                NSUTF8StringEncoding];
+                        if (storedTokenBytes == 0) {
+                            CISchedulePushRelayError(
+                                strongSettingsViewController,
+                                CILocalized(
+                                    @"PUSH_RELAY_TOKEN_REQUIRED",
+                                    @"Enter the relay access token."
+                                )
+                            );
+                            return;
+                        }
+                        if (storedTokenBytes < 32) {
+                            CISchedulePushRelayError(
+                                strongSettingsViewController,
+                                CILocalized(
+                                    @"PUSH_RELAY_TOKEN_TOO_SHORT",
+                                    @"Use a relay access token containing at least 32 bytes."
+                                )
+                            );
+                            return;
+                        }
+                    }
+                    [NSUserDefaults.standardUserDefaults
+                        setObject:URLString
+                           forKey:CIPushRelayURLKey];
+                    BOOL bundleIDIsEligible =
+                        CIPushRelayHasSignerOwnedBundleID();
+                    if (enableAfterSaving &&
+                        bundleIDIsEligible) {
+                        [NSUserDefaults.standardUserDefaults
+                            setBool:YES
+                             forKey:CIPushRelayEnabledKey];
+                    } else if (!bundleIDIsEligible) {
+                        [NSUserDefaults.standardUserDefaults
+                            setBool:NO
+                             forKey:CIPushRelayEnabledKey];
+                    }
+                    [CICaptionCoordinator.sharedCoordinator
+                        reloadPreferences];
+                    CIRefreshPushConfiguration();
+                    [strongSettingsViewController reloadData];
+                    if (!bundleIDIsEligible) {
+                        CISchedulePushRelayError(
+                            strongSettingsViewController,
+                            CILocalized(
+                                @"PUSH_RELAY_CUSTOM_APP_ID_REQUIRED",
+                                @"AOD push cannot use Google's com.google.ios.youtube identifier. Sign with an explicit App ID owned by your Apple Developer Team. The relay settings were saved, but remote updates remain off."
+                            )
+                        );
+                    }
+                }]];
+    [settingsViewController
+        presentViewController:alert
+                     animated:YES
+                   completion:nil];
 }
 
 static YTSettingsViewController *CISettingsControllerForManager(id manager) {
@@ -124,6 +476,126 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             return YES;
         }];
     [items addObject:language];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        switchItemWithTitle:CILocalized(@"DISABLE_FOR_SHORTS", @"Disable for Shorts")
+        titleDescription:CILocalized(@"DISABLE_FOR_SHORTS_DESCRIPTION", @"Do not start a Live Activity or search for lyrics while watching Shorts.")
+        accessibilityIdentifier:@"CaptionIsland.DisableForShorts"
+        switchOn:CIPreferenceBool(CIDisableForShortsKey, YES)
+        switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
+            CIStoreBool(CIDisableForShortsKey, enabled);
+            return YES;
+        } settingItemId:0]];
+
+    NSString *durationLimitTitle =
+        CILocalized(@"MAXIMUM_VIDEO_DURATION", @"Maximum video duration");
+    NSArray<NSNumber *> *durationChoices =
+        @[@1, @3, @5, @10, @15, @30, @60, @0];
+    YTSettingsSectionItem *durationLimit = [%c(YTSettingsSectionItem)
+        itemWithTitle:durationLimitTitle
+        titleDescription:CILocalized(@"MAXIMUM_VIDEO_DURATION_DESCRIPTION", @"Caption Island stays off when a video is longer than this limit.")
+        accessibilityIdentifier:@"CaptionIsland.MaximumVideoDuration"
+        detailTextBlock:^NSString * {
+            return CIDurationLimitTitle(CIMaximumVideoDurationMinutes());
+        }
+        selectBlock:^BOOL(__unused YTSettingsCell *cell,
+                          __unused NSUInteger sectionItemIndex) {
+            NSMutableArray<YTSettingsSectionItem *> *rows =
+                [NSMutableArray arrayWithCapacity:durationChoices.count];
+            for (NSNumber *choice in durationChoices) {
+                [rows addObject:[%c(YTSettingsSectionItem)
+                    checkmarkItemWithTitle:
+                        CIDurationLimitTitle(choice.integerValue)
+                    selectBlock:^BOOL(
+                        __unused YTSettingsCell *pickerCell,
+                        __unused NSUInteger pickerIndex
+                    ) {
+                        CIStoreInteger(
+                            CIMaximumVideoDurationMinutesKey,
+                            choice.integerValue
+                        );
+                        [settingsViewController reloadData];
+                        return YES;
+                    }]];
+            }
+            NSUInteger selected = [durationChoices indexOfObject:
+                @(CIMaximumVideoDurationMinutes())];
+            if (selected == NSNotFound) selected = 2;
+            YTSettingsPickerViewController *picker =
+                [[%c(YTSettingsPickerViewController) alloc]
+                    initWithNavTitle:durationLimitTitle
+                    pickerSectionTitle:nil
+                    rows:rows
+                    selectedItemIndex:selected
+                    parentResponder:
+                        [settingsViewController parentResponder]];
+            [settingsViewController pushViewController:picker];
+            return YES;
+        }];
+    [items addObject:durationLimit];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        switchItemWithTitle:CILocalized(
+            @"AOD_REMOTE_PUSH",
+            @"AOD remote updates"
+        )
+        titleDescription:CILocalized(
+            @"AOD_REMOTE_PUSH_DESCRIPTION",
+            @"Upload the selected timeline and playback metadata to your HTTPS relay. The relay sends current and next lines through Apple APNs; iOS may delay or throttle delivery and AOD refreshes."
+        )
+        accessibilityIdentifier:@"CaptionIsland.PushRelayEnabled"
+        switchOn:CIPreferenceBool(CIPushRelayEnabledKey, NO)
+        switchBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            BOOL enabled
+        ) {
+            if (!enabled) {
+                CIStoreBool(CIPushRelayEnabledKey, NO);
+            } else if (!CIPushRelayHasSignerOwnedBundleID()) {
+                CIStoreBool(CIPushRelayEnabledKey, NO);
+                CISchedulePushRelayError(
+                    settingsViewController,
+                    CILocalized(
+                        @"PUSH_RELAY_CUSTOM_APP_ID_REQUIRED",
+                        @"AOD push cannot use Google's com.google.ios.youtube identifier. Sign with an explicit App ID owned by your Apple Developer Team. Relay settings can still be saved, but remote updates remain off."
+                    )
+                );
+            } else if (CIPushRelayCredentialsAreReady()) {
+                CIStoreBool(CIPushRelayEnabledKey, YES);
+            } else {
+                CIStoreBool(CIPushRelayEnabledKey, NO);
+                CIPresentPushRelayConfiguration(
+                    settingsViewController,
+                    YES
+                );
+            }
+            [settingsViewController reloadData];
+            return YES;
+        } settingItemId:0]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(
+            @"PUSH_RELAY_CONFIGURATION",
+            @"AOD Push Relay"
+        )
+        titleDescription:CILocalized(
+            @"PUSH_RELAY_CONFIGURATION_DESCRIPTION",
+            @"Store your HTTPS relay URL and access token. Saving here does not enable uploads; use the separate AOD remote updates switch."
+        )
+        accessibilityIdentifier:@"CaptionIsland.PushRelayConfiguration"
+        detailTextBlock:^NSString * {
+            return CIPushRelayDetail();
+        }
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            CIPresentPushRelayConfiguration(
+                settingsViewController,
+                NO
+            );
+            return YES;
+        }]];
 
     [items addObject:[%c(YTSettingsSectionItem)
         switchItemWithTitle:CILocalized(@"EXTERNAL_LYRICS", @"LRCLIB lyrics")

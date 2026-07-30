@@ -40,7 +40,7 @@ static NSString *CIScrubLogValue(NSString *value) {
             @[@"(?i)\\bBearer\\s+[A-Za-z0-9._~+/=-]+", @"Bearer <redacted>"],
             @[@"(?i)\\b(authorization|cookie|set-cookie)\\b\\s*[:=]\\s*.*",
               @"$1=<redacted>"],
-            @[@"(?i)\\b(api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token)\\b\\s*[:=]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s,;]+)",
+            @[@"(?i)\\b(api[-_ ]?key|(?:access|refresh|push|device|apns|relay)[-_ ]?token)\\b\\s*[:=]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s,;]+)",
               @"$1=<redacted>"],
             @[@"(?i)\\b(plainLyrics|syncedLyrics|lyricText|captionText|lyrics?)\\b\\s*[:=]\\s*.*",
               @"$1=<text redacted>"],

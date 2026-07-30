@@ -40,6 +40,7 @@ int main(void) {
                         @"title": @"Artist - Song",
                         @"author": @"Artist",
                         @"lengthSeconds": @210,
+                        @"isShorts": @YES,
                     },
                     // Metadata-only protobuf tracks must not shadow the
                     // MLInnerTubeCaptionTrack URLs on activeVideo.
@@ -58,6 +59,8 @@ int main(void) {
             [CIYouTubeInspector contextFromPlaybackData:playbackData
                                        playerController:controller];
         CIAssert(context != nil, @"valid player data should create a context");
+        CIAssert(context.isShorts,
+            @"explicit YouTube Shorts metadata should be preserved");
         CIAssert(context.captionTracks.count == 2,
             @"active player URL tracks should take priority over protobuf metadata");
         CIAssert([context.captionTracks.firstObject.baseURL isEqualToString:manualURL.absoluteString],
@@ -98,6 +101,55 @@ int main(void) {
             @"translated timedtext URLs should be rejected before download");
         CIAssert([CIYouTubeInspector requestURLsForTrack:translated].count == 0,
             @"translated timedtext URLs must not enter the format fallback");
+
+        NSMutableDictionary *verticalController = [@{
+            @"currentVideoID": @"vertical-video",
+            @"currentVideoTotalMediaTime": @45,
+            @"isCurrentVideoVertical": @YES,
+        } mutableCopy];
+        NSDictionary *verticalPlaybackData = @{
+            @"playerResponse": @{
+                @"playerData": @{
+                    @"videoDetails": @{
+                        @"videoId": @"vertical-video",
+                        @"title": @"Ordinary vertical video",
+                        @"lengthSeconds": @45,
+                    },
+                },
+            },
+        };
+        CIVideoContext *verticalContext =
+            [CIYouTubeInspector
+                contextFromPlaybackData:verticalPlaybackData
+                playerController:verticalController];
+        CIAssert(!verticalContext.isShorts,
+            @"vertical layout alone must not be treated as Shorts");
+        [CIYouTubeInspector
+            markPlayerControllerAsShorts:verticalController];
+        CIVideoContext *markedShortsContext =
+            [CIYouTubeInspector
+                contextFromPlaybackData:verticalPlaybackData
+                playerController:verticalController];
+        CIAssert(markedShortsContext.isShorts,
+            @"a Shorts container marker should survive later context refreshes");
+        verticalController[@"currentVideoID"] = @"regular-reused-player";
+        NSDictionary *reusedPlaybackData = @{
+            @"playerResponse": @{
+                @"playerData": @{
+                    @"videoDetails": @{
+                        @"videoId": @"regular-reused-player",
+                        @"title": @"Regular watch page",
+                        @"lengthSeconds": @180,
+                    },
+                },
+            },
+        };
+        CIVideoContext *reusedContext =
+            [CIYouTubeInspector
+                contextFromPlaybackData:reusedPlaybackData
+                playerController:verticalController];
+        CIAssert(!reusedContext.isShorts,
+            @"a reused player must not carry its old Shorts marker to a new video");
 
         NSLog(@"YouTube inspector smoke passed");
     }

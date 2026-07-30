@@ -6,6 +6,7 @@
 #import <YouTubeHeader/YTPlayerOverlayManager.h>
 #import <YouTubeHeader/YTPlayerPIPController.h>
 #import <YouTubeHeader/YTPlayerViewController.h>
+#import <YouTubeHeader/YTShortsPlayerViewController.h>
 #import <YouTubeHeader/YTSingleVideoTime.h>
 #import <objc/runtime.h>
 #import <math.h>
@@ -24,13 +25,24 @@
 
 @interface YTPlayerPIPController (CaptionIslandPiPRecovery)
 - (void)pictureInPicturePlaybackPauseRequested;
-- (void)pictureInPicturePlaybackResumeRequested;
 - (void)didStopPictureInPicture;
+@end
+
+@interface YTPlayerViewController (CaptionIslandRemotePlayback)
+- (void)play;
+- (void)pause;
+- (void)varispeedSwitchController:(id)controller
+                    didSelectRate:(float)rate;
 @end
 
 static const void *CISuppressedStateKey = &CISuppressedStateKey;
 static const void *CIActivePlayerKey = &CIActivePlayerKey;
 static const void *CIRetiredPlayerKey = &CIRetiredPlayerKey;
+static const void *CIShortsPlayerKey = &CIShortsPlayerKey;
+static const void *CIPendingShortsPlayerKey =
+    &CIPendingShortsPlayerKey;
+static const void *CIDurationRefreshVideoKey =
+    &CIDurationRefreshVideoKey;
 static __weak YTPlayerViewController *CIActivePlayerController;
 static __weak AVPictureInPictureController *CIPiPSystemController;
 static __weak YTPlayerPIPController *CIPiPRecoveryController;
@@ -38,10 +50,14 @@ static NSMapTable<
     YTPlayerPIPController *,
     YTSingleVideoController *
 > *CIPiPActiveVideoByController;
+static NSHashTable<YTPlayerPIPController *> *
+    CIPiPDeferredPauseControllers;
+static NSHashTable<YTPlayerPIPController *> *
+    CIPiPLifecycleControllers;
+static IMP CIPiPOriginalPauseRequestedImplementation;
 static NSUInteger CIPlaybackLifecycleGeneration;
 static NSUInteger CIPictureInPicturePreparationGeneration;
 static NSUInteger CIPiPAudioLifecycleGeneration;
-static NSUInteger CIPiPAudioRecoveryToken;
 static NSUInteger CIPiPStopCandidateGeneration;
 static NSUInteger CIPiPConsumedDidStopGeneration;
 static NSTimeInterval CIPiPStopCandidateUptime;
@@ -52,13 +68,19 @@ static BOOL CIPiPStopCandidate;
 static BOOL CIPiPStopCandidateConfirmedByWillStop;
 static NSTimeInterval CIPiPWillStopUptime;
 static NSString *CIPiPStopCandidateVideoID;
+static NSUInteger CIPiPLatePauseSuppressionGeneration;
+static NSTimeInterval CIPiPLatePauseSuppressionUntil;
+static NSString *CIPiPLatePauseSuppressionVideoID;
+static NSUInteger CIPiPLatePauseSuppressionCount;
+static BOOL CIRemotePlaybackPlaying = YES;
+static double CIRemotePlaybackRate = 1.0;
 
 static const NSTimeInterval CIPiPRecentPlaybackInterval = 1.8;
 static const NSTimeInterval CIPiPStopToWillStopMaxInterval = 0.65;
 static const NSTimeInterval CIPiPWillStopToDidStopMaxInterval = 2.0;
 static const NSTimeInterval CIPiPPauseClassificationDelay = 0.80;
-static const NSTimeInterval CIPiPAudioRecoveryDelay = 0.20;
-static const NSTimeInterval CIPiPRecoveryVerificationDelay = 0.85;
+static const NSTimeInterval CIPiPLatePauseSuppressionInterval = 1.2;
+static const NSTimeInterval CIPiPReadOnlyVerificationDelay = 1.0;
 
 void CIShowToast(NSString *text) {
     if (text.length == 0) return;
@@ -90,12 +112,235 @@ static NSString *CIPlayerVideoID(YTPlayerViewController *controller) {
     return videoID ?: @"";
 }
 
+static void CISynchronizeRemotePlayback(
+    YTPlayerViewController *controller,
+    BOOL playing,
+    double rate,
+    BOOL force
+) {
+    if (!controller || controller != CIActivePlayerController ||
+        CIPlayerControllerIsAdvertising(controller)) return;
+    NSTimeInterval position =
+        controller.currentVideoMediaTime;
+    if (!isfinite(position) || position < 0) return;
+    CIRemotePlaybackPlaying = playing;
+    if (isfinite(rate) && rate >= 0.25 && rate <= 4.0) {
+        CIRemotePlaybackRate = rate;
+    }
+    [CICaptionCoordinator.sharedCoordinator
+        synchronizePlaybackAtPosition:position
+                              playing:playing
+                                 rate:CIRemotePlaybackRate
+                                force:force];
+}
+
+static void CIMarkShortsPlayer(
+    YTPlayerViewController *controller
+);
+
+static BOOL CIPlayerControllerIsShorts(
+    YTPlayerViewController *controller
+) {
+    if (!controller) return NO;
+    id marker =
+        objc_getAssociatedObject(controller, CIShortsPlayerKey);
+    NSString *videoID = CIPlayerVideoID(controller);
+    if ([marker isKindOfClass:NSString.class] &&
+        videoID.length > 0 &&
+        [marker isEqualToString:videoID]) {
+        return YES;
+    }
+    if ([objc_getAssociatedObject(
+            controller,
+            CIPendingShortsPlayerKey
+        ) boolValue] &&
+        videoID.length > 0) {
+        CIMarkShortsPlayer(controller);
+        return YES;
+    }
+    UIViewController *ancestor = controller;
+    for (NSUInteger depth = 0; ancestor && depth < 10; depth++) {
+        NSString *className =
+            NSStringFromClass(ancestor.class).lowercaseString;
+        if ([className containsString:@"shorts"] ||
+            [className containsString:@"reelplayer"]) {
+            CIMarkShortsPlayer(controller);
+            return YES;
+        }
+        ancestor = ancestor.parentViewController;
+    }
+    return NO;
+}
+
+static void CIMarkShortsPlayer(
+    YTPlayerViewController *controller
+) {
+    if (!controller) return;
+    NSString *videoID = CIPlayerVideoID(controller);
+    if (videoID.length == 0) {
+        objc_setAssociatedObject(
+            controller,
+            CIPendingShortsPlayerKey,
+            @YES,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
+        return;
+    }
+    objc_setAssociatedObject(
+        controller,
+        CIPendingShortsPlayerKey,
+        nil,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    );
+    [CIYouTubeInspector markPlayerControllerAsShorts:controller];
+    objc_setAssociatedObject(
+        controller,
+        CIShortsPlayerKey,
+        videoID,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    );
+}
+
+static CIVideoContext *CIContextForPlayer(
+    id playbackData,
+    YTPlayerViewController *controller
+) {
+    CIVideoContext *context =
+        [CIYouTubeInspector contextFromPlaybackData:playbackData
+                                   playerController:controller];
+    if (context) {
+        if (context.isShorts) {
+            CIMarkShortsPlayer(controller);
+        } else {
+            context.shorts =
+                CIPlayerControllerIsShorts(controller);
+        }
+    }
+    return context;
+}
+
+static void CIReevaluateShortsPlayer(
+    YTPlayerViewController *controller
+) {
+    if (!controller || controller != CIActivePlayerController ||
+        CIPlayerControllerIsAdvertising(controller)) return;
+    CIVideoContext *context =
+        [CIYouTubeInspector contextFromPlaybackData:nil
+                                   playerController:controller];
+    if (!context.videoID.length ||
+        ![context.videoID isEqualToString:
+            CIPlayerVideoID(controller)]) return;
+    context.shorts = YES;
+    [CICaptionCoordinator.sharedCoordinator
+        activateContext:context];
+}
+
+static YTPlayerViewController *CIPlayerFromShortsContainer(
+    UIViewController *container
+) {
+    if (!container) return nil;
+    id candidate;
+    @try {
+        candidate = [container valueForKey:@"player"];
+    } @catch (__unused NSException *exception) {
+        candidate = nil;
+    }
+    Class playerClass =
+        NSClassFromString(@"YTPlayerViewController");
+    if (playerClass &&
+        [candidate isKindOfClass:playerClass]) {
+        return candidate;
+    }
+    for (UIViewController *child in
+         container.childViewControllers) {
+        if (playerClass &&
+            [child isKindOfClass:playerClass]) {
+            return (YTPlayerViewController *)child;
+        }
+        YTPlayerViewController *nested =
+            CIPlayerFromShortsContainer(child);
+        if (nested) return nested;
+    }
+    return nil;
+}
+
+static void CIRefreshDurationPolicyIfNeeded(
+    YTPlayerViewController *controller
+) {
+    if (!controller || CIPlayerControllerIsAdvertising(controller)) {
+        return;
+    }
+    NSString *videoID = CIPlayerVideoID(controller);
+    NSTimeInterval duration =
+        controller.currentVideoTotalMediaTime;
+    if (videoID.length == 0 || !isfinite(duration) ||
+        duration <= 0) return;
+    NSString *lastRefreshedVideoID =
+        objc_getAssociatedObject(
+            controller,
+            CIDurationRefreshVideoKey
+        );
+    if ([lastRefreshedVideoID isEqualToString:videoID]) return;
+    objc_setAssociatedObject(
+        controller,
+        CIDurationRefreshVideoKey,
+        videoID,
+        OBJC_ASSOCIATION_COPY_NONATOMIC
+    );
+    CIVideoContext *context =
+        CIContextForPlayer(nil, controller);
+    if (context.duration > 0 &&
+        [context.videoID isEqualToString:videoID]) {
+        [CICaptionCoordinator.sharedCoordinator
+            activateContext:context];
+    }
+}
+
 static void CIClearPiPStopCandidate(void) {
+    @synchronized (CIPiPDeferredPauseControllers) {
+        [CIPiPDeferredPauseControllers removeAllObjects];
+    }
     CIPiPStopCandidate = NO;
     CIPiPStopCandidateGeneration = 0;
     CIPiPStopCandidateUptime = 0;
     CIPiPStopCandidateConfirmedByWillStop = NO;
     CIPiPStopCandidateVideoID = nil;
+}
+
+static void CIClearLatePiPPauseSuppression(void) {
+    CIPiPLatePauseSuppressionGeneration = 0;
+    CIPiPLatePauseSuppressionUntil = 0;
+    CIPiPLatePauseSuppressionVideoID = nil;
+    CIPiPLatePauseSuppressionCount = 0;
+}
+
+static void CIDeferPiPPauseRequest(
+    YTPlayerPIPController *controller
+) {
+    if (!controller) return;
+    @synchronized (CIPiPDeferredPauseControllers) {
+        [CIPiPDeferredPauseControllers addObject:controller];
+    }
+}
+
+static NSUInteger CIDeliverDeferredPiPPauseRequests(void) {
+    NSArray<YTPlayerPIPController *> *controllers;
+    @synchronized (CIPiPDeferredPauseControllers) {
+        controllers =
+            CIPiPDeferredPauseControllers.allObjects ?: @[];
+        [CIPiPDeferredPauseControllers removeAllObjects];
+    }
+    if (!CIPiPOriginalPauseRequestedImplementation) return 0;
+    void (*invokeOriginal)(id, SEL) =
+        (void (*)(id, SEL))
+            CIPiPOriginalPauseRequestedImplementation;
+    for (YTPlayerPIPController *controller in controllers) {
+        invokeOriginal(
+            controller,
+            @selector(pictureInPicturePlaybackPauseRequested)
+        );
+    }
+    return controllers.count;
 }
 
 static BOOL CIPiPControllerIsActive(MLPIPController *controller) {
@@ -128,12 +373,26 @@ static void CIBeginPiPAudioLifecycle(
     AVPictureInPictureController *pictureInPictureController
 ) {
     CIPiPAudioLifecycleGeneration++;
-    CIPiPAudioRecoveryToken++;
     CIPiPSystemController = pictureInPictureController;
     CIPiPRecoveryController = nil;
     CIPiPConsumedDidStopGeneration = 0;
     CIPiPWillStopUptime = 0;
     CIPiPRestoreRequested = NO;
+    NSArray<YTPlayerPIPController *> *activeControllers;
+    @synchronized (CIPiPActiveVideoByController) {
+        activeControllers =
+            CIPiPActiveVideoByController.keyEnumerator.allObjects
+                ?: @[];
+    }
+    @synchronized (CIPiPLifecycleControllers) {
+        [CIPiPLifecycleControllers removeAllObjects];
+        for (YTPlayerPIPController *activeController
+                in activeControllers) {
+            [CIPiPLifecycleControllers
+                addObject:activeController];
+        }
+    }
+    CIClearLatePiPPauseSuppression();
     CIClearPiPStopCandidate();
     CIPiPPlaybackPauseStateKnown =
         [controller respondsToSelector:
@@ -149,6 +408,12 @@ static void CIObservePiPPlaybackStart(void) {
     CIPiPPlaybackPauseStateKnown = YES;
     CIPiPPlaybackPaused = NO;
     CIClearPiPStopCandidate();
+    CISynchronizeRemotePlayback(
+        CIActivePlayerController,
+        YES,
+        CIRemotePlaybackRate,
+        YES
+    );
 }
 
 static void CIUpdatePiPStopPairing(void) {
@@ -186,10 +451,19 @@ static void CISchedulePiPPauseClassification(
                 strongController &&
                 CIPiPControllerIsActive(strongController);
             if (piPRemainsActive) {
+                NSUInteger deliveredPauseCount =
+                    CIDeliverDeferredPiPPauseRequests();
                 CIClearPiPStopCandidate();
+                CISynchronizeRemotePlayback(
+                    CIActivePlayerController,
+                    NO,
+                    CIRemotePlaybackRate,
+                    YES
+                );
                 [CILogStore.sharedStore recordLevel:CILogLevelDebug
                     category:@"Background"
-                    message:@"PiP remained active after the pause request; classified it as an ordinary PiP pause and left playback paused."];
+                    format:@"PiP remained active after the pause request; delivered %lu deferred ordinary-pause callback(s).",
+                           (unsigned long)deliveredPauseCount];
             }
         }
     );
@@ -197,6 +471,16 @@ static void CISchedulePiPPauseClassification(
 
 static void CIObservePiPPlaybackStop(MLPIPController *controller) {
     YTPlayerViewController *playerController = CIActivePlayerController;
+    if (CIPiPStopCandidate &&
+        CIPiPStopCandidateGeneration ==
+            CIPiPAudioLifecycleGeneration) {
+        CIPiPPlaybackPauseStateKnown = YES;
+        CIPiPPlaybackPaused = YES;
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"Background"
+            message:@"Ignored a duplicate PiP stop callback while pause classification was already pending."];
+        return;
+    }
     BOOL systemPauseStateKnown =
         [controller respondsToSelector:
             @selector(pictureInPictureControllerIsPlaybackPaused:)] &&
@@ -244,11 +528,22 @@ static void CIObservePiPPlaybackStop(MLPIPController *controller) {
 }
 
 static void CIObservePiPWillStop(void) {
+    CIPictureInPicturePreparationGeneration++;
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     CIPiPWillStopUptime = now;
     NSTimeInterval stopToWillStop = CIPiPStopCandidateUptime > 0
         ? now - CIPiPStopCandidateUptime : -1.0;
     CIUpdatePiPStopPairing();
+    if (CIPiPStopCandidateConfirmedByWillStop &&
+        !CIPiPRestoreRequested) {
+        CIPiPLatePauseSuppressionGeneration =
+            CIPiPAudioLifecycleGeneration;
+        CIPiPLatePauseSuppressionUntil =
+            now + CIPiPLatePauseSuppressionInterval;
+        CIPiPLatePauseSuppressionVideoID =
+            [CIPiPStopCandidateVideoID copy];
+        CIPiPLatePauseSuppressionCount = 0;
+    }
     [CILogStore.sharedStore recordLevel:CILogLevelDebug
         category:@"Background"
         format:@"PiP will stop: matched playing pause candidate %d (pause-to-stop gap %.2fs, restore %d).",
@@ -383,6 +678,7 @@ static void CIHandlePlaybackTimeValue(YTPlayerViewController *controller,
     CICaptionCoordinator *coordinator = CICaptionCoordinator.sharedCoordinator;
     CIUpdateSuppression(controller);
     if (!CIPlayerControllerIsAdvertising(controller)) {
+        CIRefreshDurationPolicyIfNeeded(controller);
         [CIBackgroundPlaybackMonitor.sharedMonitor
             observeNativePlaybackTime:playbackTime
                      playerController:controller];
@@ -417,8 +713,7 @@ static void CIRefreshCaptionContext(YTPlayerOverlayManager *overlayManager) {
     CIUpdateSuppression(controller);
     if (CIPlayerControllerIsAdvertising(controller)) return;
     if (controller.overlayManager && controller.overlayManager != overlayManager) return;
-    CIVideoContext *updated =
-        [CIYouTubeInspector contextFromPlaybackData:nil playerController:controller];
+    CIVideoContext *updated = CIContextForPlayer(nil, controller);
     if (updated.videoID.length > 0 &&
         [updated.videoID isEqualToString:controller.currentVideoID]) {
         [CICaptionCoordinator.sharedCoordinator activateContext:updated];
@@ -437,7 +732,8 @@ static void CIScheduleCaptionRefresh(YTPlayerViewController *controller,
         if (!strongController || ![[strongController currentVideoID] isEqualToString:videoID]) return;
         CIUpdateSuppression(strongController);
         if (CIPlayerControllerIsAdvertising(strongController)) return;
-        CIVideoContext *updated = [CIYouTubeInspector contextFromPlaybackData:nil playerController:strongController];
+        CIVideoContext *updated =
+            CIContextForPlayer(nil, strongController);
         if ([updated.videoID isEqualToString:videoID]) {
             [CICaptionCoordinator.sharedCoordinator activateContext:updated];
         }
@@ -461,14 +757,22 @@ static void CIResolveActivatedPlayback(YTPlayerViewController *controller,
         return;
     }
     [coordinator playerViewDidAppear];
-    CIVideoContext *context = [CIYouTubeInspector contextFromPlaybackData:playbackData
-                                                        playerController:controller];
+    CIVideoContext *context =
+        CIContextForPlayer(playbackData, controller);
     if (!context) {
         [CIBackgroundPlaybackMonitor.sharedMonitor detachPlayerController:controller];
         [coordinator stop];
         return;
     }
     [coordinator activateContext:context];
+    if (context.duration > 0) {
+        objc_setAssociatedObject(
+            controller,
+            CIDurationRefreshVideoKey,
+            context.videoID,
+            OBJC_ASSOCIATION_COPY_NONATOMIC
+        );
+    }
 
     // Caption tracks can arrive shortly after the player response. Use three
     // bounded snapshots; there is no foreground polling loop.
@@ -477,6 +781,13 @@ static void CIResolveActivatedPlayback(YTPlayerViewController *controller,
 
 static void CIActivatePlayback(YTPlayerViewController *controller, id playbackData) {
     CIPlaybackLifecycleGeneration++;
+    CIRemotePlaybackPlaying = YES;
+    objc_setAssociatedObject(
+        controller,
+        CIDurationRefreshVideoKey,
+        nil,
+        OBJC_ASSOCIATION_COPY_NONATOMIC
+    );
     if (CIActivePlayerController && CIActivePlayerController != controller) {
         objc_setAssociatedObject(CIActivePlayerController, CIActivePlayerKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(CIActivePlayerController, CIRetiredPlayerKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -581,6 +892,46 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 
 %end
 
+%group CaptionIslandShortsPlayerSetterHooks
+
+%hook YTShortsPlayerViewController
+
+- (void)setPlayer:(YTPlayerViewController *)player {
+    YTPlayerViewController *previousPlayer =
+        CIPlayerFromShortsContainer(self);
+    %orig;
+    if (previousPlayer && previousPlayer != player) {
+        objc_setAssociatedObject(
+            previousPlayer,
+            CIPendingShortsPlayerKey,
+            nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
+    }
+    CIMarkShortsPlayer(player);
+    CIReevaluateShortsPlayer(player);
+}
+
+%end
+
+%end
+
+%group CaptionIslandShortsLifecycleHooks
+
+%hook YTShortsPlayerViewController
+
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    YTPlayerViewController *player =
+        CIPlayerFromShortsContainer(self);
+    CIMarkShortsPlayer(player);
+    CIReevaluateShortsPlayer(player);
+}
+
+%end
+
+%end
+
 %group CaptionIslandAVKitPiPHooks
 
 %hook AVPictureInPictureController
@@ -665,11 +1016,22 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     restoreUserInterfaceForPictureInPictureStopWithCompletionHandler:
             (void (^)(BOOL restored))completionHandler {
     CIPiPRestoreRequested = YES;
-    CIPiPAudioRecoveryToken++;
+    CIClearLatePiPPauseSuppression();
+    NSUInteger deliveredPauseCount =
+        CIDeliverDeferredPiPPauseRequests();
+    if (deliveredPauseCount > 0) {
+        CISynchronizeRemotePlayback(
+            CIActivePlayerController,
+            NO,
+            CIRemotePlaybackRate,
+            YES
+        );
+    }
     CIClearPiPStopCandidate();
     [CILogStore.sharedStore recordLevel:CILogLevelDebug
         category:@"Background"
-        message:@"PiP is returning to YouTube; background-audio recovery is not needed."];
+        format:@"PiP is returning to YouTube; preserved %lu deferred pause callback(s) before restoring the interface.",
+               (unsigned long)deliveredPauseCount];
     %orig;
 }
 
@@ -688,6 +1050,9 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
             [CIPiPActiveVideoByController
                 setObject:activeSingleVideo
                    forKey:self];
+            @synchronized (CIPiPLifecycleControllers) {
+                [CIPiPLifecycleControllers addObject:self];
+            }
         } else {
             [CIPiPActiveVideoByController removeObjectForKey:self];
         }
@@ -696,11 +1061,40 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 }
 
 - (void)pictureInPicturePlaybackPauseRequested {
+    NSString *controllerVideoID =
+        CIYTPiPControllerVideoID(self);
+    NSTimeInterval uptime =
+        NSProcessInfo.processInfo.systemUptime;
+    BOOL controllerBelongsToLifecycle;
+    @synchronized (CIPiPLifecycleControllers) {
+        controllerBelongsToLifecycle =
+            [CIPiPLifecycleControllers containsObject:self];
+    }
+    BOOL shouldSuppressLateDismissalPause =
+        CIPiPLatePauseSuppressionGeneration ==
+            CIPiPAudioLifecycleGeneration &&
+        uptime <= CIPiPLatePauseSuppressionUntil &&
+        (controllerBelongsToLifecycle ||
+         self == CIPiPRecoveryController ||
+         (controllerVideoID.length > 0 &&
+          (CIPiPLatePauseSuppressionVideoID.length == 0 ||
+           [controllerVideoID isEqualToString:
+              CIPiPLatePauseSuppressionVideoID])));
+    if (shouldSuppressLateDismissalPause) {
+        CIPiPLatePauseSuppressionCount++;
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"Background"
+            format:@"Discarded a late PiP teardown pause for video %@ without touching the stopped renderer graph.",
+                   controllerVideoID];
+        return;
+    }
     YTPlayerPIPController *selectedController =
         CIPiPRecoveryController;
-    BOOL shouldSelect =
+    BOOL shouldDefer =
         CIPiPStopCandidate &&
-        CIYTPiPControllerMatchesCandidate(self) &&
+        CIYTPiPControllerMatchesCandidate(self);
+    BOOL shouldSelect =
+        shouldDefer &&
         (!selectedController ||
          (!CIYTPiPControllerOwnsActiveVideo(selectedController) &&
           CIYTPiPControllerOwnsActiveVideo(self)));
@@ -709,7 +1103,15 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
         [CILogStore.sharedStore recordLevel:CILogLevelDebug
             category:@"Background"
             format:@"Selected the PiP observer for video %@ as the background-audio recovery controller.",
-                   CIYTPiPControllerVideoID(self)];
+                   controllerVideoID];
+    }
+    if (shouldDefer) {
+        CIDeferPiPPauseRequest(self);
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"Background"
+            format:@"Deferred PiP pause for video %@ until the close-versus-pause lifecycle is known.",
+                   controllerVideoID];
+        return;
     }
     %orig;
 }
@@ -719,9 +1121,15 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
         CIPiPRecoveryController;
     BOOL controllerMatches =
         CIYTPiPControllerMatchesCandidate(self);
+    BOOL controllerBelongsToLifecycle;
+    @synchronized (CIPiPLifecycleControllers) {
+        controllerBelongsToLifecycle =
+            [CIPiPLifecycleControllers containsObject:self];
+    }
     BOOL shouldConsumeLifecycle =
         (selectedController == self) ||
-        (!selectedController && controllerMatches);
+        (!selectedController &&
+         (controllerMatches || controllerBelongsToLifecycle));
     if (!shouldConsumeLifecycle ||
         CIPiPConsumedDidStopGeneration ==
             CIPiPAudioLifecycleGeneration) {
@@ -755,23 +1163,92 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     BOOL applicationRemainsBackgrounded =
         UIApplication.sharedApplication.applicationState ==
         UIApplicationStateBackground;
-    BOOL shouldRecover =
-        candidateIsCurrent &&
+    NSUInteger deferredPauseCountBeforeStop;
+    @synchronized (CIPiPDeferredPauseControllers) {
+        deferredPauseCountBeforeStop =
+            CIPiPDeferredPauseControllers.allObjects.count;
+    }
+    NSString *expectedVideoID =
+        CIPiPStopCandidateVideoID.length > 0
+            ? [CIPiPStopCandidateVideoID copy]
+            : [CIYTPiPControllerVideoID(self) copy];
+    BOOL shouldSuppressLatePause =
         !restoreWasRequested &&
-        applicationRemainsBackgrounded;
-    NSString *expectedVideoID = [CIPiPStopCandidateVideoID copy];
-    NSUInteger piPGeneration = CIPiPAudioLifecycleGeneration;
-    NSUInteger recoveryToken = ++CIPiPAudioRecoveryToken;
+        (candidateIsCurrent ||
+         deferredPauseCountBeforeStop > 0);
+    if (shouldSuppressLatePause) {
+        CIPiPLatePauseSuppressionGeneration =
+            CIPiPAudioLifecycleGeneration;
+        CIPiPLatePauseSuppressionUntil =
+            NSProcessInfo.processInfo.systemUptime +
+            CIPiPLatePauseSuppressionInterval;
+        CIPiPLatePauseSuppressionVideoID =
+            expectedVideoID;
+    }
+    CIPictureInPicturePreparationGeneration++;
+    NSUInteger lifecycleGeneration =
+        CIPiPAudioLifecycleGeneration;
+    NSUInteger playbackGeneration =
+        CIPlaybackLifecycleGeneration;
+    __weak YTPlayerViewController *verificationController =
+        CIActivePlayerController;
+    NSTimeInterval positionBeforeVerification =
+        verificationController.currentVideoMediaTime;
+    __block UIBackgroundTaskIdentifier
+        verificationBackgroundTask =
+            UIBackgroundTaskInvalid;
+    void (^finishVerificationBackgroundTask)(void) = ^{
+        if (verificationBackgroundTask ==
+            UIBackgroundTaskInvalid) return;
+        UIBackgroundTaskIdentifier task =
+            verificationBackgroundTask;
+        verificationBackgroundTask =
+            UIBackgroundTaskInvalid;
+        [UIApplication.sharedApplication
+            endBackgroundTask:task];
+    };
+    if (!restoreWasRequested &&
+        applicationRemainsBackgrounded) {
+        verificationBackgroundTask =
+            [UIApplication.sharedApplication
+                beginBackgroundTaskWithName:
+                    @"CaptionIsland.PiPClockVerification"
+                expirationHandler:^{
+                    [CILogStore.sharedStore
+                        recordLevel:CILogLevelWarning
+                        category:@"Background"
+                        message:@"PiP clock verification background time expired before the relay correction finished."];
+                    finishVerificationBackgroundTask();
+                }];
+    }
+
+    // Keep the candidate alive across YouTube's didStop implementation:
+    // some versions emit their playback-pause callback from inside teardown.
+    %orig;
+
+    NSUInteger deferredPauseCount;
+    @synchronized (CIPiPDeferredPauseControllers) {
+        deferredPauseCount =
+            CIPiPDeferredPauseControllers.allObjects.count;
+    }
+    NSUInteger suppressedPauseCount =
+        deferredPauseCount +
+        CIPiPLatePauseSuppressionCount;
+    BOOL suppressedPlayingDismissalPause =
+        !restoreWasRequested &&
+        suppressedPauseCount > 0 &&
+        (candidateIsCurrent || applicationRemainsBackgrounded);
     NSString *classification = restoreWasRequested
         ? @"restore"
-        : (shouldRecover
-            ? @"non-restore dismissal with recovery"
-            : @"non-restore dismissal without recovery");
+        : (suppressedPlayingDismissalPause
+            ? @"non-restore dismissal with pause suppression"
+            : @"non-restore dismissal without a deferred pause");
     [CILogStore.sharedStore recordLevel:CILogLevelDebug
         category:@"Background"
-        format:@"PiP did stop: %@ (candidate %d, confirmed %d, candidate age %.2fs, will-stop age %.2fs, app state %ld).",
+        format:@"PiP did stop: %@ (candidate %d, confirmed %d, suppressed pauses %lu, candidate age %.2fs, will-stop age %.2fs, app state %ld).",
                classification, CIPiPStopCandidate,
                CIPiPStopCandidateConfirmedByWillStop,
+               (unsigned long)suppressedPauseCount,
                candidateAge, willStopAge,
                (long)UIApplication.sharedApplication.applicationState];
 
@@ -781,122 +1258,124 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     CIPiPRestoreRequested = NO;
     CIPiPPlaybackPauseStateKnown = NO;
     CIPiPPlaybackPaused = NO;
-    %orig;
 
-    if (!shouldRecover) {
-        if (!restoreWasRequested && applicationRemainsBackgrounded) {
-            [CILogStore.sharedStore recordLevel:CILogLevelDebug
-                category:@"Background"
-                format:@"PiP stopped in the background without a current playing-state candidate (candidate age %.2fs); audio was left unchanged.",
-                       candidateAge];
-        }
-        return;
+    if (!restoreWasRequested) {
+        [CIBackgroundPlaybackMonitor.sharedMonitor
+            finishPictureInPicture];
     }
-    YTPlayerPIPController *retainedController = self;
-    dispatch_after(
-        dispatch_time(
-            DISPATCH_TIME_NOW,
-            (int64_t)(CIPiPAudioRecoveryDelay * NSEC_PER_SEC)
-        ),
-        dispatch_get_main_queue(),
-        ^{
-            BOOL tokenIsCurrent =
-                recoveryToken == CIPiPAudioRecoveryToken;
-            BOOL piPGenerationIsCurrent =
-                piPGeneration == CIPiPAudioLifecycleGeneration;
-            BOOL applicationStillBackgrounded =
-                UIApplication.sharedApplication.applicationState ==
-                UIApplicationStateBackground;
-            if (!tokenIsCurrent || !piPGenerationIsCurrent ||
-                !applicationStillBackgrounded) {
-                [CILogStore.sharedStore recordLevel:CILogLevelDebug
-                    category:@"Background"
-                    format:@"Canceled PiP background-audio recovery because state changed (token %d, PiP generation %d, background %d).",
-                           tokenIsCurrent, piPGenerationIsCurrent,
-                           applicationStillBackgrounded];
-                return;
-            }
-
-            YTPlayerViewController *playerController =
-                CIActivePlayerController;
-            if (!CIPlayerCanContinueInBackground(
-                    playerController, expectedVideoID)) {
-                [CILogStore.sharedStore recordLevel:CILogLevelDebug
-                    category:@"Background"
-                    format:@"Canceled PiP background-audio recovery because video %@ is no longer eligible.",
-                           expectedVideoID];
-                return;
-            }
-            if (![retainedController respondsToSelector:
-                    @selector(pictureInPicturePlaybackResumeRequested)]) {
-                [CILogStore.sharedStore recordLevel:CILogLevelWarning
-                    category:@"Background"
-                    message:@"YouTube does not expose the PiP playback-resume callback; background audio could not be restored after dismissing PiP."];
-                return;
-            }
-
-            NSTimeInterval positionBeforeRecovery =
-                playerController.currentVideoMediaTime;
-            [retainedController pictureInPicturePlaybackResumeRequested];
-            [CIBackgroundPlaybackMonitor.sharedMonitor
-                attachPlayerController:playerController];
+    if (suppressedPlayingDismissalPause) {
+        if (expectedVideoID.length > 0 &&
+            isfinite(positionBeforeVerification) &&
+            positionBeforeVerification >= 0) {
             [CICaptionCoordinator.sharedCoordinator
-                prepareForExternalPlayback];
-            NSTimeInterval playbackTime =
-                playerController.currentVideoMediaTime;
-            if (isfinite(playbackTime) && playbackTime >= 0) {
-                [CICaptionCoordinator.sharedCoordinator
-                    updatePlaybackTime:playbackTime];
-            }
-            [CILogStore.sharedStore recordLevel:CILogLevelInfo
-                category:@"Background"
-                format:@"Requested background-audio continuation for video %@ after non-restore PiP dismissal.",
-                       expectedVideoID];
-            dispatch_after(
-                dispatch_time(
-                    DISPATCH_TIME_NOW,
-                    (int64_t)(
-                        CIPiPRecoveryVerificationDelay * NSEC_PER_SEC
-                    )
-                ),
-                dispatch_get_main_queue(),
-                ^{
-                    if (recoveryToken != CIPiPAudioRecoveryToken ||
-                        piPGeneration != CIPiPAudioLifecycleGeneration ||
-                        UIApplication.sharedApplication.applicationState !=
-                            UIApplicationStateBackground) return;
-                    YTPlayerViewController *verificationController =
-                        CIActivePlayerController;
-                    if (!CIPlayerCanContinueInBackground(
-                            verificationController, expectedVideoID)) return;
-                    NSTimeInterval positionAfterRecovery =
-                        verificationController.currentVideoMediaTime;
-                    BOOL playbackAdvanced =
-                        isfinite(positionBeforeRecovery) &&
-                        isfinite(positionAfterRecovery) &&
-                        positionAfterRecovery >
-                            positionBeforeRecovery + 0.04;
-                    if (playbackAdvanced) {
-                        [CILogStore.sharedStore
-                            recordLevel:CILogLevelInfo
-                            category:@"Background"
-                            format:@"Verified background playback for video %@ after PiP dismissal (%.1fs → %.1fs); Control Center should remain active.",
-                                   expectedVideoID,
-                                   positionBeforeRecovery,
-                                   positionAfterRecovery];
-                    } else {
-                        [CILogStore.sharedStore
-                            recordLevel:CILogLevelWarning
-                            category:@"Background"
-                            format:@"YouTube accepted the PiP resume request for video %@, but its playback clock did not advance (%.1fs → %.1fs).",
-                                   expectedVideoID,
-                                   positionBeforeRecovery,
-                                   positionAfterRecovery];
-                    }
-                }
-            );
+                synchronizePlaybackAtPosition:
+                    positionBeforeVerification
+                                      playing:YES
+                                         rate:
+                                             CIRemotePlaybackRate
+                                        force:YES];
         }
-    );
+        [CICaptionCoordinator.sharedCoordinator
+            prepareForExternalPlayback];
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            format:@"Suppressed %lu PiP teardown pause callback(s) for video %@; no command was sent to the torn-down player graph.",
+                   (unsigned long)suppressedPauseCount,
+                   expectedVideoID];
+        dispatch_after(
+            dispatch_time(
+                DISPATCH_TIME_NOW,
+                (int64_t)(
+                    CIPiPReadOnlyVerificationDelay *
+                    NSEC_PER_SEC
+                )
+            ),
+            dispatch_get_main_queue(),
+            ^{
+                if (lifecycleGeneration !=
+                        CIPiPAudioLifecycleGeneration ||
+                    playbackGeneration !=
+                        CIPlaybackLifecycleGeneration ||
+                    UIApplication.sharedApplication.applicationState !=
+                        UIApplicationStateBackground ||
+                    expectedVideoID.length == 0) {
+                    finishVerificationBackgroundTask();
+                    return;
+                }
+                YTPlayerViewController *controller =
+                    verificationController;
+                NSString *currentVideoID =
+                    CIPlayerVideoID(controller);
+                NSTimeInterval positionAfterVerification =
+                    controller.currentVideoMediaTime;
+                BOOL sameVideo =
+                    controller &&
+                    [currentVideoID isEqualToString:
+                        expectedVideoID];
+                BOOL clockAdvanced =
+                    sameVideo &&
+                    isfinite(positionBeforeVerification) &&
+                    isfinite(positionAfterVerification) &&
+                    positionAfterVerification >
+                        positionBeforeVerification + 0.04;
+                NSTimeInterval verifiedPosition =
+                    sameVideo &&
+                    isfinite(positionAfterVerification) &&
+                    positionAfterVerification >= 0
+                        ? positionAfterVerification
+                        : positionBeforeVerification;
+                if (!isfinite(verifiedPosition) ||
+                    verifiedPosition < 0) {
+                    [CILogStore.sharedStore
+                        recordLevel:CILogLevelWarning
+                        category:@"Background"
+                        format:@"PiP clock verification for video %@ had no valid playback position; the existing remote schedule was left unchanged.",
+                               expectedVideoID];
+                    finishVerificationBackgroundTask();
+                    return;
+                }
+                [CICaptionCoordinator.sharedCoordinator
+                    synchronizeRemotePlaybackCriticalAtPosition:
+                        verifiedPosition
+                                                    playing:
+                                                        clockAdvanced
+                                                       rate:
+                                                           CIRemotePlaybackRate
+                                            expectedVideoID:
+                                                expectedVideoID
+                                                 completion:
+                    ^(BOOL attempted) {
+                        CILogLevel level =
+                            attempted
+                                ? (clockAdvanced
+                                    ? CILogLevelInfo
+                                    : CILogLevelWarning)
+                                : CILogLevelWarning;
+                        [CILogStore.sharedStore
+                            recordLevel:level
+                            category:@"Background"
+                            format:attempted
+                                ? (clockAdvanced
+                                    ? @"Verified playback clock continuity for video %@ after PiP dismissal (%.1fs → %.1fs); the playing relay snapshot was flushed."
+                                    : @"PiP teardown pause was suppressed for video %@, but the playback clock did not advance (%.1fs → %.1fs). A paused relay snapshot was flushed; no player restart was attempted.")
+                                : @"PiP clock state for video %@ was resolved (%.1fs → %.1fs), but no token-enabled relay snapshot was available to flush.",
+                                   expectedVideoID,
+                                   positionBeforeVerification,
+                                   positionAfterVerification];
+                        finishVerificationBackgroundTask();
+                    }];
+            }
+        );
+    } else if (!restoreWasRequested &&
+               applicationRemainsBackgrounded) {
+        finishVerificationBackgroundTask();
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"Background"
+            format:@"PiP stopped in the background without a playing-state pause candidate (candidate age %.2fs); playback was left unchanged.",
+                   candidateAge];
+    } else {
+        finishVerificationBackgroundTask();
+    }
 }
 
 %end
@@ -982,6 +1461,94 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 %end
 
 
+%group CaptionIslandPlayerPlayHooks
+
+%hook YTPlayerViewController
+
+- (void)play {
+    %orig;
+    CISynchronizeRemotePlayback(
+        self,
+        YES,
+        CIRemotePlaybackRate,
+        YES
+    );
+}
+
+%end
+
+%end
+
+
+%group CaptionIslandPlayerPauseHooks
+
+%hook YTPlayerViewController
+
+- (void)pause {
+    %orig;
+    BOOL PiPIsActive =
+        CIPiPSystemController &&
+        CIPiPSystemController.pictureInPictureActive;
+    if (!PiPIsActive && !CIPiPStopCandidate) {
+        CISynchronizeRemotePlayback(
+            self,
+            NO,
+            CIRemotePlaybackRate,
+            YES
+        );
+    }
+}
+
+%end
+
+%end
+
+
+%group CaptionIslandPlayerSeekHooks
+
+%hook YTPlayerViewController
+
+- (void)seekToTime:(CGFloat)time {
+    %orig;
+    if (![objc_getAssociatedObject(
+            self,
+            CIActivePlayerKey
+        ) boolValue]) return;
+    [CICaptionCoordinator.sharedCoordinator
+        synchronizePlaybackAtPosition:
+            MAX(0, (NSTimeInterval)time)
+                              playing:
+            CIRemotePlaybackPlaying
+                                 rate:
+            CIRemotePlaybackRate
+                                force:YES];
+}
+
+%end
+
+%end
+
+
+%group CaptionIslandPlayerRateHooks
+
+%hook YTPlayerViewController
+
+- (void)varispeedSwitchController:(id)controller
+                    didSelectRate:(float)rate {
+    %orig;
+    CISynchronizeRemotePlayback(
+        self,
+        CIRemotePlaybackPlaying,
+        rate,
+        YES
+    );
+}
+
+%end
+
+%end
+
+
 %group CaptionIslandModernTimeHooks
 
 %hook YTPlayerViewController
@@ -1017,7 +1584,54 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     (void)CIBackgroundPlaybackMonitor.sharedMonitor;
     CIPiPActiveVideoByController =
         [NSMapTable weakToWeakObjectsMapTable];
+    CIPiPDeferredPauseControllers =
+        [NSHashTable weakObjectsHashTable];
+    CIPiPLifecycleControllers =
+        [NSHashTable weakObjectsHashTable];
     %init(CaptionIslandActivationHooks);
+    Class shortsPlayerClass =
+        NSClassFromString(@"YTShortsPlayerViewController");
+    if (shortsPlayerClass &&
+        class_getInstanceMethod(
+            shortsPlayerClass,
+            @selector(setPlayer:)
+        )) {
+        %init(CaptionIslandShortsPlayerSetterHooks);
+    }
+    if (shortsPlayerClass &&
+        class_getInstanceMethod(
+            shortsPlayerClass,
+            @selector(viewDidAppear:)
+        )) {
+        %init(CaptionIslandShortsLifecycleHooks);
+    }
+    if (class_getInstanceMethod(
+            playerClass,
+            @selector(play)
+        )) {
+        %init(CaptionIslandPlayerPlayHooks);
+    }
+    if (class_getInstanceMethod(
+            playerClass,
+            @selector(pause)
+        )) {
+        %init(CaptionIslandPlayerPauseHooks);
+    }
+    if (class_getInstanceMethod(
+            playerClass,
+            @selector(seekToTime:)
+        )) {
+        %init(CaptionIslandPlayerSeekHooks);
+    }
+    if (class_getInstanceMethod(
+            playerClass,
+            @selector(
+                varispeedSwitchController:
+                didSelectRate:
+            )
+        )) {
+        %init(CaptionIslandPlayerRateHooks);
+    }
     SEL modern = @selector(potentiallyMutatedSingleVideo:currentVideoTimeDidChange:);
     if (class_getInstanceMethod(playerClass, modern)) {
         %init(CaptionIslandModernTimeHooks);
@@ -1107,24 +1721,27 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
         class_getInstanceMethod(
             YTPiPClass,
             @selector(didStopPictureInPicture)
-        ) &&
-        class_getInstanceMethod(
-            YTPiPClass,
-            @selector(pictureInPicturePlaybackResumeRequested)
         );
     if (hasMLPiPAudioLifecycle && hasMLPiPRestore &&
         hasYTPiPAudioRecovery) {
+        CIPiPOriginalPauseRequestedImplementation =
+            class_getMethodImplementation(
+                YTPiPClass,
+                @selector(
+                    pictureInPicturePlaybackPauseRequested
+                )
+            );
         %init(CaptionIslandYTPiPAudioRecoveryHooks);
     }
     if (hasMLPiPAudioLifecycle && hasMLPiPRestore &&
         hasYTPiPAudioRecovery) {
         [CILogStore.sharedStore recordLevel:CILogLevelDebug
             category:@"Background"
-            message:@"PiP background-audio recovery is ready with non-restore dismissal detection."];
+            message:@"PiP dismissal protection is ready with deferred pause classification and stale-renderer lease release."];
     } else {
         [CILogStore.sharedStore recordLevel:CILogLevelWarning
             category:@"Background"
-            format:@"PiP background-audio recovery is unavailable for this YouTube version (ML lifecycle %d, restore detection %d, YouTube recovery callback %d).",
+            format:@"PiP background-audio recovery is unavailable for this YouTube version (ML lifecycle %d, restore detection %d, YouTube pause observer %d).",
                    hasMLPiPAudioLifecycle, hasMLPiPRestore,
                    hasYTPiPAudioRecovery];
     }

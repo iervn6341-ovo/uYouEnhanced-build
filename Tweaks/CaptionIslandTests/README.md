@@ -60,4 +60,12 @@ swift test --package-path uYouEnhanced-build/Tweaks/CaptionIslandTests
 測試不會呼叫網路或寫入歌詞快取。
 
 YouTube inspector smoke test 也會驗證字幕 URL 依序採用原始簽名 URL、JSON3、
-WebVTT fallback，並阻止自動翻譯 `tlang` URL 進入下載流程。
+WebVTT fallback，阻止自動翻譯 `tlang` URL 進入下載流程，並確認一般直式影片不會
+被誤認為 Shorts、Shorts 容器標記可保留到後續 metadata refresh。
+
+`ObjC/VideoEligibilitySmoke.m` 會驗證 Caption Island 的播放資格規則：
+
+- Shorts 預設可獨立排除，且關閉該偏好後可立即恢復；
+- 5 分鐘閾值允許 5:00，從 5:01 起排除；
+- `0` 代表不限制長度；
+- 未知、零或非數字時長不會造成誤判。

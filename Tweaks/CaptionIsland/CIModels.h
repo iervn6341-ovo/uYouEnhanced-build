@@ -33,6 +33,7 @@ typedef NS_ENUM(NSInteger, CICaptionSource) {
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *author;
 @property (nonatomic) NSTimeInterval duration;
+@property (nonatomic, getter=isShorts) BOOL shorts;
 @property (nonatomic, copy) NSArray<CICaptionTrack *> *captionTracks;
 @end
 

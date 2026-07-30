@@ -39,6 +39,7 @@ static double CIQuantizedPlaybackRate(double rate) {
 @interface CIBackgroundPlaybackMonitor ()
 @property (nonatomic, weak, nullable) YTPlayerViewController *playerController;
 @property (nonatomic, strong, nullable) YTPlayerViewController *backgroundControllerLease;
+@property (nonatomic, weak, nullable) YTPlayerViewController *pictureInPicturePreparedController;
 @property (atomic, strong, nullable) dispatch_source_t timer;
 @property (nonatomic) BOOL applicationIsBackgrounded;
 @property (nonatomic) BOOL hasSuppressionState;
@@ -46,6 +47,7 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) BOOL hasPlaybackTime;
 @property (nonatomic) NSTimeInterval lastPlaybackTime;
 @property (nonatomic, copy) NSString *lastVideoID;
+@property (nonatomic, copy) NSString *durationPolicyVideoID;
 @property (nonatomic) BOOL didLogAvailability;
 @property (nonatomic) BOOL didLogClockProgress;
 @property (nonatomic) BOOL didWarnAboutMissingClock;
@@ -86,6 +88,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     self = [super init];
     if (self) {
         _lastVideoID = @"";
+        _durationPolicyVideoID = @"";
         _applicationIsBackgrounded =
             UIApplication.sharedApplication.applicationState == UIApplicationStateBackground;
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
@@ -157,6 +160,9 @@ static double CIQuantizedPlaybackRate(double rate) {
     }
     if (self.playerController != controller &&
         self.backgroundControllerLease != controller) return;
+    if (self.pictureInPicturePreparedController == controller) {
+        self.pictureInPicturePreparedController = nil;
+    }
     self.playerController = nil;
     self.backgroundControllerLease = nil;
     self.controllerLeaseGeneration++;
@@ -177,6 +183,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     }
 
     [self attachPlayerController:controller];
+    self.pictureInPicturePreparedController = controller;
     self.backgroundControllerLease = controller;
     self.controllerLeaseGeneration++;
     NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
@@ -198,6 +205,36 @@ static double CIQuantizedPlaybackRate(double rate) {
             category:@"Background"
             message:@"Pinned the active YouTube player for Picture in Picture caption timing."];
     }
+}
+
+- (void)finishPictureInPicture {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self finishPictureInPicture];
+        });
+        return;
+    }
+
+    // Only release the controller that this PiP lifecycle pinned. A native
+    // time callback may already have rebound the monitor to a newer healthy
+    // controller while AVKit was stopping.
+    YTPlayerViewController *preparedController =
+        self.pictureInPicturePreparedController;
+    BOOL releasedPreparedLease =
+        preparedController &&
+        self.backgroundControllerLease == preparedController;
+    if (releasedPreparedLease) {
+        self.backgroundControllerLease = nil;
+        self.controllerLeaseGeneration++;
+        [self resetClockState];
+    }
+    self.pictureInPicturePreparedController = nil;
+    [self startTimerIfNeeded];
+    [CILogStore.sharedStore recordLevel:CILogLevelDebug
+        category:@"Background"
+        format:@"%@ the Picture in Picture player lease after AVKit teardown.",
+               releasedPreparedLease ? @"Released" :
+                   @"Preserved a newer controller instead of releasing"];
 }
 
 - (void)applicationWillResignActive:(__unused NSNotification *)notification {
@@ -251,6 +288,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     [self stopTimerWithReason:nil];
     self.playerController = nil;
     self.backgroundControllerLease = nil;
+    self.pictureInPicturePreparedController = nil;
     self.controllerLeaseGeneration++;
     [CIActivityPresenter.sharedPresenter endForProcessTermination];
 }
@@ -334,6 +372,11 @@ static double CIQuantizedPlaybackRate(double rate) {
                             duration:controller.currentVideoTotalMediaTime
                         playbackRate:estimatedRate
                               uptime:uptime];
+    [CICaptionCoordinator.sharedCoordinator
+        synchronizePlaybackAtPosition:playbackTime
+                              playing:YES
+                                 rate:estimatedRate
+                                force:NO];
     if (!self.didLogNativeBackgroundClock) {
         self.didLogNativeBackgroundClock = YES;
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
@@ -432,9 +475,35 @@ static double CIQuantizedPlaybackRate(double rate) {
         if (![context.videoID isEqualToString:videoID]) return;
         [self resetClockState];
         [CICaptionCoordinator.sharedCoordinator activateContext:context];
+        if (context.duration > 0) {
+            self.durationPolicyVideoID = videoID;
+        }
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Background"
             format:@"Detected background transition to video %@.", videoID];
+    }
+
+    NSTimeInterval duration =
+        controller.currentVideoTotalMediaTime;
+    if (isfinite(duration) && duration > 0 &&
+        ![self.durationPolicyVideoID isEqualToString:videoID]) {
+        // The duration often arrives after background autoplay has already
+        // changed the video ID. Re-submit the context exactly once when that
+        // late metadata becomes usable so the configured limit still applies.
+        CIVideoContext *durationContext =
+            [CIYouTubeInspector
+                contextFromPlaybackData:nil
+                       playerController:controller];
+        if ([durationContext.videoID isEqualToString:videoID] &&
+            durationContext.duration > 0) {
+            self.durationPolicyVideoID = videoID;
+            [CICaptionCoordinator.sharedCoordinator
+                activateContext:durationContext];
+            [CILogStore.sharedStore recordLevel:CILogLevelDebug
+                category:@"Background"
+                format:@"Reevaluated video %@ after its %.1fs duration became available in the background.",
+                       videoID, durationContext.duration];
+        }
     }
 
     NSTimeInterval playbackTime = controller.currentVideoMediaTime;
@@ -461,6 +530,11 @@ static double CIQuantizedPlaybackRate(double rate) {
     if (!clockChanged) {
         if (self.lastPlaybackProgressUptime > 0 &&
             uptime - self.lastPlaybackProgressUptime >= 3.0) {
+            [CICaptionCoordinator.sharedCoordinator
+                synchronizePlaybackAtPosition:playbackTime
+                                      playing:NO
+                                         rate:1.0
+                                        force:NO];
             [self synchronizeNowPlayingAtTime:playbackTime
                                     duration:controller.currentVideoTotalMediaTime
                                 playbackRate:0
@@ -477,6 +551,11 @@ static double CIQuantizedPlaybackRate(double rate) {
         estimatedRate > 4.0) {
         estimatedRate = 1.0;
     }
+    [CICaptionCoordinator.sharedCoordinator
+        synchronizePlaybackAtPosition:playbackTime
+                              playing:YES
+                                 rate:estimatedRate
+                                force:NO];
     self.lastPlaybackProgressUptime = uptime;
     if (clockAdvanced) {
         self.lastPlaybackAdvanceUptime = uptime;

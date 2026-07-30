@@ -144,6 +144,27 @@ static NSArray<CICaptionTrack *> *CITracksFromRawTracks(id rawTracks) {
 
 @implementation CIYouTubeInspector
 
++ (NSMapTable *)shortsPlayerVideoIDs {
+    static NSMapTable *videoIDs;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        videoIDs = [NSMapTable weakToStrongObjectsMapTable];
+    });
+    return videoIDs;
+}
+
++ (void)markPlayerControllerAsShorts:(id)playerController {
+    if (!playerController) return;
+    NSString *videoID =
+        CIStringValue(CIValue(playerController, @"currentVideoID"));
+    if (videoID.length == 0) return;
+    @synchronized (self) {
+        [[self shortsPlayerVideoIDs]
+            setObject:videoID
+            forKey:playerController];
+    }
+}
+
 + (CIVideoContext *)contextFromPlaybackData:(id)playbackData playerController:(id)playerController {
     if (!NSThread.isMainThread) return nil;
     if (!playbackData) {
@@ -165,6 +186,27 @@ static NSArray<CICaptionTrack *> *CITracksFromRawTracks(id rawTracks) {
     context.author = CIStringValue(CIValue(details, @"author"));
     context.duration = [CIValue(details, @"lengthSeconds") doubleValue];
     if (context.duration <= 0) context.duration = [CIValue(playerController, @"currentVideoTotalMediaTime") doubleValue];
+    NSArray<NSString *> *shortsKeys =
+        @[@"isShorts", @"isShort", @"isShortFormContent", @"isReel"];
+    for (NSString *key in shortsKeys) {
+        if ([CIValue(details, key) boolValue] ||
+            [CIValue(playerData, key) boolValue] ||
+            [CIValue(playbackData, key) boolValue]) {
+            context.shorts = YES;
+            break;
+        }
+    }
+    if (!context.isShorts && playerController) {
+        NSString *markedVideoID;
+        @synchronized (self) {
+            markedVideoID =
+                [[self shortsPlayerVideoIDs]
+                    objectForKey:playerController];
+        }
+        context.shorts =
+            context.videoID.length > 0 &&
+            [markedVideoID isEqualToString:context.videoID];
+    }
 
     // MLInnerTubeCaptionTrack exposes the usable signed URL at runtime.
     // Prefer those objects over protobuf metadata, whose renderer entries can

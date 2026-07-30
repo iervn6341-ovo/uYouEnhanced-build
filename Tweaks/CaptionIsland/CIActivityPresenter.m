@@ -2,9 +2,22 @@
 #import "CILogStore.h"
 #import "CIConstants.h"
 #import <objc/message.h>
+#import <math.h>
 
 static NSNotificationName const CIActivityBridgeLogNotification =
     @"CIActivityBridgeLogNotification";
+
+static NSString *CIActivitySourceLabel(
+    CICaptionSource source
+) {
+    BOOL LRCLIBSource =
+        source == CICaptionSourceLRCLIBSynced ||
+        source == CICaptionSourceLRCLIBAligned ||
+        source == CICaptionSourceLRCLIBEstimated;
+    return (LRCLIBSource ||
+        CIPreferenceBool(CIShowSourceBadgeKey, YES))
+        ? CICaptionSourceLabel(source) : @"";
+}
 
 @interface CIActivityPresenter ()
 @property (nonatomic, copy) NSString *videoID;
@@ -96,16 +109,150 @@ static NSNotificationName const CIActivityBridgeLogNotification =
     SEL selector = NSSelectorFromString(
         @"updateWithText:source:cueStart:cueEnd:position:playing:nextText:nextCueStart:nextCueEnd:");
     if (![bridge respondsToSelector:selector]) return;
-    BOOL LRCLIBSource = source == CICaptionSourceLRCLIBSynced ||
-        source == CICaptionSourceLRCLIBAligned ||
-        source == CICaptionSourceLRCLIBEstimated;
-    NSString *sourceLabel = (LRCLIBSource ||
-        CIPreferenceBool(CIShowSourceBadgeKey, YES))
-        ? CICaptionSourceLabel(source) : @"";
+    NSString *sourceLabel =
+        CIActivitySourceLabel(source);
     ((void (*)(id, SEL, NSString *, NSString *, double, double, double, BOOL,
                NSString *, double, double))objc_msgSend)(
         bridge, selector, text, sourceLabel, cueStart, cueEnd, position, YES,
         nextText ?: @"", nextCueStart, nextCueEnd);
+}
+
+- (void)configureRemoteTimelineWithCues:
+            (NSArray<CICaptionCue *> *)cues
+                              source:(CICaptionSource)source
+                            position:(NSTimeInterval)position
+                            duration:(NSTimeInterval)duration {
+    if (!CIPreferenceBool(CIPushRelayEnabledKey, NO) ||
+        cues.count == 0 || self.videoID.length == 0) return;
+    NSMutableArray<NSDictionary *> *payload =
+        [NSMutableArray arrayWithCapacity:
+            MIN(cues.count, (NSUInteger)512)];
+    for (CICaptionCue *cue in cues) {
+        if (payload.count >= 512) break;
+        if (!isfinite(cue.startTime) ||
+            !isfinite(cue.endTime) ||
+            cue.endTime <= cue.startTime ||
+            cue.text.length == 0) continue;
+        [payload addObject:@{
+            @"startMS": @((long long)llround(
+                MAX(0, cue.startTime) * 1000.0
+            )),
+            @"endMS": @((long long)llround(
+                MAX(cue.startTime + 0.001, cue.endTime) *
+                    1000.0
+            )),
+            @"line": cue.text,
+        }];
+    }
+    if (payload.count == 0) return;
+    Class bridge = [self bridgeClass];
+    SEL selector = NSSelectorFromString(
+        @"configureRemoteTimelineWithCues:source:position:duration:"
+    );
+    if (![bridge respondsToSelector:selector]) return;
+    ((void (*)(id, SEL, NSArray *, NSString *, double, double))
+        objc_msgSend)(
+            bridge,
+            selector,
+            payload.copy,
+            CIActivitySourceLabel(source),
+            position,
+            duration
+        );
+}
+
+- (void)synchronizeRemotePlaybackAtPosition:
+            (NSTimeInterval)position
+                                    playing:(BOOL)playing
+                                       rate:(double)rate
+                                      force:(BOOL)force {
+    if (!CIPreferenceBool(CIPushRelayEnabledKey, NO) ||
+        self.videoID.length == 0 ||
+        !isfinite(position) || position < 0) return;
+    Class bridge = [self bridgeClass];
+    SEL selector = NSSelectorFromString(
+        @"syncRemotePlaybackAtPosition:playing:rate:force:"
+    );
+    if (![bridge respondsToSelector:selector]) return;
+    ((void (*)(id, SEL, double, BOOL, double, BOOL))
+        objc_msgSend)(
+            bridge,
+            selector,
+            position,
+            playing,
+            rate,
+            force
+        );
+}
+
+- (void)synchronizeRemotePlaybackCriticalAtPosition:
+            (NSTimeInterval)position
+                                            playing:(BOOL)playing
+                                               rate:(double)rate
+                                    expectedVideoID:
+                                        (NSString *)expectedVideoID
+                                         completion:
+                                             (void (^)(BOOL attempted))
+                                                 completion {
+    if (!CIPreferenceBool(CIPushRelayEnabledKey, NO) ||
+        self.videoID.length == 0 ||
+        expectedVideoID.length == 0 ||
+        ![self.videoID isEqualToString:expectedVideoID] ||
+        !isfinite(position) || position < 0) {
+        if (completion) {
+            dispatch_async(
+                dispatch_get_main_queue(),
+                ^{ completion(NO); }
+            );
+        }
+        return;
+    }
+    Class bridge = [self bridgeClass];
+    SEL selector = NSSelectorFromString(
+        @"syncRemotePlaybackCriticalAtPosition:playing:rate:expectedVideoID:completion:"
+    );
+    if (![bridge respondsToSelector:selector]) {
+        [self synchronizeRemotePlaybackAtPosition:position
+                                          playing:playing
+                                             rate:rate
+                                            force:YES];
+        if (completion) {
+            dispatch_async(
+                dispatch_get_main_queue(),
+                ^{ completion(NO); }
+            );
+        }
+        return;
+    }
+    ((void (*)(id, SEL, double, BOOL, double, NSString *,
+               void (^)(BOOL)))
+        objc_msgSend)(
+            bridge,
+            selector,
+            position,
+            playing,
+            rate,
+            expectedVideoID,
+            completion ?: ^(__unused BOOL attempted) {}
+        );
+}
+
+- (void)clearRemoteTimelineAtPosition:
+            (NSTimeInterval)position
+                              duration:(NSTimeInterval)duration {
+    if (!CIPreferenceBool(CIPushRelayEnabledKey, NO) ||
+        self.videoID.length == 0) return;
+    Class bridge = [self bridgeClass];
+    SEL selector = NSSelectorFromString(
+        @"clearRemoteTimelineAtPosition:duration:"
+    );
+    if (![bridge respondsToSelector:selector]) return;
+    ((void (*)(id, SEL, double, double))objc_msgSend)(
+        bridge,
+        selector,
+        isfinite(position) ? MAX(0, position) : 0,
+        isfinite(duration) ? MAX(0, duration) : 0
+    );
 }
 
 - (void)hide {

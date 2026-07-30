@@ -15,6 +15,7 @@ CaptionIsland_FILES = \
 	CIPlaybackState.m \
 	CIConstants.m \
 	CIModels.m \
+	CIVideoEligibility.m \
 	CITextUtilities.m \
 	CICaptionParser.m \
 	CILyricsAligner.m \
@@ -25,6 +26,7 @@ CaptionIsland_FILES = \
 	CIActivityPresenter.m \
 	CICaptionCoordinator.m \
 	CIActivityBridge.swift \
+	CIActivityPushClient.swift \
 	Shared/CICaptionActivityAttributes.swift
 CaptionIsland_CFLAGS = -fobjc-arc
 CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore Security ActivityKit MediaPlayer AVKit

@@ -54,9 +54,13 @@ ActivityKit push server。本 Tweak 不會播放無聲音訊來規避系統限�
 類似逐句歌詞的本機 Live Activity 更新，而且 AOD 不播放 WidgetKit 動畫；因此本
 Tweak 會一次提供目前句與下一句，並把下一句開始時間設為一次性的 stale handoff：
 若背景更新恰好被延後，WidgetKit 仍可把已送達的下一句提升成目前句。這只能涵蓋一個
-cue 邊界，仍不能保證 AOD 長時間逐句即時重畫。需要可靠高頻更新時，必須改用具備正確
-APNs entitlement 的 ActivityKit push server，單靠
-`NSSupportsLiveActivitiesFrequentUpdates` 不會放寬本機更新。
+cue 邊界，仍不能保證 AOD 長時間逐句即時重畫。Caption Island 可選擇以
+`pushType: .token` 建立 Activity，將 token、播放錨點與完整 cue 時間軸交給專用 relay；
+之後即使 YouTube 被 iOS 暫停，relay 仍可繼續向 APNs 提交逐句更新或結束 Activity。
+內附的 relay 位於 `Services/CaptionIslandPushServer`。
+`NSSupportsLiveActivitiesFrequentUpdates` 只會要求較高的遠端更新額度；APNs 接受請求
+不等於裝置已即時顯示，實際傳送、節流與 AOD 重畫仍由 iOS 決定，不能保證每一句都
+零延遲。
 
 expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並使用三階段
 `ViewThatFits`：一般內容顯示影片標題，長歌詞優先隱藏標題，極長歌詞再縮小字級與
@@ -69,6 +73,7 @@ expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並�
 
 - 啟用或停用原生 Live Activity；
 - 選擇中文（繁體）、英文或日文人工字幕；
+- 設定「AOD 遠端更新」與自己的 HTTPS push relay；
 - 啟用或停用 LRCLIB 查詢；
 - 選擇是否顯示 `CC`／`ASR` 來源標記；LRCLIB 來源固定標示；
 - 開啟詳細 Log；
@@ -86,10 +91,115 @@ Library/Caches/CaptionIsland/CaptionIsland.log
 Debug 只有在「詳細記錄」開啟時才會加入。預覽頁會在新事件出現時即時更新。
 
 Log 僅供診斷來源選擇、下載與 ActivityKit 狀態；不保存完整歌詞、字幕 URL、
-Cookie、API key、token 或 Authorization 內容，且會在寫入前再次遮蔽這些資料。
+Cookie、API key、push/device/APNs/relay token 或 Authorization 內容，且會在寫入前
+再次遮蔽這些資料。
 背景期間每 30 秒會記錄低頻 clock heartbeat，並分別記錄 YouTube 原生 callback、
 Live Activity revision 與 Now Playing 同步是否仍在工作，方便區分 App 已被暫停與
 ActivityKit 只延後 AOD 畫面刷新。
+
+「AOD 遠端更新」預設關閉，單純儲存 relay 設定不會開啟上傳。使用者明確啟用後，
+資料流如下：
+
+1. 選取的字幕／歌詞全文與時間軸、影片 ID、標題、播放狀態／位置及 Live Activity
+   push token 會上傳到使用者設定的 HTTPS relay。
+2. Relay 會把顯示所需的目前句、下一句、影片資訊、播放狀態與 cue 時間送到 Apple
+   APNs；完整時間軸不會直接整批送到 APNs。
+3. APNs 將更新交給 ActivityKit。Apple 接受 HTTP 請求仍不保證 iOS 立即傳送或刷新
+   AOD。
+
+Relay access token 存在 iOS Keychain
+（`AfterFirstUnlockThisDeviceOnly`），不放在 `NSUserDefaults`。連線只接受不含帳密、
+query 或 fragment 的 HTTPS URL，且拒絕轉址。內附 relay 的 log 只記錄 push token
+雜湊指紋，不記錄原始 token、標題或歌詞；Caption Island 本機 Log 也會在寫入前遮蔽
+token、Authorization 與字幕全文。
+
+設定頁會在啟用及儲存時檢查主 App bundle ID。若仍是 Google 擁有的
+`com.google.ios.youtube`，relay URL 與 access token 可以先保存，但「AOD 遠端更新」
+會保持關閉並顯示錯誤；必須改以自己 Apple Developer Team 擁有的明確 App ID 最終
+簽署後才能啟用。
+
+內附 relay 預設將活動資料保留在程序記憶體；若同時設定 `RELAY_STATE_PATH` 與
+`RELAY_STATE_KEY`，則會以 AES-256-GCM 加密後短期寫入磁碟，讓排程可跨服務重啟恢復。
+正常影片結束會先保留 5 秒、可被自動播放新影片 PUT 取消的寬限期，之後移除；明確
+收到 DELETE 時則立即清理。即使客戶端意外消失，每次註冊最多保留八小時，之後會要求
+APNs 結束 Activity。此保留規則只適用於內附實作；若把 API 接到其他服務，資料保存
+方式與隱私責任由該服務的營運者決定。
+自然結束或 DELETE 後另保留 15 分鐘、不含歌詞的 Activity ID tombstone，用來拒絕
+較晚才抵達的舊 PUT，避免已結束的字幕排程因網路亂序而復活。
+
+## AOD APNs relay
+
+伺服器的部署方式與 API schema 詳見
+`Services/CaptionIslandPushServer/README.md`。它會在播放、暫停、seek、倍速、換片或
+token rotation 時重排 cue，對每句送出含目前句、下一句及 `stale-date` 的
+`liveactivity` push；影片自然結束或收到 DELETE 時送出 `event: end`。
+
+這項功能有不可省略的 Apple 簽章條件：
+
+1. 使用付費 Apple Developer Team 擁有的明確 App ID；不能沿用 Google 擁有的
+   `com.google.ios.youtube`。
+2. 該 App ID 必須啟用 Push Notifications，最終主 App 簽章必須含 provisioning
+   profile 核發的 `aps-environment`。
+3. Widget ID 必須是 `<主 App ID>.CaptionIslandWidget`，並以相同 Team 的對應 profile
+   簽署。
+4. Relay 使用同一 Team 的 APNs `.p8`，並將 `APNS_BUNDLE_ID` 設成最終主 App ID。
+
+### 部署順序
+
+1. 在 Apple Developer 後台建立自己的明確 App ID，啟用 Push Notifications，並為
+   主 App 與 `<主 App ID>.CaptionIslandWidget` 建立同一 Team 的有效 provisioning
+   profile。
+2. 執行 GitHub Actions 時，把 `bundle_id` 改成上述主 App ID。保留預設
+   `com.google.ios.youtube` 只能使用本機 Live Activity，不能使用自己的 APNs key。
+3. 以該 Team 的 profile 最終簽署主 App 與 Widget。GitHub Actions 產生的是待後續
+   簽署的結構性產物，無法預先保證 sideload signer 保留了 bundle ID、
+   `aps-environment` 或 Live Activity metadata。
+4. 在 Mac 對「最終簽署完成」的 IPA 執行簽章檢查。腳本會確認主 App／Widget ID、
+   Live Activity plist key、Widget extension point、實際簽章 entitlement、
+   provisioning 授權、Team 一致性及 profile 到期日：
+
+```sh
+Scripts/verify-caption-island-push-signing.sh /path/to/finally-signed.ipa
+```
+
+5. 依 `Services/CaptionIslandPushServer/README.md` 部署 Node.js relay。將檢查腳本
+   印出的 `APNS_TEAM_ID`、`APNS_BUNDLE_ID`、`APNS_ENVIRONMENT` 與自己的
+   `APNS_KEY_ID`、`.p8` 路徑設成伺服器環境變數；`.p8` 不可放入 IPA、Git repository
+   或傳給客戶端。正式環境也應設定 `RELAY_STATE_PATH` 與獨立的 32-byte
+   `RELAY_STATE_KEY`，否則服務重啟會中斷當時的 AOD 排程。Relay 本身只監聽
+   `127.0.0.1`，對外必須放在 HTTPS reverse proxy 後方。
+6. 在 Caption Island 設定中先儲存 HTTPS URL 與至少 32 bytes 的 relay access token，
+   再明確打開「AOD 遠端更新」。
+
+### 持久化與可用性
+
+未設定 `RELAY_STATE_*` 時，relay 只使用記憶體，重啟後必須等 App 再次送出 snapshot。
+正式部署應啟用內建的 AES-256-GCM state store：它以 `0600` 暫存檔、原子 rename
+寫入 Activity token、時間軸與播放錨點，啟動時重新投影時間並恢復下一個事件。加密
+key 必須和 state file 分開保管，兩者不可提交到 repository 或備份成一般分析資料。
+這提供單節點重啟續傳，不等於多節點共識或災難復原；仍應使用 process manager，
+並遵守八小時 TTL、token rotation 與 DELETE 清理。
+
+### 驗證
+
+可先在 repository 根目錄驗證 relay 與腳本：
+
+```sh
+node --check Services/CaptionIslandPushServer/server.mjs
+npm test --prefix Services/CaptionIslandPushServer
+sh -n Scripts/verify-caption-island-push-signing.sh
+```
+
+安裝前再對最終 IPA 執行前述簽章腳本。安裝後，完整鏈路至少要依序看到：
+
+1. App Log 出現 `Received a …-byte Live Activity push token`；
+2. App Log 出現已向 AOD push relay 註冊 Activity；
+3. Relay Log 出現該 Activity 的 `apns_accepted` 與 HTTP 200；
+4. 裝置的 Live Activities 與「更頻繁更新」權限已允許。
+
+以上只能證明 entitlement、token、relay 與 APNs 接受路徑完整。網路延遲、APNs budget、
+使用者權限、低耗電模式及 iOS AOD 政策仍可能延遲或合併畫面更新，因此不能把 APNs
+HTTP 200 解讀成逐句零延遲保證。
 
 ## LRCLIB 匹配
 
