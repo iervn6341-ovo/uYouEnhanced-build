@@ -7,20 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
 @interface CICaptionCoordinator : NSObject
 + (instancetype)sharedCoordinator;
 - (void)activateContext:(CIVideoContext *)context;
+- (void)currentVideoContextWithCompletion:
+    (void (^)(CIVideoContext * _Nullable context))completion;
 - (void)updatePlaybackTime:(NSTimeInterval)time;
-- (void)synchronizePlaybackAtPosition:(NSTimeInterval)position
-                              playing:(BOOL)playing
-                                 rate:(double)rate
-                                force:(BOOL)force;
-- (void)synchronizeRemotePlaybackCriticalAtPosition:
-            (NSTimeInterval)position
-                                            playing:(BOOL)playing
-                                               rate:(double)rate
-                                    expectedVideoID:
-                                        (NSString *)expectedVideoID
-                                         completion:
-                                             (void (^)(BOOL attempted))
-                                                 completion;
 - (void)setPlaybackSuppressed:(BOOL)suppressed;
 - (void)playbackDidFinish;
 - (void)playerViewDidAppear;

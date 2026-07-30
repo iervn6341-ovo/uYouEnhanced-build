@@ -41,7 +41,6 @@ $(TWEAK_NAME)_INJECT_DYLIBS = \
     $(THEOS_OBJ_DIR)/YTIcons.dylib \
     $(THEOS_OBJ_DIR)/YouGroupSettings.dylib \
     $(THEOS_OBJ_DIR)/CaptionIsland.dylib \
-    $(THEOS_OBJ_DIR)/YouTubeDiagnostics.dylib \
     $(THEOS_OBJ_DIR)/YouLoop.dylib \
     $(THEOS_OBJ_DIR)/YouMute.dylib \
     $(THEOS_OBJ_DIR)/YouPiP.dylib \
@@ -71,7 +70,7 @@ $(TWEAK_NAME)_EMBED_EXTENSIONS = $(GENERATED_EXTENSION_APPEXS) $(CAPTION_ISLAND_
 
 include $(THEOS)/makefiles/common.mk
 ifneq ($(JAILBROKEN),1)
-SUBPROJECTS += Tweaks/Alderis Tweaks/DontEatMyContent Tweaks/FLEXing/libflex Tweaks/iSponsorBlock Tweaks/Return-YouTube-Dislikes Tweaks/YTABConfig Tweaks/YouGroupSettings Tweaks/CaptionIsland Tweaks/CaptionIslandWidget Tweaks/YouTubeDiagnostics Tweaks/YTIcons Tweaks/YouLoop Tweaks/YouMute Tweaks/YouPiP Tweaks/YouQuality Tweaks/YouSlider Tweaks/YouSpeed Tweaks/YouTimeStamp Tweaks/YTHoldForSpeed Tweaks/YTUHD Tweaks/YTVideoOverlay Tweaks/YTweaks
+SUBPROJECTS += Tweaks/Alderis Tweaks/DontEatMyContent Tweaks/FLEXing/libflex Tweaks/iSponsorBlock Tweaks/Return-YouTube-Dislikes Tweaks/YTABConfig Tweaks/YouGroupSettings Tweaks/CaptionIsland Tweaks/CaptionIslandWidget Tweaks/YTIcons Tweaks/YouLoop Tweaks/YouMute Tweaks/YouPiP Tweaks/YouQuality Tweaks/YouSlider Tweaks/YouSpeed Tweaks/YouTimeStamp Tweaks/YTHoldForSpeed Tweaks/YTUHD Tweaks/YTVideoOverlay Tweaks/YTweaks
 include $(THEOS_MAKE_PATH)/aggregate.mk
 endif
 include $(THEOS_MAKE_PATH)/tweak.mk
@@ -110,8 +109,6 @@ before-all::
 	@if [[ -f "$(IPA)/Info.plist" ]]; then \
 		plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"; \
-		plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
-		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist"; \
 		plutil -replace MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist"; \
 		if ! /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$(IPA)/Info.plist" 2>/dev/null | grep -qw audio; then \
@@ -138,8 +135,6 @@ before-package::
 	@test -f "$(IPA)/Info.plist"
 	@plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"
-	@plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
-		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist"
 	@if ! /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$(IPA)/Info.plist" 2>/dev/null | grep -qw audio; then \
 		/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$(IPA)/Info.plist" 2>/dev/null || :; \
 		/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes: string audio" "$(IPA)/Info.plist"; \
@@ -150,8 +145,6 @@ before-package::
 	@/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(YOUTUBE_VERSION)" "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
 	@plutil -replace NSSupportsLiveActivities -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
-	@plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist" 2>/dev/null || \
-		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
 	@set -e; for appex in $(GENERATED_EXTENSION_APPEXS); do \
 		plist="$$appex/Info.plist"; \
 		old_id=$$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$$plist"); \

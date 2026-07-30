@@ -22,6 +22,20 @@ static void CIAssert(BOOL condition, NSString *message) {
     exit(1);
 }
 
+static void CIAssertSongMetadata(NSString *videoTitle,
+                                 NSString *expectedTitle,
+                                 NSString *expectedArtist,
+                                 NSString *message) {
+    NSString *title;
+    NSString *artist;
+    CISplitSongMetadata(videoTitle, @"Fallback Uploader", &title, &artist);
+    CIAssert([title isEqualToString:expectedTitle] &&
+             [artist isEqualToString:expectedArtist] &&
+             [CISongTitleFromVideoTitle(videoTitle)
+                 isEqualToString:expectedTitle],
+             message);
+}
+
 static NSDictionary *CIRecord(NSInteger recordID,
                               NSString *track,
                               NSString *artist,
@@ -75,6 +89,46 @@ int main(void) {
         CIAssert([CISongTitleFromVideoTitle(@"Artist - Song")
             isEqualToString:@"Artist - Song"],
             @"title-only lookup must not reinterpret an ordinary artist-title string");
+        CIAssertSongMetadata(
+            @"AiNA THE END / On The Way [Official Music Video](TV Anime『DANDADAN』Season 2 Opening)",
+            @"On The Way", @"AiNA THE END",
+            @"artist/title slash uploads should exclude trailing anime context");
+        CIAssertSongMetadata(
+            @"AiNA THE END/On The Way [Official Music Video]",
+            @"On The Way", @"AiNA THE END",
+            @"artist/title slash uploads should not require surrounding spaces");
+        CIAssertSongMetadata(
+            @"YOASOBI「UNDEAD」 Official Music Video／『〈物語〉シリーズ オフ&モンスターシーズン』主題歌",
+            @"UNDEAD", @"YOASOBI",
+            @"a quoted song before Music Video should outrank a later series name");
+        CIAssertSongMetadata(
+            @"SawanoHiroyuki[nZk]:Jean-Ken Johnny & TAKUMA『PROVANT』 Music Video",
+            @"PROVANT", @"SawanoHiroyuki[nZk]:Jean-Ken Johnny & TAKUMA",
+            @"artist identity brackets must survive quoted-title parsing");
+        CIAssertSongMetadata(
+            @"Tetoris / Kasane Teto SV",
+            @"Tetoris", @"",
+            @"a vocal-synth suffix should reverse the slash direction without becoming a hard artist filter");
+        CIAssertSongMetadata(
+            @"TVアニメ「男女の友情は成立する？（いや、しないっ‼）」ノンクレジットOP | HoneyWorks feat.ハコニワリリィ「質問、恋って何でしょうか?」",
+            @"質問、恋って何でしょうか?", @"HoneyWorks feat.ハコニワリリィ",
+            @"TV Anime work names must not displace the quoted song title");
+        CIAssertSongMetadata(
+            @"TVアニメ「作品名」OPテーマ「Example Song」",
+            @"Example Song", @"",
+            @"anime context before a song quote must not become a hard artist filter");
+        CIAssertSongMetadata(
+            @"Never Looking Back", @"Never Looking Back", @"",
+            @"an arbitrary uploader channel must not be treated as the song artist");
+        CISplitSongMetadata(@"Never Looking Back", @"Example Artist - Topic",
+            &splitTitle, &splitArtist);
+        CIAssert([splitTitle isEqualToString:@"Never Looking Back"] &&
+            [splitArtist isEqualToString:@"Example Artist"],
+            @"a YouTube Topic channel may provide a reliable artist");
+        CIAssert([CISongTitleFromVideoTitle(
+            @"【赛马娘】GIRLS' LEGEND U 18 音频优化+米浴纯享版")
+            isEqualToString:@"GIRLS' LEGEND U"],
+            @"franchise and re-upload notes should be removed from a song title");
         NSURLComponents *broadComponents = [NSURLComponents componentsWithURL:
             [provider searchURLForTitle:@"Example Song" artist:@"Example Artist" broad:YES]
             resolvingAgainstBaseURL:NO];
@@ -115,6 +169,90 @@ int main(void) {
         CIAssert(titleOnlyResult.recordID == 9 && error == nil,
             @"an empty artist should rank title matches by the closest duration");
 
+        error = nil;
+        NSArray *artistConstrainedCandidates = @[
+            CIRecord(91, @"Never Looking Back", @"Unrelated Singer", 248.0,
+                @"Wrong but closer\nSecond line", nil),
+            CIRecord(92, @"Never Looking Back", @"Uma Musume Pretty Derby", 252.0,
+                @"Correct artist\nSecond line", nil),
+        ];
+        CILRCLIBResult *artistConstrainedResult =
+            [provider lyricsResultFromSearchData:
+                CIJSONData(artistConstrainedCandidates)
+                title:@"Never Looking Back"
+                artist:@"Uma Musume Pretty Derby"
+                videoDuration:248.0
+                error:&error];
+        CIAssert(artistConstrainedResult.recordID == 92 && error == nil,
+            @"a correct artist must beat a wrong artist even when its duration is less exact");
+
+        error = nil;
+        CILRCLIBResult *ambiguousTitleOnly =
+            [provider lyricsResultFromSearchData:
+                CIJSONData(artistConstrainedCandidates)
+                title:@"Never Looking Back"
+                artist:@""
+                videoDuration:248.0
+                error:&error];
+        CIAssert(ambiguousTitleOnly == nil && error.code == 404,
+            @"title-only lookup should abstain when different singers have equally plausible versions");
+
+        error = nil;
+        NSArray *TVAndFullCandidates = @[
+            CIRecord(93, @"Anime Song", @"Example Artist", 89.5,
+                @"TV size\nSecond line", nil),
+            CIRecord(94, @"Anime Song", @"Example Artist", 251.0,
+                @"Full size\nSecond line", nil),
+        ];
+        CILRCLIBResult *TVSizeResult = [provider lyricsResultFromSearchData:
+            CIJSONData(TVAndFullCandidates) title:@"Anime Song"
+            artist:@"Example Artist" videoDuration:90.0 error:&error];
+        CIAssert(TVSizeResult.recordID == 93 && error == nil,
+            @"a 90-second video must prefer the TV-size record over the full version");
+
+        error = nil;
+        CILRCLIBResult *fullSizeResult = [provider lyricsResultFromSearchData:
+            CIJSONData(TVAndFullCandidates) title:@"Anime Song"
+            artist:@"Example Artist" videoDuration:251.0 error:&error];
+        CIAssert(fullSizeResult.recordID == 94 && error == nil,
+            @"a full-length video must prefer the full-size record over the TV version");
+
+        error = nil;
+        CILRCLIBResult *unsafeFullForTV = [provider lyricsResultFromSearchData:
+            CIJSONData(@[TVAndFullCandidates[1]]) title:@"Anime Song"
+            artist:@"Example Artist" videoDuration:90.0 error:&error];
+        CIAssert(unsafeFullForTV == nil && error.code == 404,
+            @"a full-size-only result must be rejected for a TV-size video");
+
+        error = nil;
+        CILRCLIBResult *mediumEditForTV =
+            [provider lyricsResultFromSearchData:
+                CIJSONData(@[
+                    CIRecord(95, @"Anime Song", @"Example Artist", 120.0,
+                        @"Longer edit\nSecond line", nil),
+                ])
+                title:@"Anime Song"
+                artist:@"Example Artist"
+                videoDuration:90.0
+                error:&error];
+        CIAssert(mediumEditForTV == nil && error.code == 404,
+            @"a 120-second database edit must not be accepted for a 90-second video");
+
+        error = nil;
+        CILRCLIBResult *videoWithLongIntro =
+            [provider lyricsResultFromSearchData:
+                CIJSONData(@[
+                    CIRecord(96, @"Anime Song", @"Example Artist", 204.0,
+                        @"Song after intro\nSecond line", nil),
+                ])
+                title:@"Anime Song"
+                artist:@"Example Artist"
+                videoDuration:240.0
+                error:&error];
+        CIAssert(videoWithLongIntro.recordID == 96 && error == nil,
+            @"a video may remain longer than its song because of a story intro or outro");
+
+        error = nil;
         NSArray *nearbyVersions = @[
             CIRecord(10, @"Example Song", @"Example Artist", 210.0,
                 @"Plain first\nPlain second", nil),

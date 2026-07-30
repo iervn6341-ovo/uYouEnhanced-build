@@ -22,7 +22,7 @@ on:
         required: true
         type: string
       bundle_id:
-        description: "Bundle ID (AOD push requires an explicit App ID owned by your paid Apple Developer Team)"
+        description: "Bundle ID"
         default: "com.google.ios.youtube"
         required: true
         type: string
@@ -68,17 +68,6 @@ jobs:
           ref: ${{ github.event.inputs.commit_id || github.ref }}
           submodules: recursive
 
-      - name: Explain Caption Island APNs Requirement
-        env:
-          REQUESTED_BUNDLE_ID: ${{ inputs.bundle_id }}
-        run: |
-          if test "$REQUESTED_BUNDLE_ID" = "com.google.ios.youtube"; then
-            echo "::warning::Caption Island AOD push will not work with Google's com.google.ios.youtube App ID. This choice supports local Live Activity updates only."
-          else
-            echo "::notice::A custom bundle ID is necessary but not sufficient for AOD push; it must be an explicit App ID owned by the Apple Developer Team used for final signing."
-          fi
-          echo "::notice::This workflow does not have your provisioning profiles or APNs key. The final signer must preserve the custom host/widget IDs and a provisioning-authorized aps-environment entitlement."
-
       - name: Test Caption Island
         run: |
           cd ${{ github.workspace }}/main
@@ -107,9 +96,19 @@ jobs:
             Tweaks/CaptionIsland/CIVideoEligibility.m \
             -o "$smoke_dir/VideoEligibilitySmoke"
           "$smoke_dir/VideoEligibilitySmoke"
-          node --check Services/CaptionIslandPushServer/server.mjs
-          npm test --prefix Services/CaptionIslandPushServer
-          sh -n Scripts/verify-caption-island-push-signing.sh
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIslandTests/ObjC/VideoOverridesSmoke.m \
+            Tweaks/CaptionIsland/CIVideoOverrides.m \
+            Tweaks/CaptionIsland/CITextUtilities.m \
+            -o "$smoke_dir/VideoOverridesSmoke"
+          "$smoke_dir/VideoOverridesSmoke"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIslandTests/ObjC/CaptionTimingSmoke.m \
+            Tweaks/CaptionIsland/CICaptionTiming.m \
+            -o "$smoke_dir/CaptionTimingSmoke"
+          "$smoke_dir/CaptionTimingSmoke"
 
       - name: Install Dependencies
         run: brew install ldid dpkg make
@@ -177,8 +176,6 @@ jobs:
           echo "==> YouTube v$youtube_version downloaded!"
           plutil -replace NSSupportsLiveActivities -bool YES "Payload/YouTube.app/Info.plist" 2>/dev/null || \
             plutil -insert NSSupportsLiveActivities -bool YES "Payload/YouTube.app/Info.plist"
-          plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "Payload/YouTube.app/Info.plist" 2>/dev/null || \
-            plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "Payload/YouTube.app/Info.plist"
           plutil -replace MinimumOSVersion -string "$MINIMUM_IOS_VERSION" "Payload/YouTube.app/Info.plist" 2>/dev/null || \
             plutil -insert MinimumOSVersion -string "$MINIMUM_IOS_VERSION" "Payload/YouTube.app/Info.plist"
           if ! /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "Payload/YouTube.app/Info.plist" 2>/dev/null | grep -qw audio; then
@@ -228,15 +225,11 @@ jobs:
           app_path="$(find "$verify_dir/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           test -n "$app_path"
           test "$(plutil -extract NSSupportsLiveActivities raw -expect bool -o - "$app_path/Info.plist")" = "true"
-          test "$(plutil -extract NSSupportsLiveActivitiesFrequentUpdates raw -expect bool -o - "$app_path/Info.plist")" = "true"
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app_path/Info.plist")" = "$MINIMUM_IOS_VERSION"
           /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app_path/Info.plist" | grep -qw audio
           test -f "$app_path/Frameworks/CaptionIsland.dylib"
           caption_minos="$(otool -l "$app_path/Frameworks/CaptionIsland.dylib" | awk '$1 == "minos" { print $2; exit }')"
           test "$caption_minos" = "$MINIMUM_IOS_VERSION"
-          test -f "$app_path/Frameworks/YouTubeDiagnostics.dylib"
-          diagnostics_minos="$(otool -l "$app_path/Frameworks/YouTubeDiagnostics.dylib" | awk '$1 == "minos" { print $2; exit }')"
-          test "$diagnostics_minos" = "$MINIMUM_IOS_VERSION"
           widget_path="$app_path/PlugIns/CaptionIslandWidget.appex"
           test -x "$widget_path/CaptionIslandWidget"
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$widget_path/Info.plist")" = "com.apple.widgetkit-extension"
@@ -248,7 +241,6 @@ jobs:
           test "$widget_minos" = "$MINIMUM_IOS_VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$widget_path/Info.plist")" = "$MINIMUM_IOS_VERSION"
           test "$(plutil -extract NSSupportsLiveActivities raw -expect bool -o - "$widget_path/Info.plist")" = "true"
-          test "$(plutil -extract NSSupportsLiveActivitiesFrequentUpdates raw -expect bool -o - "$widget_path/Info.plist")" = "true"
           for extension_plist in "$app_path"/PlugIns/*.appex/Info.plist; do
             extension_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$extension_plist")"
             case "$extension_id" in
@@ -257,11 +249,7 @@ jobs:
             esac
             test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension_plist")" = "$MINIMUM_IOS_VERSION"
           done
-          if test "$host_id" = "com.google.ios.youtube"; then
-            echo "::warning::This unsigned artifact can use local Live Activity updates, but APNs Live Activity push requires a final signer-owned explicit bundle ID instead of com.google.ios.youtube."
-          fi
-          echo "::notice::Run Scripts/verify-caption-island-push-signing.sh against the finally signed IPA; this build-stage check cannot validate the sideload signer's provisioning profile or aps-environment."
-          echo "==> CaptionIsland, YouTubeDiagnostics, and native Live Activity extension verified"
+          echo "==> CaptionIsland and native Live Activity extension verified"
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact }}

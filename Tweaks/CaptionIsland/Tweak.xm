@@ -28,13 +28,6 @@
 - (void)didStopPictureInPicture;
 @end
 
-@interface YTPlayerViewController (CaptionIslandRemotePlayback)
-- (void)play;
-- (void)pause;
-- (void)varispeedSwitchController:(id)controller
-                    didSelectRate:(float)rate;
-@end
-
 static const void *CISuppressedStateKey = &CISuppressedStateKey;
 static const void *CIActivePlayerKey = &CIActivePlayerKey;
 static const void *CIRetiredPlayerKey = &CIRetiredPlayerKey;
@@ -72,15 +65,12 @@ static NSUInteger CIPiPLatePauseSuppressionGeneration;
 static NSTimeInterval CIPiPLatePauseSuppressionUntil;
 static NSString *CIPiPLatePauseSuppressionVideoID;
 static NSUInteger CIPiPLatePauseSuppressionCount;
-static BOOL CIRemotePlaybackPlaying = YES;
-static double CIRemotePlaybackRate = 1.0;
 
 static const NSTimeInterval CIPiPRecentPlaybackInterval = 1.8;
 static const NSTimeInterval CIPiPStopToWillStopMaxInterval = 0.65;
 static const NSTimeInterval CIPiPWillStopToDidStopMaxInterval = 2.0;
 static const NSTimeInterval CIPiPPauseClassificationDelay = 0.80;
 static const NSTimeInterval CIPiPLatePauseSuppressionInterval = 1.2;
-static const NSTimeInterval CIPiPReadOnlyVerificationDelay = 1.0;
 
 void CIShowToast(NSString *text) {
     if (text.length == 0) return;
@@ -110,28 +100,6 @@ static NSString *CIPlayerVideoID(YTPlayerViewController *controller) {
     NSString *videoID = controller.currentVideoID;
     if (videoID.length == 0) videoID = controller.contentVideoID;
     return videoID ?: @"";
-}
-
-static void CISynchronizeRemotePlayback(
-    YTPlayerViewController *controller,
-    BOOL playing,
-    double rate,
-    BOOL force
-) {
-    if (!controller || controller != CIActivePlayerController ||
-        CIPlayerControllerIsAdvertising(controller)) return;
-    NSTimeInterval position =
-        controller.currentVideoMediaTime;
-    if (!isfinite(position) || position < 0) return;
-    CIRemotePlaybackPlaying = playing;
-    if (isfinite(rate) && rate >= 0.25 && rate <= 4.0) {
-        CIRemotePlaybackRate = rate;
-    }
-    [CICaptionCoordinator.sharedCoordinator
-        synchronizePlaybackAtPosition:position
-                              playing:playing
-                                 rate:CIRemotePlaybackRate
-                                force:force];
 }
 
 static void CIMarkShortsPlayer(
@@ -408,12 +376,6 @@ static void CIObservePiPPlaybackStart(void) {
     CIPiPPlaybackPauseStateKnown = YES;
     CIPiPPlaybackPaused = NO;
     CIClearPiPStopCandidate();
-    CISynchronizeRemotePlayback(
-        CIActivePlayerController,
-        YES,
-        CIRemotePlaybackRate,
-        YES
-    );
 }
 
 static void CIUpdatePiPStopPairing(void) {
@@ -454,12 +416,6 @@ static void CISchedulePiPPauseClassification(
                 NSUInteger deliveredPauseCount =
                     CIDeliverDeferredPiPPauseRequests();
                 CIClearPiPStopCandidate();
-                CISynchronizeRemotePlayback(
-                    CIActivePlayerController,
-                    NO,
-                    CIRemotePlaybackRate,
-                    YES
-                );
                 [CILogStore.sharedStore recordLevel:CILogLevelDebug
                     category:@"Background"
                     format:@"PiP remained active after the pause request; delivered %lu deferred ordinary-pause callback(s).",
@@ -781,7 +737,6 @@ static void CIResolveActivatedPlayback(YTPlayerViewController *controller,
 
 static void CIActivatePlayback(YTPlayerViewController *controller, id playbackData) {
     CIPlaybackLifecycleGeneration++;
-    CIRemotePlaybackPlaying = YES;
     objc_setAssociatedObject(
         controller,
         CIDurationRefreshVideoKey,
@@ -1019,14 +974,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     CIClearLatePiPPauseSuppression();
     NSUInteger deliveredPauseCount =
         CIDeliverDeferredPiPPauseRequests();
-    if (deliveredPauseCount > 0) {
-        CISynchronizeRemotePlayback(
-            CIActivePlayerController,
-            NO,
-            CIRemotePlaybackRate,
-            YES
-        );
-    }
     CIClearPiPStopCandidate();
     [CILogStore.sharedStore recordLevel:CILogLevelDebug
         category:@"Background"
@@ -1186,41 +1133,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
             expectedVideoID;
     }
     CIPictureInPicturePreparationGeneration++;
-    NSUInteger lifecycleGeneration =
-        CIPiPAudioLifecycleGeneration;
-    NSUInteger playbackGeneration =
-        CIPlaybackLifecycleGeneration;
-    __weak YTPlayerViewController *verificationController =
-        CIActivePlayerController;
-    NSTimeInterval positionBeforeVerification =
-        verificationController.currentVideoMediaTime;
-    __block UIBackgroundTaskIdentifier
-        verificationBackgroundTask =
-            UIBackgroundTaskInvalid;
-    void (^finishVerificationBackgroundTask)(void) = ^{
-        if (verificationBackgroundTask ==
-            UIBackgroundTaskInvalid) return;
-        UIBackgroundTaskIdentifier task =
-            verificationBackgroundTask;
-        verificationBackgroundTask =
-            UIBackgroundTaskInvalid;
-        [UIApplication.sharedApplication
-            endBackgroundTask:task];
-    };
-    if (!restoreWasRequested &&
-        applicationRemainsBackgrounded) {
-        verificationBackgroundTask =
-            [UIApplication.sharedApplication
-                beginBackgroundTaskWithName:
-                    @"CaptionIsland.PiPClockVerification"
-                expirationHandler:^{
-                    [CILogStore.sharedStore
-                        recordLevel:CILogLevelWarning
-                        category:@"Background"
-                        message:@"PiP clock verification background time expired before the relay correction finished."];
-                    finishVerificationBackgroundTask();
-                }];
-    }
 
     // Keep the candidate alive across YouTube's didStop implementation:
     // some versions emit their playback-pause callback from inside teardown.
@@ -1264,17 +1176,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
             finishPictureInPicture];
     }
     if (suppressedPlayingDismissalPause) {
-        if (expectedVideoID.length > 0 &&
-            isfinite(positionBeforeVerification) &&
-            positionBeforeVerification >= 0) {
-            [CICaptionCoordinator.sharedCoordinator
-                synchronizePlaybackAtPosition:
-                    positionBeforeVerification
-                                      playing:YES
-                                         rate:
-                                             CIRemotePlaybackRate
-                                        force:YES];
-        }
         [CICaptionCoordinator.sharedCoordinator
             prepareForExternalPlayback];
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
@@ -1282,99 +1183,12 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
             format:@"Suppressed %lu PiP teardown pause callback(s) for video %@; no command was sent to the torn-down player graph.",
                    (unsigned long)suppressedPauseCount,
                    expectedVideoID];
-        dispatch_after(
-            dispatch_time(
-                DISPATCH_TIME_NOW,
-                (int64_t)(
-                    CIPiPReadOnlyVerificationDelay *
-                    NSEC_PER_SEC
-                )
-            ),
-            dispatch_get_main_queue(),
-            ^{
-                if (lifecycleGeneration !=
-                        CIPiPAudioLifecycleGeneration ||
-                    playbackGeneration !=
-                        CIPlaybackLifecycleGeneration ||
-                    UIApplication.sharedApplication.applicationState !=
-                        UIApplicationStateBackground ||
-                    expectedVideoID.length == 0) {
-                    finishVerificationBackgroundTask();
-                    return;
-                }
-                YTPlayerViewController *controller =
-                    verificationController;
-                NSString *currentVideoID =
-                    CIPlayerVideoID(controller);
-                NSTimeInterval positionAfterVerification =
-                    controller.currentVideoMediaTime;
-                BOOL sameVideo =
-                    controller &&
-                    [currentVideoID isEqualToString:
-                        expectedVideoID];
-                BOOL clockAdvanced =
-                    sameVideo &&
-                    isfinite(positionBeforeVerification) &&
-                    isfinite(positionAfterVerification) &&
-                    positionAfterVerification >
-                        positionBeforeVerification + 0.04;
-                NSTimeInterval verifiedPosition =
-                    sameVideo &&
-                    isfinite(positionAfterVerification) &&
-                    positionAfterVerification >= 0
-                        ? positionAfterVerification
-                        : positionBeforeVerification;
-                if (!isfinite(verifiedPosition) ||
-                    verifiedPosition < 0) {
-                    [CILogStore.sharedStore
-                        recordLevel:CILogLevelWarning
-                        category:@"Background"
-                        format:@"PiP clock verification for video %@ had no valid playback position; the existing remote schedule was left unchanged.",
-                               expectedVideoID];
-                    finishVerificationBackgroundTask();
-                    return;
-                }
-                [CICaptionCoordinator.sharedCoordinator
-                    synchronizeRemotePlaybackCriticalAtPosition:
-                        verifiedPosition
-                                                    playing:
-                                                        clockAdvanced
-                                                       rate:
-                                                           CIRemotePlaybackRate
-                                            expectedVideoID:
-                                                expectedVideoID
-                                                 completion:
-                    ^(BOOL attempted) {
-                        CILogLevel level =
-                            attempted
-                                ? (clockAdvanced
-                                    ? CILogLevelInfo
-                                    : CILogLevelWarning)
-                                : CILogLevelWarning;
-                        [CILogStore.sharedStore
-                            recordLevel:level
-                            category:@"Background"
-                            format:attempted
-                                ? (clockAdvanced
-                                    ? @"Verified playback clock continuity for video %@ after PiP dismissal (%.1fs → %.1fs); the playing relay snapshot was flushed."
-                                    : @"PiP teardown pause was suppressed for video %@, but the playback clock did not advance (%.1fs → %.1fs). A paused relay snapshot was flushed; no player restart was attempted.")
-                                : @"PiP clock state for video %@ was resolved (%.1fs → %.1fs), but no token-enabled relay snapshot was available to flush.",
-                                   expectedVideoID,
-                                   positionBeforeVerification,
-                                   positionAfterVerification];
-                        finishVerificationBackgroundTask();
-                    }];
-            }
-        );
     } else if (!restoreWasRequested &&
                applicationRemainsBackgrounded) {
-        finishVerificationBackgroundTask();
         [CILogStore.sharedStore recordLevel:CILogLevelDebug
             category:@"Background"
             format:@"PiP stopped in the background without a playing-state pause candidate (candidate age %.2fs); playback was left unchanged.",
                    candidateAge];
-    } else {
-        finishVerificationBackgroundTask();
     }
 }
 
@@ -1461,94 +1275,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 %end
 
 
-%group CaptionIslandPlayerPlayHooks
-
-%hook YTPlayerViewController
-
-- (void)play {
-    %orig;
-    CISynchronizeRemotePlayback(
-        self,
-        YES,
-        CIRemotePlaybackRate,
-        YES
-    );
-}
-
-%end
-
-%end
-
-
-%group CaptionIslandPlayerPauseHooks
-
-%hook YTPlayerViewController
-
-- (void)pause {
-    %orig;
-    BOOL PiPIsActive =
-        CIPiPSystemController &&
-        CIPiPSystemController.pictureInPictureActive;
-    if (!PiPIsActive && !CIPiPStopCandidate) {
-        CISynchronizeRemotePlayback(
-            self,
-            NO,
-            CIRemotePlaybackRate,
-            YES
-        );
-    }
-}
-
-%end
-
-%end
-
-
-%group CaptionIslandPlayerSeekHooks
-
-%hook YTPlayerViewController
-
-- (void)seekToTime:(CGFloat)time {
-    %orig;
-    if (![objc_getAssociatedObject(
-            self,
-            CIActivePlayerKey
-        ) boolValue]) return;
-    [CICaptionCoordinator.sharedCoordinator
-        synchronizePlaybackAtPosition:
-            MAX(0, (NSTimeInterval)time)
-                              playing:
-            CIRemotePlaybackPlaying
-                                 rate:
-            CIRemotePlaybackRate
-                                force:YES];
-}
-
-%end
-
-%end
-
-
-%group CaptionIslandPlayerRateHooks
-
-%hook YTPlayerViewController
-
-- (void)varispeedSwitchController:(id)controller
-                    didSelectRate:(float)rate {
-    %orig;
-    CISynchronizeRemotePlayback(
-        self,
-        CIRemotePlaybackPlaying,
-        rate,
-        YES
-    );
-}
-
-%end
-
-%end
-
-
 %group CaptionIslandModernTimeHooks
 
 %hook YTPlayerViewController
@@ -1604,33 +1330,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
             @selector(viewDidAppear:)
         )) {
         %init(CaptionIslandShortsLifecycleHooks);
-    }
-    if (class_getInstanceMethod(
-            playerClass,
-            @selector(play)
-        )) {
-        %init(CaptionIslandPlayerPlayHooks);
-    }
-    if (class_getInstanceMethod(
-            playerClass,
-            @selector(pause)
-        )) {
-        %init(CaptionIslandPlayerPauseHooks);
-    }
-    if (class_getInstanceMethod(
-            playerClass,
-            @selector(seekToTime:)
-        )) {
-        %init(CaptionIslandPlayerSeekHooks);
-    }
-    if (class_getInstanceMethod(
-            playerClass,
-            @selector(
-                varispeedSwitchController:
-                didSelectRate:
-            )
-        )) {
-        %init(CaptionIslandPlayerRateHooks);
     }
     SEL modern = @selector(potentiallyMutatedSingleVideo:currentVideoTimeDidChange:);
     if (class_getInstanceMethod(playerClass, modern)) {

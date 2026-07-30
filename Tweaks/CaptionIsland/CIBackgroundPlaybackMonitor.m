@@ -372,11 +372,6 @@ static double CIQuantizedPlaybackRate(double rate) {
                             duration:controller.currentVideoTotalMediaTime
                         playbackRate:estimatedRate
                               uptime:uptime];
-    [CICaptionCoordinator.sharedCoordinator
-        synchronizePlaybackAtPosition:playbackTime
-                              playing:YES
-                                 rate:estimatedRate
-                                force:NO];
     if (!self.didLogNativeBackgroundClock) {
         self.didLogNativeBackgroundClock = YES;
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
@@ -530,11 +525,6 @@ static double CIQuantizedPlaybackRate(double rate) {
     if (!clockChanged) {
         if (self.lastPlaybackProgressUptime > 0 &&
             uptime - self.lastPlaybackProgressUptime >= 3.0) {
-            [CICaptionCoordinator.sharedCoordinator
-                synchronizePlaybackAtPosition:playbackTime
-                                      playing:NO
-                                         rate:1.0
-                                        force:NO];
             [self synchronizeNowPlayingAtTime:playbackTime
                                     duration:controller.currentVideoTotalMediaTime
                                 playbackRate:0
@@ -551,11 +541,6 @@ static double CIQuantizedPlaybackRate(double rate) {
         estimatedRate > 4.0) {
         estimatedRate = 1.0;
     }
-    [CICaptionCoordinator.sharedCoordinator
-        synchronizePlaybackAtPosition:playbackTime
-                              playing:YES
-                                 rate:estimatedRate
-                                force:NO];
     self.lastPlaybackProgressUptime = uptime;
     if (clockAdvanced) {
         self.lastPlaybackAdvanceUptime = uptime;

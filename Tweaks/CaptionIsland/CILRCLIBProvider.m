@@ -10,7 +10,7 @@ static NSString *const CILRCLIBUserAgent =
     @"CaptionIsland/1.0 (+https://github.com/iervn6341-ovo/uYouEnhanced-build)";
 static const NSUInteger CILRCLIBMaximumResponseBytes = 2 * 1024 * 1024;
 static const NSUInteger CILRCLIBMaximumLyricsCharacters = 512 * 1024;
-static const NSUInteger CILRCLIBMaximumCandidates = 20;
+static const NSUInteger CILRCLIBMaximumCandidates = 50;
 static const NSUInteger CILRCLIBMaximumSyncedCues = 5000;
 static const NSUInteger CILRCLIBMaximumPlainLines = 1000;
 static const NSUInteger CILRCLIBMaximumLyricLineCharacters = 2048;
@@ -316,7 +316,13 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     double durationDifference = videoDuration > 0 && duration > 0
         ? fabs(duration - videoDuration) : DBL_MAX;
     if (videoDuration > 0 && duration > 0) {
-        double maximumDifference = MAX(45.0, videoDuration * 0.25);
+        // A YouTube upload can be longer than the database track because of
+        // an intro/outro. The reverse direction is riskier: a database track
+        // substantially longer than the video usually means TV-size versus
+        // full-size (or another edit), so keep that tolerance tighter.
+        double maximumDifference = duration > videoDuration
+            ? MAX(18.0, MIN(35.0, videoDuration * 0.15))
+            : MAX(35.0, MIN(60.0, videoDuration * 0.20));
         if (durationDifference > maximumDifference) return nil;
     }
 
@@ -387,6 +393,43 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     };
     [candidates sortUsingComparator:comparator];
     CILRCLIBCandidate *closest = candidates.firstObject;
+
+    if (artist.length == 0 && candidates.count > 1) {
+        for (NSUInteger index = 1; index < candidates.count; index++) {
+            CILRCLIBCandidate *other = candidates[index];
+            if (CILRCLIBFieldSimilarity(
+                    closest.trackName,
+                    other.trackName
+                ) < 0.92) {
+                continue;
+            }
+            NSString *closestArtist =
+                CINormalizedText(closest.artistName);
+            NSString *otherArtist =
+                CINormalizedText(other.artistName);
+            if ([closestArtist isEqualToString:otherArtist] ||
+                CILRCLIBFieldSimilarity(
+                    closest.artistName,
+                    other.artistName
+                ) >= 0.60) {
+                continue;
+            }
+            if (fabs(closest.metadataScore -
+                     other.metadataScore) > 0.03) {
+                continue;
+            }
+            if (videoDuration > 0 &&
+                other.durationDifference >
+                    closest.durationDifference + 8.0) {
+                continue;
+            }
+            // With no reliable artist, two near-identical titles from
+            // different singers at comparable durations are genuinely
+            // ambiguous. Prefer a YouTube fallback or a per-video override
+            // instead of silently selecting the wrong performance.
+            return nil;
+        }
+    }
 
     NSArray<CILRCLIBCandidate *> *synced = [candidates filteredArrayUsingPredicate:
         [NSPredicate predicateWithBlock:^BOOL(CILRCLIBCandidate *candidate,

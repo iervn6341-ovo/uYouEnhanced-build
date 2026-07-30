@@ -28,8 +28,6 @@
     <string>17.5</string>
     <key>NSSupportsLiveActivities</key>
     <true/>
-    <key>NSSupportsLiveActivitiesFrequentUpdates</key>
-    <true/>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionPointIdentifier</key>

@@ -45,6 +45,7 @@ NSString *CICleanCaptionText(NSString *text) {
     NSRegularExpression *tags = [NSRegularExpression regularExpressionWithPattern:@"<[^>]+>" options:0 error:nil];
     result = [tags stringByReplacingMatchesInString:result options:0 range:NSMakeRange(0, result.length) withTemplate:@""];
     result = CIDecodeCommonEntities(result);
+    result = result.precomposedStringWithCanonicalMapping;
     NSRegularExpression *spaces = [NSRegularExpression regularExpressionWithPattern:@"\\s+" options:0 error:nil];
     result = [spaces stringByReplacingMatchesInString:result options:0 range:NSMakeRange(0, result.length) withTemplate:@" "];
     return [result stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -99,21 +100,28 @@ double CITextSimilarity(NSString *lhs, NSString *rhs) {
 
 static NSString *CIRemoveVideoDecorations(NSString *value) {
     if (value.length == 0) return @"";
-    // Square-bracket blocks are explicitly treated as YouTube decorations.
-    // Unknown separators and ordinary parentheses remain part of the title so
-    // a real song name is not shortened merely because it is styled.
+    // Only discard bracketed text when it is recognizably upload metadata.
+    // Artist identities such as SawanoHiroyuki[nZk] must remain searchable.
     NSArray<NSString *> *patterns = @[
-        // Remove all ASCII/full-width square-bracket and lenticular-bracket
-        // blocks, not just leading ones: [HD], ［字幕］, 【ウマ娘】, etc.
-        @"\\[[^\\]\\r\\n]*\\]|［[^］\\r\\n]*］|【[^】\\r\\n]*】",
+        // A leading lenticular block is normally a franchise/category tag.
+        // CISongTitleFromVideoTitle restores the original if it was the whole
+        // title, so a real title such as 【アイドル】 is still preserved.
+        @"^\\s*【[^】\\r\\n]*】\\s*",
+        // Known decoration blocks can occur anywhere in an upload title.
+        @"(?i)[\\[［【][^\\]］】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\]］】\\r\\n]*[\\]］】]",
         // Remove a trailing bracket only when it contains a known video,
         // version, lyric, subtitle, or transliteration marker.
         @"(?i)\\s*[\\[(（【][^\\])）】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\])）】\\r\\n]*[\\])）】]\\s*$",
+        // Anime/program context following a clean song title is upload
+        // metadata, not part of the LRCLIB track name.
+        @"(?i)\\s*\\((?:tv\\s*)?(?:anime|アニメ)[^\\r\\n)]*(?:opening|ending|\\bop\\b|\\bed\\b|主題歌)[^\\r\\n)]*\\)\\s*$",
         // A pipe normally separates the actual title from upload metadata.
         // Unknown pipe suffixes are retained instead of being guessed away.
         @"(?i)\\s*[|｜]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
         // The same metadata is sometimes introduced with a dash.
-        @"(?i)\\s*[-–—]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$"
+        @"(?i)\\s*[-–—]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
+        // Common re-upload notes, optionally preceded by a take/track number.
+        @"(?i)\\s+(?:\\d+\\s*)?(?:音[频頻](?:优化|優化)|纯享版|純享版).*$"
     ];
     NSString *result = value;
     for (NSString *pattern in patterns) {
@@ -126,8 +134,178 @@ static NSString *CIRemoveVideoDecorations(NSString *value) {
     return CICleanCaptionText(result);
 }
 
+static BOOL CITextMatchesPattern(NSString *text, NSString *pattern) {
+    if (text.length == 0 || pattern.length == 0) return NO;
+    NSRegularExpression *regex =
+        [NSRegularExpression regularExpressionWithPattern:pattern
+                                                  options:0
+                                                    error:nil];
+    return [regex firstMatchInString:text
+                             options:0
+                               range:NSMakeRange(0, text.length)] != nil;
+}
+
+static NSString *CILastMetadataSegment(NSString *value) {
+    NSString *result = CICleanCaptionText(value);
+    NSUInteger location = NSNotFound;
+    NSUInteger separatorLength = 0;
+    for (NSString *separator in @[@"|", @"｜", @"／"]) {
+        NSRange found = [result rangeOfString:separator
+                                     options:NSBackwardsSearch];
+        if (found.location != NSNotFound &&
+            (location == NSNotFound || found.location > location)) {
+            location = found.location;
+            separatorLength = found.length;
+        }
+    }
+    if (location != NSNotFound) {
+        result = [result substringFromIndex:location + separatorLength];
+    }
+    NSCharacterSet *edges =
+        [NSCharacterSet characterSetWithCharactersInString:@" \t-|｜/／–—:："];
+    return [CICleanCaptionText(result)
+        stringByTrimmingCharactersInSet:edges];
+}
+
+static BOOL CIQuoteHasMediaContext(NSString *prefix) {
+    NSString *context = CICleanCaptionText(prefix);
+    if (context.length > 64) {
+        context = [context substringFromIndex:context.length - 64];
+    }
+    return CITextMatchesPattern(
+        context,
+        @"(?i)(?:tv\\s*anime|anime|official\\s*(?:music\\s*)?video|"
+         @"music\\s*video|アニメ|映画|ドラマ)\\s*[/／:：-]?\\s*$"
+    );
+}
+
+static NSString *CIArtistCandidateFromQuotePrefix(NSString *prefix) {
+    NSString *candidate = CILastMetadataSegment(prefix);
+    if (candidate.length == 0 || candidate.length > 160) return @"";
+    NSRange quoteRange = [candidate rangeOfCharacterFromSet:
+        [NSCharacterSet characterSetWithCharactersInString:@"「」『』"]];
+    if (quoteRange.location != NSNotFound) {
+        return @"";
+    }
+    if (CITextMatchesPattern(
+            candidate,
+            @"(?i)(?:tv\\s*anime|anime|アニメ|映画|ドラマ|"
+             @"ノンクレジット|opening|ending|\\bop\\b|\\bed\\b|"
+             @"主題歌|テーマ)"
+        )) {
+        return @"";
+    }
+    return candidate;
+}
+
+static BOOL CIExtractQuotedSongMetadata(NSString *value,
+                                        NSString **songTitle,
+                                        NSString **artist) {
+    if (value.length == 0) return NO;
+    NSRegularExpression *quotes = [NSRegularExpression
+        regularExpressionWithPattern:@"「([^」\\r\\n]+)」|『([^』\\r\\n]+)』"
+                               options:0
+                                 error:nil];
+    NSArray<NSTextCheckingResult *> *matches =
+        [quotes matchesInString:value
+                        options:0
+                          range:NSMakeRange(0, value.length)];
+    NSString *bestTitle = @"";
+    NSString *bestArtist = @"";
+    NSInteger bestScore = NSIntegerMin;
+    for (NSTextCheckingResult *match in matches) {
+        NSRange titleRange = [match rangeAtIndex:1];
+        if (titleRange.location == NSNotFound) titleRange = [match rangeAtIndex:2];
+        if (titleRange.location == NSNotFound || titleRange.length == 0) continue;
+
+        NSString *prefix = [value substringToIndex:match.range.location];
+        if (CIQuoteHasMediaContext(prefix)) continue;
+        NSString *title = CICleanCaptionText([value substringWithRange:titleRange]);
+        if (title.length == 0) continue;
+        NSString *suffix =
+            CICleanCaptionText([value substringFromIndex:NSMaxRange(match.range)]);
+        NSString *candidateArtist =
+            CIArtistCandidateFromQuotePrefix(prefix);
+
+        NSInteger score = 1;
+        if (candidateArtist.length > 0) score += 1;
+        if (suffix.length == 0) score += 2;
+        if (CITextMatchesPattern(
+                suffix,
+                @"(?i)^\\s*(?:official\\s*(?:music\\s*)?video|"
+                 @"music\\s*video|lyric\\s*video|mv|pv)(?:\\b|\\s|[/／])"
+            )) {
+            score += 4;
+        }
+        if ([prefix rangeOfString:@"|"].location != NSNotFound ||
+            [prefix rangeOfString:@"｜"].location != NSNotFound) {
+            score += 1;
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            bestTitle = title;
+            bestArtist = candidateArtist;
+        }
+    }
+    if (bestTitle.length == 0) return NO;
+    if (songTitle) *songTitle = bestTitle;
+    if (artist) *artist = bestArtist;
+    return YES;
+}
+
+static BOOL CIRightSideLooksLikeArtist(NSString *value) {
+    return CITextMatchesPattern(
+        value,
+        @"(?i)(?:^|[^a-z0-9])(?:feat\\.?|ft\\.?|cv\\.?|vocals?|"
+         @"kasane\\s+teto|hatsune\\s+miku|sv)(?:[^a-z0-9]|$)|"
+         @"初音ミク|重音テト|鏡音"
+    );
+}
+
+static BOOL CIExtractSlashSongMetadata(NSString *value,
+                                       NSString **songTitle,
+                                       NSString **artist) {
+    NSString *searchValue = CIRemoveVideoDecorations(value);
+    NSRegularExpression *separator = [NSRegularExpression
+        regularExpressionWithPattern:
+            @"(?<!:)\\s+[/／]\\s+|(?<![:/\\d])[/／](?![/\\d])"
+                               options:0
+                                 error:nil];
+    NSTextCheckingResult *match =
+        [separator firstMatchInString:searchValue
+                              options:0
+                                range:NSMakeRange(0, searchValue.length)];
+    if (!match) return NO;
+    NSString *left = CIRemoveVideoDecorations(
+        [searchValue substringToIndex:match.range.location]
+    );
+    NSString *right = CIRemoveVideoDecorations(
+        [searchValue substringFromIndex:NSMaxRange(match.range)]
+    );
+    if (left.length == 0 || right.length == 0) return NO;
+    if (CIRightSideLooksLikeArtist(right)) {
+        if (songTitle) *songTitle = left;
+        // This shape usually identifies a vocalist or voicebank rather than
+        // LRCLIB's canonical artist/composer. Use it to determine which side
+        // is the title, but do not turn a low-confidence credit into a hard
+        // artist filter.
+        if (artist) *artist = @"";
+    } else {
+        if (songTitle) *songTitle = right;
+        if (artist) *artist = left;
+    }
+    return YES;
+}
+
 NSString *CISongTitleFromVideoTitle(NSString *videoTitle) {
     NSString *original = CICleanCaptionText(videoTitle ?: @"");
+    NSString *structuredTitle = @"";
+    if (CIExtractQuotedSongMetadata(original, &structuredTitle, NULL) ||
+        CIExtractSlashSongMetadata(original, &structuredTitle, NULL)) {
+        NSString *cleanedStructuredTitle =
+            CIRemoveVideoDecorations(structuredTitle);
+        if (cleanedStructuredTitle.length > 0) return cleanedStructuredTitle;
+    }
     NSString *cleaned = CIRemoveVideoDecorations(original);
     // Regex cleanup is heuristic. Never turn a usable YouTube title into an
     // empty LRCLIB query when the entire title was a decorative-looking block.
@@ -138,17 +316,37 @@ void CISplitSongMetadata(NSString *videoTitle,
                          NSString *videoAuthor,
                          NSString **songTitle,
                          NSString **artist) {
-    NSString *title = CISongTitleFromVideoTitle(videoTitle);
+    NSString *original = CICleanCaptionText(videoTitle ?: @"");
+    NSString *title = @"";
     NSString *author = CICleanCaptionText(videoAuthor ?: @"");
     NSRegularExpression *channelSuffix = [NSRegularExpression
         regularExpressionWithPattern:@"(?i)(?:\\s*[-–—]\\s*topic|\\s*vevo|\\s+official(?:\\s+artist)?(?:\\s+channel)?)$"
         options:0 error:nil];
+    BOOL hasTrustedArtistChannelSuffix =
+        [channelSuffix firstMatchInString:author options:0
+            range:NSMakeRange(0, author.length)] != nil;
     author = [channelSuffix stringByReplacingMatchesInString:author options:0
         range:NSMakeRange(0, author.length) withTemplate:@""];
     author = CICleanCaptionText(author);
 
+    NSString *parsedArtist = @"";
+    BOOL foundStructuredMetadata =
+        CIExtractQuotedSongMetadata(original, &title, &parsedArtist) ||
+        CIExtractSlashSongMetadata(original, &title, &parsedArtist);
+    if (foundStructuredMetadata) {
+        NSString *cleanedTitle = CIRemoveVideoDecorations(title);
+        if (cleanedTitle.length > 0) title = cleanedTitle;
+        parsedArtist = CICleanCaptionText(parsedArtist);
+        if (parsedArtist.length > 0) author = parsedArtist;
+        else if (!hasTrustedArtistChannelSuffix) author = @"";
+    } else {
+        title = CISongTitleFromVideoTitle(original);
+        if (!hasTrustedArtistChannelSuffix) author = @"";
+    }
+
     NSRange separator = NSMakeRange(NSNotFound, 0);
-    for (NSString *candidate in @[@" - ", @" – ", @" — ", @"｜"]) {
+    for (NSString *candidate in
+         (foundStructuredMetadata ? @[] : @[@" - ", @" – ", @" — ", @"｜"])) {
         NSRange found = [title rangeOfString:candidate];
         if (found.location != NSNotFound &&
             (separator.location == NSNotFound || found.location < separator.location)) {

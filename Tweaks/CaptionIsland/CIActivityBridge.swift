@@ -192,100 +192,6 @@ public final class CIActivityBridge: NSObject {
         }
     }
 
-    @objc(configureRemoteTimelineWithCues:source:position:duration:)
-    public static func configureRemoteTimeline(
-        cues: NSArray,
-        source: String,
-        position: Double,
-        duration: Double
-    ) {
-        guard JSONSerialization.isValidJSONObject(cues),
-              let cueData = try? JSONSerialization.data(
-                withJSONObject: cues
-              ) else { return }
-        let safeSource = sanitizedActivityText(
-            source,
-            maximumBytes: 64
-        )
-        enqueue {
-            await CIActivityPushClient.shared.configureTimeline(
-                cueData: cueData,
-                source: safeSource,
-                position: position,
-                duration: duration
-            )
-        }
-    }
-
-    @objc(syncRemotePlaybackAtPosition:playing:rate:force:)
-    public static func syncRemotePlayback(
-        position: Double,
-        playing: Bool,
-        rate: Double,
-        force: Bool
-    ) {
-        enqueue {
-            await CIActivityPushClient.shared.synchronizePlayback(
-                position: position,
-                isPlaying: playing,
-                playbackRate: rate,
-                force: force
-            )
-        }
-    }
-
-    @objc(syncRemotePlaybackCriticalAtPosition:playing:rate:expectedVideoID:completion:)
-    public static func syncRemotePlaybackCritical(
-        position: Double,
-        playing: Bool,
-        rate: Double,
-        expectedVideoID: String,
-        completion: @escaping (Bool) -> Void
-    ) {
-        let safeVideoID = sanitizedActivityText(
-            expectedVideoID,
-            maximumBytes: 128
-        )
-        guard !safeVideoID.isEmpty else {
-            DispatchQueue.main.async {
-                completion(false)
-            }
-            return
-        }
-        enqueue {
-            let attempted = await CIActivityManager.shared
-                .synchronizeRemotePlaybackCritical(
-                position: position,
-                playing: playing,
-                rate: rate,
-                expectedVideoID: safeVideoID
-            )
-            DispatchQueue.main.async {
-                completion(attempted)
-            }
-        }
-    }
-
-    @objc(clearRemoteTimelineAtPosition:duration:)
-    public static func clearRemoteTimeline(
-        position: Double,
-        duration: Double
-    ) {
-        enqueue {
-            await CIActivityPushClient.shared.clearTimeline(
-                position: position,
-                duration: duration
-            )
-        }
-    }
-
-    @objc(refreshPushConfiguration)
-    public static func refreshPushConfiguration() {
-        enqueue {
-            await CIActivityManager.shared.refreshPushConfiguration()
-        }
-    }
-
     @objc(showGapWithTitle:)
     public static func showGap(title: String) {
         guard targetSupportsLiveActivities(logIfMissing: false) else { return }
@@ -386,9 +292,7 @@ public final class CIActivityBridge: NSObject {
 }
 
 private actor CIActivityManager {
-    private static let pushSessionID =
-        "caption-island-push-v1"
-    private static let localSessionID =
+    private static let sessionID =
         "caption-island-local-v1"
 
     private struct PayloadEnvelope: Encodable {
@@ -414,12 +318,8 @@ private actor CIActivityManager {
     private var didLogMissingActivity = false
     private var isStartBlockedByUnsupportedTarget = false
     private var lastUpdateHeartbeatUptime: TimeInterval = 0
-    private var pushTokenTask: Task<Void, Never>?
-    private var pushTokenTimeoutTask: Task<Void, Never>?
-    private var frequentPushPermissionTask: Task<Void, Never>?
     private var activityStateTask: Task<Void, Never>?
-    private var pushTokenActivityID = ""
-    private var pushObservationGeneration = 0
+    private var activityObservationGeneration = 0
 
     func start(videoID: String, title: String) async {
         guard !isStartBlockedByUnsupportedTarget else { return }
@@ -446,10 +346,6 @@ private actor CIActivityManager {
                 lastNextCueEndMS = 0
                 lastPlaying = true
                 await updateState(waitingState())
-                await CIActivityPushClient.shared.updateVideo(
-                    videoID: videoID,
-                    title: self.title
-                )
                 didLogMissingActivity = false
                 CIActivityBridge.emit(
                     level: changedVideo ? "info" : "debug",
@@ -476,10 +372,6 @@ private actor CIActivityManager {
                 lastNextCueEndMS = 0
                 lastPlaying = true
                 await updateState(waitingState())
-                await CIActivityPushClient.shared.updateVideo(
-                    videoID: videoID,
-                    title: self.title
-                )
                 didLogMissingActivity = false
                 CIActivityBridge.emit(
                     level: "debug",
@@ -513,13 +405,8 @@ private actor CIActivityManager {
         self.lastPlaying = true
         let state = boundedState(waitingState())
 
-        let relayRequested =
-            await CIActivityPushClient.shared.isConfigured()
-        let desiredSessionID = relayRequested
-            ? Self.pushSessionID
-            : Self.localSessionID
         let existingActivity = systemActivities.first {
-            $0.attributes.sessionID == desiredSessionID
+            $0.attributes.sessionID == Self.sessionID
         }
         if let existingActivity {
             activity = existingActivity
@@ -528,7 +415,7 @@ private actor CIActivityManager {
                 await endActivity(duplicate, immediately: true)
             }
             await updateState(state)
-            await observePushUpdates(for: existingActivity)
+            observeActivityState(for: existingActivity)
             didLogMissingActivity = false
             CIActivityBridge.emit(
                 level: "info",
@@ -543,50 +430,16 @@ private actor CIActivityManager {
             )
         }
 
-        if relayRequested {
-            let pushAttributes = CICaptionActivityAttributes(
-                sessionID: Self.pushSessionID
-            )
-            do {
-                activity = try Activity.request(
-                    attributes: pushAttributes,
-                    content: ActivityContent(
-                        state: state,
-                        staleDate: nil,
-                        relevanceScore: 1
-                    ),
-                    pushType: .token
-                )
-                if let activity {
-                    await observePushUpdates(for: activity)
-                }
-                didLogMissingActivity = false
-                CIActivityBridge.emit(
-                    level: "info",
-                    message: "Started token-enabled native Live Activity "
-                        + "for video \(videoID)"
-                )
-                return
-            } catch {
-                CIActivityBridge.emit(
-                    level: "warning",
-                    message: "Token-enabled Live Activity request failed "
-                        + "(\(error.localizedDescription)); trying the "
-                        + "local-update fallback."
-                )
-            }
-        }
-
-        await startLocalActivity(state: state)
+        await startActivity(state: state)
     }
 
-    private func startLocalActivity(
+    private func startActivity(
         state: CICaptionActivityAttributes.ContentState
     ) async {
         do {
             activity = try Activity.request(
                 attributes: CICaptionActivityAttributes(
-                    sessionID: Self.localSessionID
+                    sessionID: Self.sessionID
                 ),
                 content: ActivityContent(
                     state: state,
@@ -596,12 +449,12 @@ private actor CIActivityManager {
                 pushType: nil
             )
             if let activity {
-                await observePushUpdates(for: activity)
+                observeActivityState(for: activity)
             }
             didLogMissingActivity = false
             CIActivityBridge.emit(
                 level: "info",
-                message: "Started local-update Live Activity "
+                message: "Started native Live Activity "
                     + "for video \(videoID)"
             )
         } catch {
@@ -642,82 +495,17 @@ private actor CIActivityManager {
         await start(videoID: videoID, title: title)
     }
 
-    func refreshPushConfiguration() async {
-        await CIActivityPushClient.shared.refreshConfiguration()
-        let relayIsConfigured =
-            await CIActivityPushClient.shared.isConfigured()
-        guard let currentActivity = activity else {
-            return
-        }
-        let desiredSessionID = relayIsConfigured
-            ? Self.pushSessionID
-            : Self.localSessionID
-        guard currentActivity.attributes.sessionID !=
-                desiredSessionID else { return }
-        let currentVideoID = videoID
-        let currentTitle = title
-        stopPushObservation()
-        if currentActivity.attributes.sessionID ==
-            Self.pushSessionID {
-            await CIActivityPushClient.shared.endActivity(
-                activityID: currentActivity.id
-            )
-        }
-        await endActivity(currentActivity, immediately: true)
-        activity = nil
-        CIActivityBridge.emit(
-            level: "info",
-            message: relayIsConfigured
-                ? "Recreating the current Live Activity with "
-                    + "pushType .token after relay configuration changed."
-                : "Recreating the current Live Activity in local-update "
-                    + "mode after the push relay was disabled."
-        )
-        await start(
-            videoID: currentVideoID,
-            title: currentTitle
-        )
-    }
-
-    func synchronizeRemotePlaybackCritical(
-        position: Double,
-        playing: Bool,
-        rate: Double,
-        expectedVideoID: String
-    ) async -> Bool {
-        guard !expectedVideoID.isEmpty,
-              videoID == expectedVideoID,
-              let activity,
-              activity.attributes.sessionID == Self.pushSessionID else {
-            return false
-        }
-        switch activity.activityState {
-        case .dismissed, .ended:
-            return false
-        default:
-            break
-        }
-        return await CIActivityPushClient.shared
-            .synchronizePlaybackAndFlushCritical(
-                position: position,
-                isPlaying: playing,
-                playbackRate: rate,
-                expectedVideoID: expectedVideoID,
-                expectedActivityID: activity.id
-            )
-    }
-
-    private func observePushUpdates(
+    private func observeActivityState(
         for observedActivity:
             Activity<CICaptionActivityAttributes>
-    ) async {
-        stopPushObservation()
+    ) {
+        stopActivityObservation()
         let observedActivityID = observedActivity.id
-        let observationGeneration = pushObservationGeneration
+        let observationGeneration = activityObservationGeneration
         activityStateTask = Task {
             for await state in observedActivity.activityStateUpdates {
                 guard !Task.isCancelled,
-                      self.isCurrentPushObservation(
+                      self.isCurrentActivityObservation(
                         activityID: observedActivityID,
                         generation: observationGeneration
                       ) else {
@@ -741,156 +529,23 @@ private actor CIActivityManager {
                 }
             }
         }
-        guard observedActivity.attributes.sessionID ==
-                Self.pushSessionID else {
-            return
-        }
-        pushTokenActivityID = ""
-        await CIActivityPushClient.shared.setActivity(
-            activityID: observedActivityID,
-            bundleID: Bundle.main.bundleIdentifier ?? "",
-            videoID: videoID,
-            title: title,
-            frequentPushesEnabled:
-                ActivityAuthorizationInfo()
-                    .frequentPushesEnabled
-        )
-        guard isCurrentPushObservation(
-            activityID: observedActivityID,
-            generation: observationGeneration
-        ) else {
-            return
-        }
-        await CIActivityPushClient.shared.refreshConfiguration()
-        guard isCurrentPushObservation(
-            activityID: observedActivityID,
-            generation: observationGeneration
-        ) else {
-            return
-        }
-        if let token = observedActivity.pushToken {
-            await didReceivePushToken(
-                token,
-                activityID: observedActivityID
-            )
-            guard isCurrentPushObservation(
-                activityID: observedActivityID,
-                generation: observationGeneration
-            ) else {
-                return
-            }
-        }
-        pushTokenTask = Task {
-            for await token in observedActivity.pushTokenUpdates {
-                guard !Task.isCancelled,
-                      self.isCurrentPushObservation(
-                        activityID: observedActivityID,
-                        generation: observationGeneration
-                      ) else {
-                    return
-                }
-                await self.didReceivePushToken(
-                    token,
-                    activityID: observedActivityID
-                )
-            }
-        }
-        frequentPushPermissionTask = Task {
-            let authorizationInfo = ActivityAuthorizationInfo()
-            for await enabled in
-                authorizationInfo.frequentPushEnablementUpdates {
-                guard !Task.isCancelled,
-                      self.isCurrentPushObservation(
-                        activityID: observedActivityID,
-                        generation: observationGeneration
-                      ) else {
-                    return
-                }
-                await CIActivityPushClient.shared
-                    .updateFrequentPushesEnabled(enabled)
-                CIActivityBridge.emit(
-                    level: enabled ? "info" : "warning",
-                    message: enabled
-                        ? "Frequent Live Activity push updates are enabled."
-                        : "Frequent Live Activity push updates are disabled "
-                            + "in iOS Settings; the relay will use a "
-                            + "lower-priority schedule."
-                )
-            }
-        }
-        pushTokenTimeoutTask = Task {
-            try? await Task.sleep(
-                nanoseconds: 8_000_000_000
-            )
-            guard !Task.isCancelled,
-                  self.isCurrentPushObservation(
-                    activityID: observedActivityID,
-                    generation: observationGeneration
-                  ) else {
-                return
-            }
-            self.reportMissingPushToken(
-                activityID: observedActivityID
-            )
-        }
     }
 
-    private func didReceivePushToken(
-        _ token: Data,
-        activityID: String
-    ) async {
-        guard activity?.id == activityID else { return }
-        pushTokenActivityID = activityID
-        pushTokenTimeoutTask?.cancel()
-        pushTokenTimeoutTask = nil
-        await CIActivityPushClient.shared.receivePushToken(
-            token,
-            activityID: activityID
-        )
-    }
-
-    private func reportMissingPushToken(
-        activityID: String
-    ) {
-        guard UserDefaults.standard.bool(
-            forKey: "CaptionIsland.PushRelayEnabled"
-        ),
-        activity?.id == activityID,
-        pushTokenActivityID != activityID else {
-            return
-        }
-        CIActivityBridge.emit(
-            level: "warning",
-            message: "ActivityKit did not deliver a push token for "
-                + "activity \(activityID). Verify the installed host "
-                + "signature has a provisioning-authorized "
-                + "aps-environment entitlement and uses an App ID "
-                + "owned by the relay's Apple Developer Team."
-        )
-    }
-
-    private func stopPushObservation(
+    private func stopActivityObservation(
         cancelActivityStateTask: Bool = true
     ) {
-        pushObservationGeneration &+= 1
-        pushTokenTask?.cancel()
-        pushTokenTask = nil
-        pushTokenTimeoutTask?.cancel()
-        pushTokenTimeoutTask = nil
-        frequentPushPermissionTask?.cancel()
-        frequentPushPermissionTask = nil
+        activityObservationGeneration &+= 1
         if cancelActivityStateTask {
             activityStateTask?.cancel()
         }
         activityStateTask = nil
-        pushTokenActivityID = ""
     }
 
-    private func isCurrentPushObservation(
+    private func isCurrentActivityObservation(
         activityID: String,
         generation: Int
     ) -> Bool {
-        pushObservationGeneration == generation &&
+        activityObservationGeneration == generation &&
             activity?.id == activityID
     }
 
@@ -899,10 +554,7 @@ private actor CIActivityManager {
             Activity<CICaptionActivityAttributes>
     ) async {
         let activityID = inactiveActivity.id
-        stopPushObservation()
-        await CIActivityPushClient.shared.endActivity(
-            activityID: activityID
-        )
+        stopActivityObservation()
         if activity?.id == activityID {
             activity = nil
         }
@@ -913,56 +565,19 @@ private actor CIActivityManager {
         dismissed: Bool
     ) async {
         guard activity?.id == activityID else { return }
-        let usesPushRelay =
-            activity?.attributes.sessionID == Self.pushSessionID
         if dismissed {
             dismissedVideoID = videoID
         }
-        // This method runs inside activityStateTask. Do not cancel that task
-        // before its awaited DELETE has finished.
-        stopPushObservation(cancelActivityStateTask: false)
-        let relayCleanupResult: CIRelayCleanupResult
-        if usesPushRelay {
-            relayCleanupResult =
-                await CIActivityPushClient.shared.endActivity(
-                    activityID: activityID
-                )
-        } else {
-            relayCleanupResult = .confirmed
-        }
+        stopActivityObservation(cancelActivityStateTask: false)
         guard activity?.id == activityID else { return }
         activity = nil
         let lifecycleDescription = dismissed
             ? "Live Activity was dismissed"
             : "Live Activity ended"
-        guard usesPushRelay else {
-            CIActivityBridge.emit(
-                level: "info",
-                message: "\(lifecycleDescription)."
-            )
-            return
-        }
-        switch relayCleanupResult {
-        case .confirmed:
-            CIActivityBridge.emit(
-                level: "info",
-                message: "\(lifecycleDescription); the relay schedule "
-                    + "was cleaned up."
-            )
-        case .queued:
-            CIActivityBridge.emit(
-                level: "info",
-                message: "\(lifecycleDescription); APNs end delivery "
-                    + "is queued for relay retry."
-            )
-        case .unconfirmed:
-            CIActivityBridge.emit(
-                level: "warning",
-                message: "\(lifecycleDescription); immediate relay "
-                    + "cleanup could not be confirmed, so the "
-                    + "server-side safety expiry remains active."
-            )
-        }
+        CIActivityBridge.emit(
+            level: "info",
+            message: "\(lifecycleDescription)."
+        )
     }
 
     func update(
@@ -1068,12 +683,7 @@ private actor CIActivityManager {
         if let endingActivity {
             await endActivity(endingActivity, immediately: immediately)
         }
-        stopPushObservation()
-        if let endingActivity {
-            await CIActivityPushClient.shared.endActivity(
-                activityID: endingActivity.id
-            )
-        }
+        stopActivityObservation()
         self.activity = nil
         self.videoID = ""
         self.lastLine = ""
@@ -1162,7 +772,7 @@ private actor CIActivityManager {
         let attributes = explicitAttributes ??
             activity?.attributes ??
             CICaptionActivityAttributes(
-                sessionID: Self.pushSessionID
+                sessionID: Self.sessionID
             )
         var state = initialState
         let originalState = initialState
@@ -1238,29 +848,17 @@ private actor CIActivityManager {
         case .active, .stale:
             return true
         case .dismissed:
-            let endedActivityID = activity.id
             dismissedVideoID = videoID
             self.activity = nil
-            stopPushObservation()
-            Task {
-                await CIActivityPushClient.shared.endActivity(
-                    activityID: endedActivityID
-                )
-            }
+            stopActivityObservation()
             CIActivityBridge.emit(
                 level: "info",
                 message: "Live Activity was dismissed by the user or system"
             )
             return false
         case .ended:
-            let endedActivityID = activity.id
             self.activity = nil
-            stopPushObservation()
-            Task {
-                await CIActivityPushClient.shared.endActivity(
-                    activityID: endedActivityID
-                )
-            }
+            stopActivityObservation()
             return false
         default:
             return true

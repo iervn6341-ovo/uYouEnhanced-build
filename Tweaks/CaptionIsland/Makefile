@@ -15,7 +15,9 @@ CaptionIsland_FILES = \
 	CIPlaybackState.m \
 	CIConstants.m \
 	CIModels.m \
+	CICaptionTiming.m \
 	CIVideoEligibility.m \
+	CIVideoOverrides.m \
 	CITextUtilities.m \
 	CICaptionParser.m \
 	CILyricsAligner.m \
@@ -26,10 +28,9 @@ CaptionIsland_FILES = \
 	CIActivityPresenter.m \
 	CICaptionCoordinator.m \
 	CIActivityBridge.swift \
-	CIActivityPushClient.swift \
 	Shared/CICaptionActivityAttributes.swift
 CaptionIsland_CFLAGS = -fobjc-arc
-CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore Security ActivityKit MediaPlayer AVKit
+CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore ActivityKit MediaPlayer AVKit
 CaptionIsland_SWIFT_VERSION = 5
 
 include $(THEOS_MAKE_PATH)/tweak.mk
