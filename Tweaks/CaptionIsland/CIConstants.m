@@ -10,6 +10,11 @@ NSString *const CIDebugLoggingKey = @"CaptionIsland.DebugLogging";
 NSString *const CIDisableForShortsKey = @"CaptionIsland.DisableForShorts";
 NSString *const CIMaximumVideoDurationMinutesKey =
     @"CaptionIsland.MaximumVideoDurationMinutes";
+NSString *const CIReturnHomeModeKey = @"CaptionIsland.ReturnHomeMode";
+NSString *const CIContinuedBackgroundProcessingEnabledKey =
+    @"CaptionIsland.ContinuedBackgroundProcessingEnabled";
+NSNotificationName const CIYouPiPAutomaticPiPSuppressedNotification =
+    @"CaptionIsland.YouPiPAutomaticPiPSuppressed";
 
 BOOL CIPreferenceBool(NSString *key, BOOL defaultValue) {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
@@ -34,6 +39,20 @@ CISourcePriorityMode CISourcePriority(void) {
             return (CISourcePriorityMode)value;
         default:
             return CISourcePriorityLRCLIBFirst;
+    }
+}
+
+CIReturnHomeMode CICurrentReturnHomeMode(void) {
+    NSInteger value = CIPreferenceInteger(
+        CIReturnHomeModeKey,
+        CIReturnHomeModeYouPiP
+    );
+    switch (value) {
+        case CIReturnHomeModeYouPiP:
+        case CIReturnHomeModeCaptionIsland:
+            return (CIReturnHomeMode)value;
+        default:
+            return CIReturnHomeModeYouPiP;
     }
 }
 

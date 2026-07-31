@@ -12,6 +12,7 @@ CaptionIsland_FILES = \
 	Tweak.xm \
 	CISettings.xm \
 	CIBackgroundPlaybackMonitor.m \
+	CIContinuedProcessingController.m \
 	CIPlaybackState.m \
 	CIConstants.m \
 	CIModels.m \
@@ -30,7 +31,7 @@ CaptionIsland_FILES = \
 	CIActivityBridge.swift \
 	Shared/CICaptionActivityAttributes.swift
 CaptionIsland_CFLAGS = -fobjc-arc
-CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore ActivityKit MediaPlayer AVKit
+CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore ActivityKit MediaPlayer AVKit BackgroundTasks
 CaptionIsland_SWIFT_VERSION = 5
 
 include $(THEOS_MAKE_PATH)/tweak.mk

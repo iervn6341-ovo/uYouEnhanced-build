@@ -56,3 +56,15 @@
 "SHARE" = "分享";
 "CLEAR" = "清除";
 "NO_MATCHING_RESULT" = "沒有相符的結果";
+"RETURN_HOME_MODE" = "返回主畫面模式";
+"RETURN_HOME_MODE_DESCRIPTION" = "選擇離開 YouTube 時自動啟動子母畫面，或保留背景播放並準備字幕動態島。手動 PiP 按鈕仍可使用。";
+"RETURN_HOME_MODE_YOUPIP" = "YouPiP（自動子母畫面）";
+"RETURN_HOME_MODE_CAPTION_ISLAND" = "Caption Island（背景字幕）";
+"CONTINUED_PROCESSING" = "iOS 26 持續背景字幕";
+"CONTINUED_PROCESSING_DESCRIPTION" = "不需伺服器的實驗模式。iOS 會另外顯示可取消的背景任務 Live Activity；系統資源不足時仍可能提前結束。";
+"CONTINUED_TASK_SYSTEM_TITLE" = "背景字幕";
+"CONTINUED_TASK_NEXT_LINE_FORMAT" = "下一句：%@";
+"CONTINUED_TASK_PAUSED" = "已暫停";
+"CONTINUED_TASK_TRANSITIONING" = "正在準備下一部影片…";
+"CONTINUED_TASK_ADVERTISEMENT" = "正在播放廣告";
+"CONTINUED_TASK_ADVERTISEMENT_DESCRIPTION" = "字幕同步已暫停";

@@ -7,6 +7,7 @@
 #import <YouTubeHeader/YTSettingsSectionItemManager.h>
 #import <YouTubeHeader/YTSettingsViewController.h>
 #import "CICaptionCoordinator.h"
+#import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
 #import "CILogViewController.h"
 #import "CITextUtilities.h"
@@ -25,6 +26,18 @@ static void CIStoreBool(NSString *key, BOOL value) {
 static void CIStoreInteger(NSString *key, NSInteger value) {
     [NSUserDefaults.standardUserDefaults setInteger:value forKey:key];
     [CICaptionCoordinator.sharedCoordinator reloadPreferences];
+}
+
+static void CISynchronizeContinuedTaskFromCurrentVideo(void) {
+    [CICaptionCoordinator.sharedCoordinator
+        currentVideoContextWithCompletion:^(CIVideoContext *context) {
+            if (!context.videoID.length) return;
+            [CIContinuedProcessingController.sharedController
+                beginForVideoID:context.videoID
+                          title:context.title ?: @""
+                       duration:context.duration
+                         shorts:context.isShorts];
+        }];
 }
 
 static NSString *CILanguageTitle(NSString *code) {
@@ -68,6 +81,19 @@ static NSString *CISourcePriorityDescription(void) {
     return CILocalized(
         @"SETTINGS_DESCRIPTION",
         @"LRCLIB → manual CC → YouTube ASR"
+    );
+}
+
+static NSString *CIReturnHomeModeTitle(CIReturnHomeMode mode) {
+    if (mode == CIReturnHomeModeCaptionIsland) {
+        return CILocalized(
+            @"RETURN_HOME_MODE_CAPTION_ISLAND",
+            @"Caption Island (background captions)"
+        );
+    }
+    return CILocalized(
+        @"RETURN_HOME_MODE_YOUPIP",
+        @"YouPiP (automatic Picture in Picture)"
     );
 }
 
@@ -323,6 +349,13 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
         switchOn:CIPreferenceBool(CIEnabledKey, YES)
         switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
             CIStoreBool(CIEnabledKey, enabled);
+            if (enabled) {
+                CISynchronizeContinuedTaskFromCurrentVideo();
+            } else {
+                [CIContinuedProcessingController.sharedController
+                    endWithReason:@"Caption Island was disabled"
+                          success:YES];
+            }
             return YES;
         } settingItemId:0]];
 
@@ -354,6 +387,103 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             return YES;
         }];
     [items addObject:language];
+
+    NSString *returnHomeModeTitle = CILocalized(
+        @"RETURN_HOME_MODE",
+        @"Return to Home Screen mode"
+    );
+    NSArray<NSNumber *> *returnHomeModeChoices = @[
+        @(CIReturnHomeModeYouPiP),
+        @(CIReturnHomeModeCaptionIsland),
+    ];
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:returnHomeModeTitle
+        titleDescription:CILocalized(
+            @"RETURN_HOME_MODE_DESCRIPTION",
+            @"Choose automatic Picture in Picture or background captions when leaving YouTube. The manual PiP button remains available."
+        )
+        accessibilityIdentifier:@"CaptionIsland.ReturnHomeMode"
+        detailTextBlock:^NSString * {
+            return CIReturnHomeModeTitle(CICurrentReturnHomeMode());
+        }
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            NSMutableArray<YTSettingsSectionItem *> *rows =
+                [NSMutableArray arrayWithCapacity:
+                    returnHomeModeChoices.count];
+            for (NSNumber *choice in returnHomeModeChoices) {
+                CIReturnHomeMode mode =
+                    (CIReturnHomeMode)choice.integerValue;
+                [rows addObject:[%c(YTSettingsSectionItem)
+                    checkmarkItemWithTitle:CIReturnHomeModeTitle(mode)
+                    selectBlock:^BOOL(
+                        __unused YTSettingsCell *pickerCell,
+                        __unused NSUInteger pickerIndex
+                    ) {
+                        CIStoreInteger(
+                            CIReturnHomeModeKey,
+                            choice.integerValue
+                        );
+                        [settingsViewController reloadData];
+                        return YES;
+                    }]];
+            }
+            NSUInteger selected = [returnHomeModeChoices
+                indexOfObject:@(CICurrentReturnHomeMode())];
+            if (selected == NSNotFound) selected = 0;
+            YTSettingsPickerViewController *picker =
+                [[%c(YTSettingsPickerViewController) alloc]
+                    initWithNavTitle:returnHomeModeTitle
+                    pickerSectionTitle:nil
+                    rows:rows
+                    selectedItemIndex:selected
+                    parentResponder:
+                        [settingsViewController parentResponder]];
+            [settingsViewController pushViewController:picker];
+            return YES;
+        }]];
+
+    if (CIContinuedBackgroundProcessingSupported()) {
+        [items addObject:[%c(YTSettingsSectionItem)
+            switchItemWithTitle:CILocalized(
+                @"CONTINUED_PROCESSING",
+                @"iOS 26 continued background captions"
+            )
+            titleDescription:CILocalized(
+                @"CONTINUED_PROCESSING_DESCRIPTION",
+                @"Experimental zero-server mode. iOS shows its own cancellable background-task Live Activity and may still end the task when resources are constrained."
+            )
+            accessibilityIdentifier:
+                @"CaptionIsland.ContinuedBackgroundProcessing"
+            switchOn:CIPreferenceBool(
+                CIContinuedBackgroundProcessingEnabledKey,
+                NO
+            )
+            switchBlock:^BOOL(
+                __unused YTSettingsCell *cell,
+                BOOL enabled
+            ) {
+                [NSUserDefaults.standardUserDefaults
+                    setBool:enabled
+                     forKey:
+                        CIContinuedBackgroundProcessingEnabledKey];
+                CIContinuedProcessingController *controller =
+                    CIContinuedProcessingController.sharedController;
+                if (!enabled) {
+                    [controller
+                        endWithReason:@"disabled from Caption Island settings"
+                              success:YES];
+                } else {
+                    CISynchronizeContinuedTaskFromCurrentVideo();
+                }
+                [CICaptionCoordinator.sharedCoordinator
+                    reloadPreferences];
+                return YES;
+            }
+            settingItemId:0]];
+    }
 
     NSString *sourcePriorityTitle =
         CILocalized(@"SOURCE_PRIORITY", @"Preferred caption source");
@@ -417,6 +547,7 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
         switchOn:CIPreferenceBool(CIDisableForShortsKey, YES)
         switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
             CIStoreBool(CIDisableForShortsKey, enabled);
+            CISynchronizeContinuedTaskFromCurrentVideo();
             return YES;
         } settingItemId:0]];
 
@@ -447,6 +578,7 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
                             CIMaximumVideoDurationMinutesKey,
                             choice.integerValue
                         );
+                        CISynchronizeContinuedTaskFromCurrentVideo();
                         [settingsViewController reloadData];
                         return YES;
                     }]];

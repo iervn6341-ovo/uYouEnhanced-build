@@ -234,6 +234,8 @@ jobs:
           test -x "$widget_path/CaptionIslandWidget"
           test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$widget_path/Info.plist")" = "com.apple.widgetkit-extension"
           host_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")"
+          /usr/libexec/PlistBuddy -c 'Print :BGTaskSchedulerPermittedIdentifiers' "$app_path/Info.plist" | \
+            grep -Fq "${host_id}.captionisland.background-captions.*"
           widget_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$widget_path/Info.plist")"
           test "$widget_id" = "${host_id}.CaptionIslandWidget"
           lipo -archs "$widget_path/CaptionIslandWidget" | grep -qw arm64

@@ -58,6 +58,7 @@ $(TWEAK_NAME)_INJECT_DYLIBS = \
 $(TWEAK_NAME)_EMBED_LIBRARIES = $(THEOS_OBJ_DIR)/libcolorpicker.dylib
 $(TWEAK_NAME)_EMBED_FRAMEWORKS = $(_THEOS_LOCAL_DATA_DIR)/$(THEOS_OBJ_DIR_NAME)/install_Alderis.xcarchive/Products/var/jb/Library/Frameworks/Alderis.framework
 CAPTION_ISLAND_WIDGET_APPEX = $(_THEOS_LOCAL_DATA_DIR)/obj/CaptionIslandWidget/CaptionIslandWidget.appex
+CAPTION_ISLAND_CONTINUED_TASK_ID = $(BUNDLE_ID).captionisland.background-captions.*
 GENERATED_EXTENSIONS_DIR = $(_THEOS_LOCAL_DATA_DIR)/generated-extensions
 INCLUDE_OPENYOUTUBE ?= 0
 STATIC_EXTENSION_NAMES := $(notdir $(wildcard Extensions/*.appex))
@@ -83,6 +84,7 @@ UYOU_DEB = $(UYOU_PATH)/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb
 UYOU_DYLIB = $(UYOU_PATH)/Library/MobileSubstrate/DynamicLibraries/uYou.dylib
 UYOU_BUNDLE = $(UYOU_PATH)/Library/Application\ Support/uYouBundle.bundle
 YTWEAKS_IOS175_PATCH = $(THEOS_PROJECT_DIR)/Patches/YTweaks-iOS17.5.patch
+YOUPIP_CAPTION_ISLAND_PATCH = $(THEOS_PROJECT_DIR)/Patches/YouPiP-CaptionIslandHomeMode.patch
 
 internal-clean::
 	@rm -rf $(UYOU_PATH)/*
@@ -99,6 +101,15 @@ before-all::
 		exit 1; \
 	fi
 before-all::
+	@if git -C Tweaks/YouPiP apply --reverse --check "$(YOUPIP_CAPTION_ISLAND_PATCH)" >/dev/null 2>&1; then \
+		:; \
+	elif git -C Tweaks/YouPiP apply --check "$(YOUPIP_CAPTION_ISLAND_PATCH)" >/dev/null 2>&1; then \
+		git -C Tweaks/YouPiP apply "$(YOUPIP_CAPTION_ISLAND_PATCH)"; \
+	else \
+		$(PRINT_FORMAT_ERROR) "Unable to apply the Caption Island return-home mode patch to YouPiP"; \
+		exit 1; \
+	fi
+before-all::
 	@rm -rf "$(GENERATED_EXTENSIONS_DIR)"
 	@mkdir -p "$(GENERATED_EXTENSIONS_DIR)"
 	@set -e; for name in $(STATIC_EXTENSION_NAMES); do \
@@ -111,6 +122,10 @@ before-all::
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"; \
 		plutil -replace MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist"; \
+		/usr/libexec/PlistBuddy -c "Add :BGTaskSchedulerPermittedIdentifiers array" "$(IPA)/Info.plist" 2>/dev/null || :; \
+		if ! /usr/libexec/PlistBuddy -c "Print :BGTaskSchedulerPermittedIdentifiers" "$(IPA)/Info.plist" 2>/dev/null | grep -Fq "$(CAPTION_ISLAND_CONTINUED_TASK_ID)"; then \
+			/usr/libexec/PlistBuddy -c "Add :BGTaskSchedulerPermittedIdentifiers: string $(CAPTION_ISLAND_CONTINUED_TASK_ID)" "$(IPA)/Info.plist"; \
+		fi; \
 		if ! /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$(IPA)/Info.plist" 2>/dev/null | grep -qw audio; then \
 			/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$(IPA)/Info.plist" 2>/dev/null || :; \
 			/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes: string audio" "$(IPA)/Info.plist"; \
@@ -135,6 +150,10 @@ before-package::
 	@test -f "$(IPA)/Info.plist"
 	@plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"
+	@/usr/libexec/PlistBuddy -c "Add :BGTaskSchedulerPermittedIdentifiers array" "$(IPA)/Info.plist" 2>/dev/null || :
+	@if ! /usr/libexec/PlistBuddy -c "Print :BGTaskSchedulerPermittedIdentifiers" "$(IPA)/Info.plist" 2>/dev/null | grep -Fq "$(CAPTION_ISLAND_CONTINUED_TASK_ID)"; then \
+		/usr/libexec/PlistBuddy -c "Add :BGTaskSchedulerPermittedIdentifiers: string $(CAPTION_ISLAND_CONTINUED_TASK_ID)" "$(IPA)/Info.plist"; \
+	fi
 	@if ! /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$(IPA)/Info.plist" 2>/dev/null | grep -qw audio; then \
 		/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$(IPA)/Info.plist" 2>/dev/null || :; \
 		/usr/libexec/PlistBuddy -c "Add :UIBackgroundModes: string audio" "$(IPA)/Info.plist"; \

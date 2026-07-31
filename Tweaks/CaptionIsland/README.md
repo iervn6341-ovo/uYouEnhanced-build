@@ -61,6 +61,15 @@ Tweak 會一次提供目前句與下一句，並把下一句開始時間設為�
 cue 邊界，仍不能保證 AOD 長時間逐句即時重畫。本版本只使用 App 內的本機
 ActivityKit 更新，不含 APNs Live Activity push 或外部 relay。
 
+iOS 26 以上另提供預設關閉的「持續背景字幕」實驗模式。它使用公開的
+`BGContinuedProcessingTaskRequest`，以影片播放作為由使用者啟動、可完成且具有
+進度的背景工作；目前時間會持續回報到 `NSProgress`，目前句與下一句也會更新到
+系統提供的背景任務 Live Activity。影片結束、切換為不符合 Shorts／長度政策的
+內容、播放器釋放或 App 終止時會完成並清除任務，系統提前收回執行資格時則寫入
+`ContinuedTask` Warning。此模式不需要 APNs 或外部伺服器，但系統仍可因資源限制
+終止任務，而且系統背景任務 Activity 可能與 Caption Island 自訂 Activity 競爭
+Dynamic Island 顯示位置。iOS 17.5～18 不會顯示此設定，仍沿用背景音訊方案。
+
 expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並使用三階段
 `ViewThatFits`：一般內容顯示影片標題，長歌詞優先隱藏標題，極長歌詞再縮小字級與
 行數，避免最底部被系統上限裁切。leading／trailing／bottom region 都保留額外安全
@@ -71,6 +80,9 @@ expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並�
 安裝後前往「YouTube 設定 → Tweaks → Caption Island」：
 
 - 啟用或停用原生 Live Activity；
+- 選擇返回主畫面時使用 YouPiP 自動子母畫面，或使用 Caption Island 背景
+  字幕模式；背景字幕模式只阻止自動 PiP，播放器內的手動 PiP 按鈕仍可使用；
+- 在 iOS 26 選擇是否啟用不需伺服器的持續背景字幕實驗模式；
 - 選擇中文（繁體）、英文或日文人工字幕；
 - 選擇 LRCLIB 優先或 YouTube 內建字幕優先；
 - 啟用或停用 LRCLIB 查詢；
@@ -79,6 +91,17 @@ expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並�
 - 選擇是否顯示 `CC`／`ASR` 來源標記；LRCLIB 來源固定標示；
 - 開啟詳細 Log；
 - 進入 Log 預覽，篩選全部／警告／錯誤、分享或清除記錄。
+
+Caption Island 背景字幕模式不會清除 YouTube 的 Now Playing 資料，避免破壞控制
+中心與鎖定畫面的播放控制。因此，若 iOS 同時顯示系統 Now Playing Live Activity，
+Dynamic Island 仍可能依系統規則把兩張活動縮成 minimal；這個模式只負責可靠地
+阻止返回主畫面時自動建立 PiP 浮窗。
+
+手動 PiP 被叉叉關閉時，AVKit 會釋放該 PiP 的 sample-buffer renderer。若使用者
+之後從控制中心按播放，Caption Island 會先保存的影片 ID／時間重建 YouTube
+背景播放器，再 seek 回原位置；不會把 Play 送回已失效的 PiP renderer。重建後會
+觀察播放時鐘 12 秒，時鐘停滯時最多重建一次。影片切換、PiP 返回 YouTube 或 App
+回到前景時會取消這項恢復，避免操作到錯誤的影片。
 
 ## Log 與隱私
 
@@ -96,6 +119,8 @@ Cookie、API key 或 Authorization 內容，且會在寫入前再次遮蔽這些
 背景期間每 30 秒會記錄低頻 clock heartbeat，並分別記錄 YouTube 原生 callback、
 Live Activity revision 與 Now Playing 同步是否仍在工作，方便區分 App 已被暫停與
 ActivityKit 只延後 AOD 畫面刷新。
+PiP 關閉後的控制中心恢復會另外使用 `PlayerGraph` 分類，依序記錄
+`Armed`、`Intercepted`、`Rebuilding`、播放時鐘開始前進及 12 秒健康檢查結果。
 
 ## LRCLIB 匹配
 
@@ -131,7 +156,11 @@ LRCLIB 內容不跨影片寫入磁碟快取。若要公開發行，仍應自行�
 ## 建置與驗證
 
 專案由根 Makefile 編譯 tweak、嵌入 `CaptionIsland.bundle`，並封裝
-`CaptionIslandWidget.appex`。在 Theos、theos-jailed、iOS SDK 與合法取得的
+`CaptionIslandWidget.appex`。封裝時也會把
+`<主程式 Bundle ID>.captionisland.background-captions.*` 加入主程式的
+`BGTaskSchedulerPermittedIdentifiers`。iOS 26 API 以 runtime availability
+檢查，因此最低部署版本與建置 SDK 仍可維持 iOS 17.5。在 Theos、theos-jailed、
+iOS SDK 與合法取得的
 decrypted YouTube IPA 都已準備好時，可沿用專案原本的建置方式：
 
 ```sh

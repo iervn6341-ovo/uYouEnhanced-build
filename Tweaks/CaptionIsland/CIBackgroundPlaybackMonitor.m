@@ -1,6 +1,7 @@
 #import "CIBackgroundPlaybackMonitor.h"
 #import "CIActivityPresenter.h"
 #import "CICaptionCoordinator.h"
+#import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
 #import "CILogStore.h"
 #import "CIPlaybackState.h"
@@ -67,6 +68,8 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) double lastPublishedNowPlayingRate;
 @property (nonatomic) NSUInteger controllerLeaseGeneration;
 @property (nonatomic) NSTimeInterval lastPiPPreparationUptime;
+@property (nonatomic) BOOL didSuppressAutomaticPiPForBackgroundTransition;
+- (void)youPiPSuppressedAutomaticPiP:(NSNotification *)notification;
 - (void)synchronizeNowPlayingAtTime:(NSTimeInterval)playbackTime
                            duration:(NSTimeInterval)duration
                        playbackRate:(double)playbackRate
@@ -102,6 +105,10 @@ static double CIQuantizedPlaybackRate(double rate) {
                       name:UIApplicationWillTerminateNotification object:nil];
         [center addObserver:self selector:@selector(sceneDidDisconnect:)
                       name:UISceneDidDisconnectNotification object:nil];
+        [center addObserver:self
+                   selector:@selector(youPiPSuppressedAutomaticPiP:)
+                       name:CIYouPiPAutomaticPiPSuppressedNotification
+                     object:nil];
     }
     return self;
 }
@@ -168,6 +175,9 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.controllerLeaseGeneration++;
     [self resetClockState];
     [self stopTimerWithReason:@"playback stopped"];
+    [CIContinuedProcessingController.sharedController
+        endWithReason:@"the active YouTube player stopped"
+              success:YES];
 }
 
 - (void)prepareForPictureInPictureWithPlayerController:
@@ -245,6 +255,15 @@ static double CIQuantizedPlaybackRate(double rate) {
     [CICaptionCoordinator.sharedCoordinator prepareForExternalPlayback];
 }
 
+- (void)youPiPSuppressedAutomaticPiP:
+    (__unused NSNotification *)notification {
+    self.didSuppressAutomaticPiPForBackgroundTransition = YES;
+    [CICaptionCoordinator.sharedCoordinator prepareForExternalPlayback];
+    [CILogStore.sharedStore recordLevel:CILogLevelInfo
+        category:@"HomeMode"
+        message:@"Suppressed automatic Picture in Picture because Caption Island return-home mode is selected."];
+}
+
 - (void)applicationDidEnterBackground:(__unused NSNotification *)notification {
     self.applicationIsBackgrounded = YES;
     if (!self.backgroundControllerLease) {
@@ -255,10 +274,37 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.hasNativePlaybackTime = NO;
     [self resetClockState];
     [self startTimerIfNeeded];
+    if (CIContinuedProcessingController.sharedController.taskActive) {
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"ContinuedTask"
+            message:@"Entered the background with an iOS 26 continued caption task pending or active."];
+    } else if (CIPreferenceBool(
+                   CIContinuedBackgroundProcessingEnabledKey,
+                   NO) &&
+               CIContinuedBackgroundProcessingSupported()) {
+        [CILogStore.sharedStore recordLevel:CILogLevelWarning
+            category:@"ContinuedTask"
+            message:@"Entered the background without an active iOS 26 continued caption task; check earlier ContinuedTask errors in the log."];
+    }
+    if (self.didSuppressAutomaticPiPForBackgroundTransition) {
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"HomeMode"
+            message:@"Caption Island background mode started; YouTube background audio must remain active for caption timing."];
+    } else if (CICurrentReturnHomeMode() ==
+                   CIReturnHomeModeCaptionIsland) {
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"HomeMode"
+            message:@"Caption Island mode entered the background without suppressing PiP, which indicates a manual PiP transition or an unsupported YouPiP hook."];
+    } else {
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"HomeMode"
+            message:@"YouPiP return-home mode entered the background."];
+    }
 }
 
 - (void)applicationDidBecomeActive:(__unused NSNotification *)notification {
     self.applicationIsBackgrounded = NO;
+    self.didSuppressAutomaticPiPForBackgroundTransition = NO;
     [self stopTimerWithReason:@"foreground callbacks resumed"];
     [self scheduleControllerLeaseRelease];
 }
@@ -290,6 +336,9 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.backgroundControllerLease = nil;
     self.pictureInPicturePreparedController = nil;
     self.controllerLeaseGeneration++;
+    [CIContinuedProcessingController.sharedController
+        endWithReason:reason
+              success:YES];
     [CIActivityPresenter.sharedPresenter endForProcessTermination];
 }
 
@@ -338,8 +387,14 @@ static double CIQuantizedPlaybackRate(double rate) {
 
 - (void)observeNativePlaybackTime:(NSTimeInterval)playbackTime
                  playerController:(YTPlayerViewController *)controller {
-    if (!self.applicationIsBackgrounded || !controller ||
-        !isfinite(playbackTime) || playbackTime < 0) return;
+    if (!controller || !isfinite(playbackTime) ||
+        playbackTime < 0) return;
+
+    [CIContinuedProcessingController.sharedController
+        updatePlaybackTime:playbackTime
+                  duration:controller.currentVideoTotalMediaTime
+                   playing:YES];
+    if (!self.applicationIsBackgrounded) return;
 
     NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
     double estimatedRate = 1.0;
@@ -454,6 +509,8 @@ static double CIQuantizedPlaybackRate(double rate) {
         self.hasSuppressionState = YES;
         self.lastSuppressed = suppressed;
         [CICaptionCoordinator.sharedCoordinator setPlaybackSuppressed:suppressed];
+        [CIContinuedProcessingController.sharedController
+            setPlaybackSuppressed:suppressed];
     }
     if (suppressed) return;
 
@@ -469,6 +526,11 @@ static double CIQuantizedPlaybackRate(double rate) {
             [CIYouTubeInspector contextFromPlaybackData:nil playerController:controller];
         if (![context.videoID isEqualToString:videoID]) return;
         [self resetClockState];
+        [CIContinuedProcessingController.sharedController
+            beginForVideoID:context.videoID
+                      title:context.title ?: @""
+                   duration:context.duration
+                     shorts:context.isShorts];
         [CICaptionCoordinator.sharedCoordinator activateContext:context];
         if (context.duration > 0) {
             self.durationPolicyVideoID = videoID;
@@ -492,6 +554,11 @@ static double CIQuantizedPlaybackRate(double rate) {
         if ([durationContext.videoID isEqualToString:videoID] &&
             durationContext.duration > 0) {
             self.durationPolicyVideoID = videoID;
+            [CIContinuedProcessingController.sharedController
+                beginForVideoID:durationContext.videoID
+                          title:durationContext.title ?: @""
+                       duration:durationContext.duration
+                         shorts:durationContext.isShorts];
             [CICaptionCoordinator.sharedCoordinator
                 activateContext:durationContext];
             [CILogStore.sharedStore recordLevel:CILogLevelDebug
@@ -525,6 +592,11 @@ static double CIQuantizedPlaybackRate(double rate) {
     if (!clockChanged) {
         if (self.lastPlaybackProgressUptime > 0 &&
             uptime - self.lastPlaybackProgressUptime >= 3.0) {
+            [CIContinuedProcessingController.sharedController
+                updatePlaybackTime:playbackTime
+                          duration:
+                              controller.currentVideoTotalMediaTime
+                           playing:NO];
             [self synchronizeNowPlayingAtTime:playbackTime
                                     duration:controller.currentVideoTotalMediaTime
                                 playbackRate:0
@@ -535,6 +607,10 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.hasPlaybackTime = YES;
     self.lastPlaybackTime = playbackTime;
     [CICaptionCoordinator.sharedCoordinator updatePlaybackTime:playbackTime];
+    [CIContinuedProcessingController.sharedController
+        updatePlaybackTime:playbackTime
+                  duration:controller.currentVideoTotalMediaTime
+                   playing:YES];
     double estimatedRate = callbackGap > 0 && clockAdvanced
         ? mediaDelta / callbackGap : 1.0;
     if (!isfinite(estimatedRate) || estimatedRate < 0.25 ||

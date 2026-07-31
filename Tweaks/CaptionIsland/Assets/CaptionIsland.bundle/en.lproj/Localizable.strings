@@ -56,3 +56,15 @@
 "SHARE" = "Share";
 "CLEAR" = "Clear";
 "NO_MATCHING_RESULT" = "No matching results";
+"RETURN_HOME_MODE" = "Return to Home Screen mode";
+"RETURN_HOME_MODE_DESCRIPTION" = "Choose automatic Picture in Picture or background captions when leaving YouTube. The manual PiP button remains available.";
+"RETURN_HOME_MODE_YOUPIP" = "YouPiP (automatic Picture in Picture)";
+"RETURN_HOME_MODE_CAPTION_ISLAND" = "Caption Island (background captions)";
+"CONTINUED_PROCESSING" = "iOS 26 continued background captions";
+"CONTINUED_PROCESSING_DESCRIPTION" = "Experimental zero-server mode. iOS shows its own cancellable background-task Live Activity and may still end the task when resources are constrained.";
+"CONTINUED_TASK_SYSTEM_TITLE" = "Background captions";
+"CONTINUED_TASK_NEXT_LINE_FORMAT" = "Next: %@";
+"CONTINUED_TASK_PAUSED" = "Paused";
+"CONTINUED_TASK_TRANSITIONING" = "Preparing the next video…";
+"CONTINUED_TASK_ADVERTISEMENT" = "Advertisement playing";
+"CONTINUED_TASK_ADVERTISEMENT_DESCRIPTION" = "Caption synchronization is paused";

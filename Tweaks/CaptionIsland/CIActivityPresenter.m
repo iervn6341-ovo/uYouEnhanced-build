@@ -1,4 +1,5 @@
 #import "CIActivityPresenter.h"
+#import "CIContinuedProcessingController.h"
 #import "CILogStore.h"
 #import "CIConstants.h"
 #import <objc/message.h>
@@ -110,6 +111,9 @@ static NSString *CIActivitySourceLabel(
     if (![bridge respondsToSelector:selector]) return;
     NSString *sourceLabel =
         CIActivitySourceLabel(source);
+    [CIContinuedProcessingController.sharedController
+        updateCaptionLine:text
+                 nextLine:nextText ?: @""];
     ((void (*)(id, SEL, NSString *, NSString *, double, double, double, BOOL,
                NSString *, double, double))objc_msgSend)(
         bridge, selector, text, sourceLabel, cueStart, cueEnd, position, YES,
@@ -117,6 +121,9 @@ static NSString *CIActivitySourceLabel(
 }
 
 - (void)hide {
+    [CIContinuedProcessingController.sharedController
+        updateCaptionLine:@"♪"
+                 nextLine:@""];
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"showGapWithTitle:");
     if (self.videoID.length == 0 || ![bridge respondsToSelector:selector]) return;
