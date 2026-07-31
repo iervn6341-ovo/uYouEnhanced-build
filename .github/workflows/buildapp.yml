@@ -73,10 +73,10 @@ jobs:
       # revision; using --remote here prevents the build from silently
       # reverting to that pinned revision. The local compatibility changes
       # are then applied by the root Makefile from Patches/.
-      - name: Use current YTweaks and YouPiP sources
-        run: |
-          cd "${{ github.workspace }}/main"
-          git submodule update --init --remote Tweaks/YTweaks Tweaks/YouPiP
+      # - name: Use current YTweaks and YouPiP sources
+      #   run: |
+      #     cd "${{ github.workspace }}/main"
+      #     git submodule update --init --remote Tweaks/YTweaks Tweaks/YouPiP
 
       - name: Test Caption Island
         run: |
