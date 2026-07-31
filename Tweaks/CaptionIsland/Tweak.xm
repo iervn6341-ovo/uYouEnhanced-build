@@ -102,6 +102,8 @@ static BOOL CIPiPGraphRecoveryHasPlaybackTime;
 static BOOL CIPiPGraphRecoverySeekApplied;
 static BOOL CIPiPGraphRecoveryLoggedProgress;
 static BOOL CIPiPGraphRecoveryBypassesPlayHooks;
+static BOOL CIPiPGraphRecoveryGraphIsBackground;
+static BOOL CIPiPGraphRecoveryResumeOnForeground;
 
 static const NSTimeInterval CIPiPRecentPlaybackInterval = 1.8;
 static const NSTimeInterval CIPiPStopToWillStopMaxInterval = 0.65;
@@ -203,6 +205,8 @@ static void CIClearPiPGraphRecovery(
     CIPiPGraphRecoveryHasPlaybackTime = NO;
     CIPiPGraphRecoverySeekApplied = NO;
     CIPiPGraphRecoveryLoggedProgress = NO;
+    CIPiPGraphRecoveryGraphIsBackground = NO;
+    CIPiPGraphRecoveryResumeOnForeground = NO;
     if (hadRecovery && reason.length > 0) {
         [CILogStore.sharedStore
             recordLevel:level
@@ -293,6 +297,8 @@ static void CIArmPiPGraphRecovery(
     CIPiPGraphRecoveryLoggedProgress = NO;
     CIPiPGraphRecoveryPending = YES;
     CIPiPGraphRecoveryInProgress = NO;
+    CIPiPGraphRecoveryGraphIsBackground = NO;
+    CIPiPGraphRecoveryResumeOnForeground = NO;
 
     // AVKit releases the PiP content source when the close button is used.
     // Keep the YouTube owner alive, but explicitly remove every stopped PiP
@@ -304,7 +310,7 @@ static void CIArmPiPGraphRecovery(
     [CILogStore.sharedStore
         recordLevel:CILogLevelInfo
            category:@"PlayerGraph"
-             format:@"Prepared a detached background-player handoff for video %@ at %.1fs/%.1fs after releasing %lu PiP renderer owner(s).",
+             format:@"Prepared a detached player handoff for video %@ at %.1fs/%.1fs after releasing %lu PiP renderer owner(s).",
                     videoID, CIPiPGraphRecoveryPosition,
                     CIPiPGraphRecoveryDuration,
                     (unsigned long)detachedCount];
@@ -381,7 +387,7 @@ static void CIRebuildPiPPlayerGraph(
     if (CIPiPGraphRecoveryRebuildAttempt >=
             CIPiPGraphRecoveryMaximumRebuilds) {
         CIClearPiPGraphRecovery(
-            @"the rebuilt background player stopped advancing",
+            @"the rebuilt player stopped advancing",
             CILogLevelError
         );
         return;
@@ -418,6 +424,11 @@ static void CIRebuildPiPPlayerGraph(
         CIDetachStoppedPiPControllers(
             CIPiPGraphRecoveryVideoID
         );
+    BOOL rebuildingForBackground =
+        UIApplication.sharedApplication.applicationState !=
+        UIApplicationStateActive;
+    CIPiPGraphRecoveryGraphIsBackground =
+        rebuildingForBackground;
     // resetWithCurrentVideoSequencer now runs only after every stopped PiP
     // observer has released the active video. The replacement graph therefore
     // belongs to the local background player instead of the PiP content source.
@@ -451,10 +462,12 @@ static void CIRebuildPiPPlayerGraph(
                 );
                 return;
             }
-            CIInvokeNoArgumentSelector(
-                currentController,
-                @selector(appDidEnterBackground)
-            );
+            if (rebuildingForBackground) {
+                CIInvokeNoArgumentSelector(
+                    currentController,
+                    @selector(appDidEnterBackground)
+                );
+            }
             CIInvokePlayWithoutRecoveryHook(
                 currentController
             );
@@ -552,7 +565,7 @@ static void CIPollPiPGraphRecovery(
                 [CILogStore.sharedStore
                     recordLevel:CILogLevelInfo
                        category:@"PlayerGraph"
-                         format:@"The rebuilt player clock for video %@ is advancing in the background.",
+                         format:@"The rebuilt player clock for video %@ is advancing.",
                                 CIPiPGraphRecoveryVideoID];
             }
         }
@@ -575,7 +588,7 @@ static void CIPollPiPGraphRecovery(
         [CILogStore.sharedStore
             recordLevel:CILogLevelInfo
                category:@"PlayerGraph"
-                 format:@"PiP background playback recovery for video %@ remained healthy for %.0fs after %lu rebuild attempt(s).",
+                 format:@"PiP player recovery for video %@ remained healthy for %.0fs after %lu rebuild attempt(s).",
                         videoID,
                         CIPiPGraphRecoveryStableInterval,
                         (unsigned long)attempts];
@@ -616,9 +629,14 @@ static BOOL CIHandlePiPGraphRecoveryPlayRequest(
     YTLocalPlaybackController *playbackController,
     NSString *source
 ) {
-    if (CIPiPGraphRecoveryBypassesPlayHooks ||
-        !CIPiPGraphRecoveryPending ||
-        CIPiPGraphRecoveryInProgress) return NO;
+    if (CIPiPGraphRecoveryBypassesPlayHooks) return NO;
+    BOOL canConvertBackgroundGraph =
+        CIPiPGraphRecoveryInProgress &&
+        CIPiPGraphRecoveryGraphIsBackground;
+    if ((!CIPiPGraphRecoveryPending &&
+         !canConvertBackgroundGraph) ||
+        (CIPiPGraphRecoveryInProgress &&
+         !canConvertBackgroundGraph)) return NO;
     if (!NSThread.isMainThread) {
         YTPlayerViewController *retainedPlayer =
             playerController;
@@ -640,13 +658,35 @@ static BOOL CIHandlePiPGraphRecoveryPlayRequest(
         });
         return YES;
     }
-    if (UIApplication.sharedApplication.applicationState ==
-            UIApplicationStateActive) {
-        CIClearPiPGraphRecovery(
-            @"YouTube returned to the foreground",
-            CILogLevelDebug
-        );
-        return NO;
+    if (canConvertBackgroundGraph) {
+        if (UIApplication.sharedApplication.applicationState !=
+                UIApplicationStateActive) return NO;
+        playerController = playerController ?:
+            CIPiPGraphRecoveryPlayerController;
+        NSTimeInterval currentTime =
+            playerController.currentVideoMediaTime;
+        if (isfinite(currentTime) && currentTime >= 0) {
+            CIPiPGraphRecoveryPosition = MAX(
+                CIPiPGraphRecoveryPosition,
+                currentTime
+            );
+        }
+        if (CIPiPGraphRecoveryHasPlaybackTime &&
+            CIPiPGraphRecoveryLastPlaybackTime >= 0) {
+            CIPiPGraphRecoveryPosition = MAX(
+                CIPiPGraphRecoveryPosition,
+                CIPiPGraphRecoveryLastPlaybackTime
+            );
+        }
+        // The background graph deliberately has no inline display-layer
+        // owner. Re-arm the handoff so returning to YouTube builds a visible
+        // foreground graph at the latest verified position.
+        CIPiPGraphRecoveryPending = YES;
+        CIPiPGraphRecoveryInProgress = NO;
+        CIPiPGraphRecoveryArmedUptime =
+            NSProcessInfo.processInfo.systemUptime;
+        CIPiPGraphRecoveryRebuildAttempt = 0;
+        CIPiPGraphRecoveryGraphIsBackground = NO;
     }
     NSTimeInterval uptime =
         NSProcessInfo.processInfo.systemUptime;
@@ -688,6 +728,8 @@ static BOOL CIHandlePiPGraphRecoveryPlayRequest(
     CIPiPGraphRecoveryHasPlaybackTime = NO;
     CIPiPGraphRecoverySeekApplied = NO;
     CIPiPGraphRecoveryLoggedProgress = NO;
+    CIPiPGraphRecoveryGraphIsBackground = NO;
+    CIPiPGraphRecoveryResumeOnForeground = YES;
     CIPiPGraphRecoveryRebuildAttempt = 0;
     NSUInteger generation =
         ++CIPiPGraphRecoveryGeneration;
@@ -698,7 +740,7 @@ static BOOL CIHandlePiPGraphRecoveryPlayRequest(
     [CILogStore.sharedStore
         recordLevel:CILogLevelInfo
            category:@"PlayerGraph"
-             format:@"Intercepted %@ Play for video %@; replacing the renderer released by PiP before playback resumes.",
+             format:@"Handling %@ for video %@; replacing the renderer released by PiP before playback resumes.",
                     source ?: @"background",
                     CIPiPGraphRecoveryVideoID];
     CIRebuildPiPPlayerGraph(
@@ -706,6 +748,27 @@ static BOOL CIHandlePiPGraphRecoveryPlayRequest(
         @"the first Play request after the detached PiP handoff"
     );
     return YES;
+}
+
+static BOOL CIRecoverForegroundPiPGraphIfNeeded(
+    YTPlayerViewController *playerController,
+    NSString *source
+) {
+    if (!CIPiPGraphRecoveryPending &&
+        !CIPiPGraphRecoveryInProgress) return NO;
+    if (UIApplication.sharedApplication.applicationState !=
+            UIApplicationStateActive) return NO;
+    if (!CIPiPGraphRecoveryResumeOnForeground) return NO;
+    playerController = playerController ?:
+        CIPiPGraphRecoveryPlayerController;
+    YTLocalPlaybackController *playbackController =
+        CIPlaybackControllerForPlayer(playerController) ?:
+        CIPiPGraphRecoveryPlaybackController;
+    return CIHandlePiPGraphRecoveryPlayRequest(
+        playerController,
+        playbackController,
+        source ?: @"foreground player"
+    );
 }
 
 static void CIMarkShortsPlayer(
@@ -1442,13 +1505,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
-    if (CIPiPGraphRecoveryPending ||
-        CIPiPGraphRecoveryInProgress) {
-        CIClearPiPGraphRecovery(
-            @"the player became visible in YouTube",
-            CILogLevelDebug
-        );
-    }
     if ([objc_getAssociatedObject(self, CIRetiredPlayerKey) boolValue]) {
         YTPlayerViewController *activeController = CIActivePlayerController;
         NSString *videoID = CIPlayerVideoID(self);
@@ -1475,6 +1531,10 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
                        videoID];
         }
     }
+    (void)CIRecoverForegroundPiPGraphIfNeeded(
+        self,
+        @"foreground player appearance"
+    );
     if ([objc_getAssociatedObject(self, CIActivePlayerKey) boolValue]) {
         [CICaptionCoordinator.sharedCoordinator playerViewDidAppear];
     }
@@ -1625,8 +1685,25 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     %orig;
     YTPlayerViewController *playerController =
         CIActivePlayerController;
-    if (!playerController ||
-        playerController.activeVideo != self) return;
+    if (!playerController) return;
+
+    // Some YouTube releases handle a Control Center Play command below all
+    // of the public-looking play entry points hooked by the recovery group.
+    // A positive rate callback is the last reliable signal that the command
+    // reached the stale renderer released by PiP. Use it as a fallback trigger
+    // so the detached background graph is rebuilt before it immediately
+    // stalls again.
+    if (isfinite(rate) && rate > 0.001) {
+        YTLocalPlaybackController *playbackController =
+            CIPiPGraphRecoveryPlaybackController ?:
+            CIPlaybackControllerForPlayer(playerController);
+        (void)CIHandlePiPGraphRecoveryPlayRequest(
+            playerController,
+            playbackController,
+            @"positive player-rate callback"
+        );
+    }
+    if (playerController.activeVideo != self) return;
     NSTimeInterval playbackTime =
         playerController.currentVideoMediaTime;
     if (!isfinite(playbackTime) || playbackTime < 0) return;
@@ -1808,7 +1885,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
         graphRecoveryPlayer.currentVideoTotalMediaTime;
     BOOL shouldArmGraphRecovery =
         !restoreWasRequested &&
-        applicationRemainsBackgrounded &&
         CIPlayerCanContinueInBackground(
             graphRecoveryPlayer,
             expectedVideoID
@@ -1876,6 +1952,25 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
             graphRecoveryPosition,
             graphRecoveryDuration
         );
+        CIPiPGraphRecoveryResumeOnForeground =
+            suppressedPlayingDismissalPause;
+        BOOL applicationIsActiveAfterStop =
+            UIApplication.sharedApplication.applicationState ==
+            UIApplicationStateActive;
+        if (applicationIsActiveAfterStop &&
+            CIPiPGraphRecoveryResumeOnForeground) {
+            NSUInteger recoveryGeneration =
+                CIPiPGraphRecoveryGeneration;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (recoveryGeneration !=
+                        CIPiPGraphRecoveryGeneration ||
+                    !CIPiPGraphRecoveryPending) return;
+                (void)CIRecoverForegroundPiPGraphIfNeeded(
+                    graphRecoveryPlayer,
+                    @"PiP close completed in the foreground"
+                );
+            });
+        }
     } else if (restoreWasRequested) {
         CIClearPiPGraphRecovery(
             @"PiP returned to YouTube instead of closing in the background",
@@ -1887,7 +1982,7 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
             prepareForExternalPlayback];
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Background"
-            format:@"Suppressed %lu PiP teardown pause callback(s) for video %@; the next background Play will rebuild the released player graph.",
+            format:@"Suppressed %lu PiP teardown pause callback(s) for video %@; the next foreground return or Play will rebuild the released player graph.",
                    (unsigned long)suppressedPauseCount,
                    expectedVideoID];
     } else if (!restoreWasRequested &&

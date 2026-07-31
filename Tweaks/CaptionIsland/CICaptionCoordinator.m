@@ -137,6 +137,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
          generation:(NSUInteger)generation
          completion:(void (^)(NSArray<CICaptionCue *> *cues))completion;
 - (void)cancelCueBoundaryTimer;
+- (NSTimeInterval)estimatedAdvancingPlaybackTime;
 - (void)scheduleCueBoundaryFromPlaybackTime:(NSTimeInterval)time;
 - (NSTimeInterval)nextCueBoundaryAfterPlaybackTime:
     (NSTimeInterval)time;
@@ -388,6 +389,17 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 
 - (void)beginContext:(CIVideoContext *)context force:(BOOL)force {
     BOOL sameVideo = [self.context.videoID isEqualToString:context.videoID];
+    // A same-video metadata or caption-track refresh can race with the PiP
+    // handoff after YouTube has stopped delivering foreground time callbacks.
+    // Preserve the verified playback state across that reload; otherwise the
+    // reset below cancels the only cue-boundary timer and the Live Activity
+    // remains on the first post-PiP line indefinitely.
+    BOOL preserveAdvancingPlayback =
+        sameVideo && self.playbackAdvancing;
+    NSTimeInterval preservedPlaybackTime =
+        preserveAdvancingPlayback
+            ? [self estimatedAdvancingPlaybackTime]
+            : self.latestPlaybackTime;
     BOOL hasRicherTracks = context.captionTracks.count > self.context.captionTracks.count;
     BOOL hasRicherMetadata = context.title.length > self.context.title.length ||
         context.author.length > self.context.author.length ||
@@ -528,7 +540,13 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.activeCaptionAdvanceSeconds =
         override.captionAdvanceSeconds;
     [self cancelCueBoundaryTimer];
-    self.playbackAdvancing = NO;
+    self.playbackAdvancing = preserveAdvancingPlayback;
+    if (preserveAdvancingPlayback) {
+        self.latestPlaybackTime = preservedPlaybackTime;
+        self.playbackAnchorTime = preservedPlaybackTime;
+        self.playbackAnchorUptime =
+            NSProcessInfo.processInfo.systemUptime;
+    }
     self.youtubeSourcesExhausted = NO;
     self.displayedCueIndex = CIUnrenderedCueIndex;
     if (!sameVideo) self.latestPlaybackTime = 0;
@@ -1023,6 +1041,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.loadStage = CILoadStageFinished;
     self.source = source;
     self.displayedCueIndex = CIUnrenderedCueIndex;
+    if (self.playbackAdvancing) {
+        self.latestPlaybackTime =
+            [self estimatedAdvancingPlaybackTime];
+    }
     CICaptionCue *firstCue = self.cues.firstObject;
     CICaptionCue *lastCue = self.cues.lastObject;
     CIPipelineLog(CILogLevelInfo,
@@ -1251,6 +1273,19 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.scheduledCueBoundaryTime = 0;
 }
 
+- (NSTimeInterval)estimatedAdvancingPlaybackTime {
+    NSTimeInterval time = self.latestPlaybackTime;
+    if (!self.playbackAdvancing ||
+        self.playbackAnchorUptime <= 0) return time;
+    NSTimeInterval uptime =
+        NSProcessInfo.processInfo.systemUptime;
+    NSTimeInterval estimate =
+        self.playbackAnchorTime +
+        MAX(0, uptime - self.playbackAnchorUptime);
+    return isfinite(estimate) && estimate >= 0
+        ? MAX(time, estimate) : time;
+}
+
 - (void)scheduleCueBoundaryFromPlaybackTime:
     (NSTimeInterval)time {
     if (!self.playbackAdvancing || self.suppressed ||
@@ -1368,6 +1403,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         self.lastExternalPreparationUptime = uptime;
         [self ensurePresenterForCurrentContext];
         self.displayedCueIndex = CIUnrenderedCueIndex;
+        if (self.playbackAdvancing) {
+            self.latestPlaybackTime =
+                [self estimatedAdvancingPlaybackTime];
+        }
         if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
         if (self.playbackAdvancing) {
             [self scheduleCueBoundaryFromPlaybackTime:
@@ -1391,6 +1430,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
             !CIPreferenceBool(CIEnabledKey, YES)) return;
         [self ensurePresenterForCurrentContext];
         self.displayedCueIndex = CIUnrenderedCueIndex;
+        if (self.playbackAdvancing) {
+            self.latestPlaybackTime =
+                [self estimatedAdvancingPlaybackTime];
+        }
         if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
         if (self.playbackAdvancing) {
             [self scheduleCueBoundaryFromPlaybackTime:
