@@ -50,9 +50,11 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 @property (nonatomic, copy) NSString *nextCaptionLine;
 @property (nonatomic) NSTimeInterval duration;
 @property (nonatomic) NSTimeInterval playbackTime;
+@property (nonatomic) BOOL videoIsShorts;
 @property (nonatomic) NSTimeInterval lastProgressUptime;
 @property (nonatomic) BOOL registered;
 @property (nonatomic) BOOL requestPending;
+@property (nonatomic) BOOL needsForegroundRestart;
 @property (nonatomic) BOOL playing;
 @property (nonatomic) BOOL suppressed;
 @property (nonatomic) BOOL didLogBackgroundStartRejection;
@@ -61,6 +63,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 - (void)handleTaskExpiration:(id)task;
 - (void)updateRunningTaskUI;
 - (void)updateRunningTaskProgressForce:(BOOL)force;
+- (void)applicationDidBecomeActive:(NSNotification *)notification;
 @end
 
 @implementation CIContinuedProcessingController
@@ -90,8 +93,17 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         _captionLine = @"";
         _nextCaptionLine = @"";
         _playing = YES;
+        [NSNotificationCenter.defaultCenter
+            addObserver:self
+               selector:@selector(applicationDidBecomeActive:)
+                   name:UIApplicationDidBecomeActiveNotification
+                 object:nil];
     }
     return self;
+}
+
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
 - (BOOL)isTaskActive {
@@ -123,7 +135,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     if (!captionIslandEnabled || !preferenceEnabled ||
         !CIContinuedBackgroundProcessingSupported() ||
         videoID.length == 0) {
-        if (self.taskActive &&
+        if ((self.taskActive || self.needsForegroundRestart) &&
             (!captionIslandEnabled || !preferenceEnabled)) {
             [self endWithReason:
                 !captionIslandEnabled
@@ -142,7 +154,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             CIMaximumVideoDurationMinutes()
         );
     if (exclusion != CIVideoExclusionReasonNone) {
-        if (self.taskActive) {
+        if (self.taskActive || self.needsForegroundRestart) {
             [self endWithReason:exclusion ==
                     CIVideoExclusionReasonShorts
                     ? @"the active video is a Short"
@@ -157,6 +169,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     self.videoID = [videoID copy];
     self.videoTitle =
         title.length > 0 ? [title copy] : @"YouTube";
+    self.videoIsShorts = isShorts;
     if (isfinite(duration) && duration > 0) {
         self.duration = duration;
     }
@@ -387,6 +400,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         }
     }
     self.runningTask = task;
+    self.needsForegroundRestart = NO;
     self.lastProgressUptime = 0;
 
     __weak typeof(self) weakSelf = self;
@@ -416,12 +430,60 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 
 - (void)handleTaskExpiration:(id)task {
     if (!task || task != self.runningTask) return;
+    SEL expirationSelector =
+        NSSelectorFromString(@"setExpirationHandler:");
+    if ([task respondsToSelector:expirationSelector]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(
+            task,
+            expirationSelector,
+            nil
+        );
+    }
+    SEL completeSelector =
+        NSSelectorFromString(@"setTaskCompletedWithSuccess:");
+    if ([task respondsToSelector:completeSelector]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(
+            task,
+            completeSelector,
+            NO
+        );
+    }
     self.runningTask = nil;
     self.requestPending = NO;
+    self.needsForegroundRestart = YES;
     [CILogStore.sharedStore
         recordLevel:CILogLevelWarning
            category:@"ContinuedTask"
-            message:@"iOS 26 expired the continued background caption task; local AOD updates may stop after the app is suspended."];
+            message:@"iOS 26 expired the continued background caption task and it was completed as unsuccessful; reopen YouTube to request a fresh task."];
+}
+
+- (void)applicationDidBecomeActive:
+    (__unused NSNotification *)notification {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self applicationDidBecomeActive:nil];
+        });
+        return;
+    }
+    if (!self.needsForegroundRestart || self.taskActive ||
+        self.videoID.length == 0 ||
+        !CIPreferenceBool(
+            CIContinuedBackgroundProcessingEnabledKey,
+            NO
+        )) return;
+
+    NSString *videoID = [self.videoID copy];
+    NSString *title = [self.videoTitle copy];
+    NSTimeInterval duration = self.duration;
+    BOOL isShorts = self.videoIsShorts;
+    [CILogStore.sharedStore
+        recordLevel:CILogLevelInfo
+           category:@"ContinuedTask"
+            message:@"YouTube returned to the foreground after the previous continued caption task ended; requesting a fresh task for the active video."];
+    [self beginForVideoID:videoID
+                    title:title
+                 duration:duration
+                   shorts:isShorts];
 }
 
 - (void)updatePlaybackTime:(NSTimeInterval)playbackTime
@@ -525,6 +587,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     id task = self.runningTask;
     self.runningTask = nil;
     self.requestPending = NO;
+    self.needsForegroundRestart = NO;
     if (task) {
         SEL expirationSelector =
             NSSelectorFromString(@"setExpirationHandler:");
@@ -552,6 +615,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     self.nextCaptionLine = @"";
     self.duration = 0;
     self.playbackTime = 0;
+    self.videoIsShorts = NO;
     self.lastProgressUptime = 0;
     self.playing = YES;
     self.suppressed = NO;
