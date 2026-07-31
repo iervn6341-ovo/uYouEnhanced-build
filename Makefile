@@ -89,6 +89,23 @@ YOUPIP_CAPTION_ISLAND_PATCH = $(THEOS_PROJECT_DIR)/Patches/YouPiP-CaptionIslandH
 internal-clean::
 	@rm -rf $(UYOU_PATH)/*
 	@rm -rf "$(_THEOS_LOCAL_DATA_DIR)/generated-extensions"
+	@if git -C Tweaks/YTweaks apply --reverse --check "$(YTWEAKS_IOS175_PATCH)" >/dev/null 2>&1; then \
+		git -C Tweaks/YTweaks apply --reverse "$(YTWEAKS_IOS175_PATCH)"; \
+	fi
+	@if git -C Tweaks/YouPiP apply --reverse --check "$(YOUPIP_CAPTION_ISLAND_PATCH)" >/dev/null 2>&1; then \
+		git -C Tweaks/YouPiP apply --reverse "$(YOUPIP_CAPTION_ISLAND_PATCH)"; \
+	fi
+
+# The two compatibility patches are build-time overlays. Restore the
+# submodules after a successful build so the parent repository remains clean
+# and can be committed without accidentally recording modified gitlinks.
+after-all::
+	@if git -C Tweaks/YTweaks apply --reverse --check "$(YTWEAKS_IOS175_PATCH)" >/dev/null 2>&1; then \
+		git -C Tweaks/YTweaks apply --reverse "$(YTWEAKS_IOS175_PATCH)"; \
+	fi
+	@if git -C Tweaks/YouPiP apply --reverse --check "$(YOUPIP_CAPTION_ISLAND_PATCH)" >/dev/null 2>&1; then \
+		git -C Tweaks/YouPiP apply --reverse "$(YOUPIP_CAPTION_ISLAND_PATCH)"; \
+	fi
 
 ifneq ($(JAILBROKEN),1)
 before-all::
