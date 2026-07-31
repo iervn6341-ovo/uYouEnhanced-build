@@ -55,6 +55,7 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) BOOL didLogNowPlayingSynchronization;
 @property (nonatomic) BOOL didWarnAboutMissingNowPlayingInfo;
 @property (nonatomic) BOOL didLogNativeBackgroundClock;
+@property (nonatomic) BOOL didLogExtrapolatedBackgroundClock;
 @property (nonatomic) BOOL hasNativePlaybackTime;
 @property (nonatomic) NSTimeInterval lastNativePlaybackTime;
 @property (nonatomic) NSTimeInterval lastNativePlaybackUptime;
@@ -66,6 +67,9 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) NSTimeInterval lastPlaybackAdvanceUptime;
 @property (nonatomic) BOOL hasPublishedNowPlayingRate;
 @property (nonatomic) double lastPublishedNowPlayingRate;
+@property (nonatomic) BOOL hasObservedPlaybackRate;
+@property (nonatomic) double observedPlaybackRate;
+@property (nonatomic) NSTimeInterval observedPlaybackRateUptime;
 @property (nonatomic) NSUInteger controllerLeaseGeneration;
 @property (nonatomic) NSTimeInterval lastPiPPreparationUptime;
 @property (nonatomic) BOOL didSuppressAutomaticPiPForBackgroundTransition;
@@ -143,6 +147,16 @@ static double CIQuantizedPlaybackRate(double rate) {
     }
 
     BOOL changedController = self.playerController != controller;
+    NSString *previousVideoID =
+        self.playerController.currentVideoID ?: self.lastVideoID;
+    NSString *nextVideoID = controller.currentVideoID ?: @"";
+    if (changedController && previousVideoID.length > 0 &&
+        nextVideoID.length > 0 &&
+        ![previousVideoID isEqualToString:nextVideoID]) {
+        self.hasObservedPlaybackRate = NO;
+        self.observedPlaybackRate = 0;
+        self.observedPlaybackRateUptime = 0;
+    }
     self.playerController = controller;
     if (self.applicationIsBackgrounded || self.backgroundControllerLease) {
         self.backgroundControllerLease = controller;
@@ -172,6 +186,9 @@ static double CIQuantizedPlaybackRate(double rate) {
     }
     self.playerController = nil;
     self.backgroundControllerLease = nil;
+    self.hasObservedPlaybackRate = NO;
+    self.observedPlaybackRate = 0;
+    self.observedPlaybackRateUptime = 0;
     self.controllerLeaseGeneration++;
     [self resetClockState];
     [self stopTimerWithReason:@"playback stopped"];
@@ -399,6 +416,7 @@ static double CIQuantizedPlaybackRate(double rate) {
         self.backgroundControllerLease ?: self.playerController;
     self.lastVideoID = controller.currentVideoID ?: @"";
     self.didLogClockProgress = NO;
+    self.didLogExtrapolatedBackgroundClock = NO;
     self.hasNativePlaybackTime = NO;
     self.lastNativePlaybackTime = 0;
     self.lastNativePlaybackUptime = 0;
@@ -459,6 +477,37 @@ static double CIQuantizedPlaybackRate(double rate) {
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Background"
             message:@"YouTube native playback callbacks remain active in Picture in Picture or the background."];
+    }
+}
+
+- (void)observePlaybackRate:(double)playbackRate
+               playbackTime:(NSTimeInterval)playbackTime
+            playerController:(YTPlayerViewController *)controller {
+    if (!controller || !isfinite(playbackRate)) return;
+    if (!NSThread.isMainThread) {
+        __weak YTPlayerViewController *weakController = controller;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            YTPlayerViewController *strongController = weakController;
+            if (strongController) {
+                [self observePlaybackRate:playbackRate
+                             playbackTime:playbackTime
+                          playerController:strongController];
+            }
+        });
+        return;
+    }
+
+    self.hasObservedPlaybackRate = YES;
+    self.observedPlaybackRate =
+        CIQuantizedPlaybackRate(playbackRate);
+    self.observedPlaybackRateUptime =
+        NSProcessInfo.processInfo.systemUptime;
+    if (self.applicationIsBackgrounded &&
+        isfinite(playbackTime) && playbackTime >= 0) {
+        self.hasPlaybackTime = YES;
+        self.lastPlaybackTime = playbackTime;
+        self.lastPlaybackProgressUptime =
+            NSProcessInfo.processInfo.systemUptime;
     }
 }
 
@@ -595,12 +644,45 @@ static double CIQuantizedPlaybackRate(double rate) {
         }
     }
 
-    NSTimeInterval playbackTime = controller.currentVideoMediaTime;
-    if (!isfinite(playbackTime) || playbackTime < 0) return;
+    NSTimeInterval rawPlaybackTime =
+        controller.currentVideoMediaTime;
+    if (!isfinite(rawPlaybackTime) || rawPlaybackTime < 0) return;
     NSTimeInterval uptime = NSProcessInfo.processInfo.systemUptime;
     NSTimeInterval callbackGap = self.lastTimerCallbackUptime > 0
         ? uptime - self.lastTimerCallbackUptime : 0;
     self.lastTimerCallbackUptime = uptime;
+
+    NSDictionary<NSString *, id> *nowPlayingInfo =
+        MPNowPlayingInfoCenter.defaultCenter.nowPlayingInfo;
+    id nowPlayingRateCandidate =
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate];
+    NSNumber *nowPlayingRateValue =
+        [nowPlayingRateCandidate isKindOfClass:NSNumber.class]
+            ? nowPlayingRateCandidate : nil;
+    BOOL hasRecentObservedPlaybackRate =
+        self.hasObservedPlaybackRate &&
+        self.observedPlaybackRateUptime > 0 &&
+        uptime - self.observedPlaybackRateUptime <= 5.0;
+    BOOL hasReliablePlaybackRate =
+        hasRecentObservedPlaybackRate ||
+        nowPlayingRateValue != nil ||
+        self.hasObservedPlaybackRate;
+    double playbackRate = hasRecentObservedPlaybackRate
+        ? self.observedPlaybackRate
+        : (nowPlayingRateValue
+            ? CIQuantizedPlaybackRate(nowPlayingRateValue.doubleValue)
+            : (self.hasObservedPlaybackRate
+                ? self.observedPlaybackRate : 0));
+    BOOL rawClockAdvanced = self.hasPlaybackTime &&
+        rawPlaybackTime >
+            self.lastPlaybackTime + CIBackgroundMinimumTimeChange;
+    BOOL shouldExtrapolateClock =
+        self.hasPlaybackTime && !rawClockAdvanced &&
+        hasReliablePlaybackRate && playbackRate > 0 &&
+        callbackGap > 0;
+    NSTimeInterval playbackTime = shouldExtrapolateClock
+        ? self.lastPlaybackTime + callbackGap * playbackRate
+        : rawPlaybackTime;
     if (self.lastHeartbeatUptime == 0 ||
         uptime - self.lastHeartbeatUptime >= CIBackgroundHeartbeatInterval) {
         self.lastHeartbeatUptime = uptime;
@@ -617,8 +699,15 @@ static double CIQuantizedPlaybackRate(double rate) {
     BOOL clockChanged = !self.hasPlaybackTime ||
         fabs(playbackTime - self.lastPlaybackTime) >= CIBackgroundMinimumTimeChange;
     if (!clockChanged) {
-        if (self.lastPlaybackProgressUptime > 0 &&
+        // A frozen private media-time getter does not prove playback paused.
+        // Only publish a paused state when either YouTube's rate callback or
+        // the system Now Playing state explicitly reports a zero rate.
+        if (hasReliablePlaybackRate && playbackRate <= 0 &&
+            self.lastPlaybackProgressUptime > 0 &&
             uptime - self.lastPlaybackProgressUptime >= 3.0) {
+            [CICaptionCoordinator.sharedCoordinator
+                updatePlaybackTime:playbackTime
+                           playing:NO];
             [CIContinuedProcessingController.sharedController
                 updatePlaybackTime:playbackTime
                           duration:
@@ -638,8 +727,11 @@ static double CIQuantizedPlaybackRate(double rate) {
         updatePlaybackTime:playbackTime
                   duration:controller.currentVideoTotalMediaTime
                    playing:YES];
-    double estimatedRate = callbackGap > 0 && clockAdvanced
-        ? mediaDelta / callbackGap : 1.0;
+    double estimatedRate = shouldExtrapolateClock
+        ? playbackRate
+        : (callbackGap > 0 && clockAdvanced
+            ? mediaDelta / callbackGap
+            : (hasReliablePlaybackRate ? playbackRate : 1.0));
     if (!isfinite(estimatedRate) || estimatedRate < 0.25 ||
         estimatedRate > 4.0) {
         estimatedRate = 1.0;
@@ -658,6 +750,13 @@ static double CIQuantizedPlaybackRate(double rate) {
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Background"
             message:@"YouTube playback clock is advancing in the background."];
+    }
+    if (shouldExtrapolateClock &&
+        !self.didLogExtrapolatedBackgroundClock) {
+        self.didLogExtrapolatedBackgroundClock = YES;
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Background"
+            message:@"YouTube's private background clock paused while Now Playing still reported active playback; continuing caption timing from the system playback rate."];
     }
 }
 

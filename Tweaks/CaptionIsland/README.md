@@ -42,6 +42,12 @@ Coordinator 去重，只有字幕 cue 改變時才更新 Activity。進入背景
 並釋放引用。AVKit、YouTube 現代與舊版 PiP 啟動入口也會直接觸發同一套準備流程，
 避免只靠 `viewDidDisappear` 而錯過自動 PiP。
 
+YouTube 在第二次前景／背景切換後，有時音訊仍播放但私有的 media-time getter 停在
+舊值。背景監控器此時會以系統 Now Playing 的 playback rate 延續已確認的時間錨點，
+不會只因 getter 三秒未變就誤判為暫停；YouTube rate callback 或 Now Playing 明確
+回報 rate 為零時，才會停止換句排程。播放器每次回到前景畫面也會重新綁定監控器，
+避免下一次鎖屏仍持有第一輪的播放器 graph。
+
 背景同步也會在 YouTube 已提供的 Now Playing dictionary 上補正 elapsed time、
 duration 與 playback rate，不取代標題、封面或 Remote Command，因此鎖定畫面的時間
 可由系統持續推進，播放控制仍由 YouTube 處理。
@@ -69,6 +75,9 @@ iOS 26 以上另提供預設關閉的「持續背景字幕」實驗模式。它�
 `ContinuedTask` Warning。此模式不需要 APNs 或外部伺服器，但系統仍可因資源限制
 終止任務，而且系統背景任務 Activity 可能與 Caption Island 自訂 Activity 競爭
 Dynamic Island 顯示位置。iOS 17.5～18 不會顯示此設定，仍沿用背景音訊方案。
+每次從背景真正回到 YouTube 前景時，上一輪 continued-processing session 會正常完成，
+並在 App 尚為 active 時為下一次「回主頁／鎖屏」提交新 request；不會重用第一次
+背景週期已消耗或失效的 request。
 
 expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並使用三階段
 `ViewThatFits`：一般內容顯示影片標題，長歌詞優先隱藏標題，極長歌詞再縮小字級與

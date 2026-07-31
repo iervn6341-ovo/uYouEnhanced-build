@@ -58,12 +58,14 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 @property (nonatomic) BOOL playing;
 @property (nonatomic) BOOL suppressed;
 @property (nonatomic) BOOL didLogBackgroundStartRejection;
+@property (nonatomic) BOOL applicationEnteredBackground;
 - (BOOL)registerTaskIfNeeded;
 - (void)handleLaunchedTask:(id)task;
 - (void)handleTaskExpiration:(id)task;
 - (void)updateRunningTaskUI;
 - (void)updateRunningTaskProgressForce:(BOOL)force;
 - (void)applicationDidBecomeActive:(NSNotification *)notification;
+- (void)applicationDidEnterBackground:(NSNotification *)notification;
 @end
 
 @implementation CIContinuedProcessingController
@@ -97,6 +99,11 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             addObserver:self
                selector:@selector(applicationDidBecomeActive:)
                    name:UIApplicationDidBecomeActiveNotification
+                 object:nil];
+        [NSNotificationCenter.defaultCenter
+            addObserver:self
+               selector:@selector(applicationDidEnterBackground:)
+                   name:UIApplicationDidEnterBackgroundNotification
                  object:nil];
     }
     return self;
@@ -465,25 +472,51 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         });
         return;
     }
-    if (!self.needsForegroundRestart || self.taskActive ||
+    BOOL returnedFromBackground = self.applicationEnteredBackground;
+    self.applicationEnteredBackground = NO;
+    if ((!returnedFromBackground && !self.needsForegroundRestart) ||
+        (!self.needsForegroundRestart && !self.taskActive) ||
         self.videoID.length == 0 ||
         !CIPreferenceBool(
             CIContinuedBackgroundProcessingEnabledKey,
-            NO
-        )) return;
+        NO
+    )) return;
 
     NSString *videoID = [self.videoID copy];
     NSString *title = [self.videoTitle copy];
     NSTimeInterval duration = self.duration;
     BOOL isShorts = self.videoIsShorts;
+    NSTimeInterval playbackTime = self.playbackTime;
+    NSString *captionLine = [self.captionLine copy];
+    NSString *nextCaptionLine = [self.nextCaptionLine copy];
+    BOOL playing = self.playing;
+    BOOL suppressed = self.suppressed;
+
+    // A BGContinuedProcessingTask represents one finite user-initiated
+    // session. Returning to YouTube ends that background session. Complete or
+    // cancel it here and submit a fresh request while the app is active, so a
+    // second Home -> Lock cycle does not depend on an already-consumed task.
+    [self endWithReason:
+        @"YouTube returned to the foreground; preparing the next background session"
+              success:YES];
     [CILogStore.sharedStore
         recordLevel:CILogLevelInfo
            category:@"ContinuedTask"
-            message:@"YouTube returned to the foreground after the previous continued caption task ended; requesting a fresh task for the active video."];
+            message:@"YouTube became active; requesting a fresh continued caption task for the next background transition."];
     [self beginForVideoID:videoID
                     title:title
                  duration:duration
                    shorts:isShorts];
+    self.playbackTime = playbackTime;
+    self.captionLine = captionLine ?: @"";
+    self.nextCaptionLine = nextCaptionLine ?: @"";
+    self.playing = playing;
+    self.suppressed = suppressed;
+}
+
+- (void)applicationDidEnterBackground:
+    (__unused NSNotification *)notification {
+    self.applicationEnteredBackground = YES;
 }
 
 - (void)updatePlaybackTime:(NSTimeInterval)playbackTime

@@ -1662,6 +1662,13 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
         @"foreground player appearance"
     );
     if ([objc_getAssociatedObject(self, CIActivePlayerKey) boolValue]) {
+        // YouTube can replace or temporarily release its inline playback
+        // graph while the app is backgrounded without delivering another
+        // didActivateVideo callback. Reattach on every real foreground
+        // appearance so the next Home/Lock transition leases the current
+        // controller rather than the graph from the first background cycle.
+        [CIBackgroundPlaybackMonitor.sharedMonitor
+            attachPlayerController:self];
         [CICaptionCoordinator.sharedCoordinator playerViewDidAppear];
     }
 }
@@ -1833,6 +1840,10 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     NSTimeInterval playbackTime =
         playerController.currentVideoMediaTime;
     if (!isfinite(playbackTime) || playbackTime < 0) return;
+    [CIBackgroundPlaybackMonitor.sharedMonitor
+        observePlaybackRate:rate
+               playbackTime:playbackTime
+            playerController:playerController];
     [CICaptionCoordinator.sharedCoordinator
         updatePlaybackTime:playbackTime
                    playing:isfinite(rate) && rate > 0.001];
