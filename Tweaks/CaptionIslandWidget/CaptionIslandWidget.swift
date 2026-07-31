@@ -230,21 +230,12 @@ struct CaptionIslandLiveActivity: Widget {
     private func displayedLine(
         _ context: ActivityViewContext<CICaptionActivityAttributes>
     ) -> String {
-        // If a background-audio ActivityKit update is deferred, the stale date
-        // supplied with the previous revision lets WidgetKit promote its
-        // already-delivered next line at the cue boundary.
-        if context.isStale {
-            let next = context.state.nextLine?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !next.isEmpty { return next }
-        }
         return context.state.line
     }
 
     private func displayedNextLine(
         _ context: ActivityViewContext<CICaptionActivityAttributes>
     ) -> String {
-        if context.isStale { return "" }
         return context.state.nextLine?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }

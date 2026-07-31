@@ -38,6 +38,16 @@ int main(void) {
         CIAssert(stored.updatedAt > 0,
             @"a saved override should record its update time");
 
+        CISaveVideoCaptionLanguagePriorities(
+            videoID,
+            @[@"ja", @"en", @"zh-Hant"],
+            @"Never Looking Back [Official]"
+        );
+        stored = CIVideoOverrideForVideoID(videoID);
+        CIAssert([stored.captionLanguagePriorities
+            isEqualToArray:@[@"ja", @"en", @"zh-Hant"]],
+            @"a per-video language priority should round-trip");
+
         CISaveVideoOverride(
             videoID,
             @"Never Looking Back",
@@ -50,6 +60,9 @@ int main(void) {
             fabs(stored.captionAdvanceSeconds - 30.0) < 0.001,
             @"positive caption advance should clamp to 30 seconds"
         );
+        CIAssert([stored.captionLanguagePriorities
+            isEqualToArray:@[@"ja", @"en", @"zh-Hant"]],
+            @"saving lyric metadata must preserve caption-language priorities");
 
         CISaveVideoOverride(
             videoID,
@@ -63,6 +76,17 @@ int main(void) {
             fabs(stored.captionAdvanceSeconds + 30.0) < 0.001,
             @"negative caption advance should clamp to -30 seconds"
         );
+
+        CISaveVideoCaptionLanguagePriorities(
+            videoID,
+            @[],
+            @"Never Looking Back [Official]"
+        );
+        stored = CIVideoOverrideForVideoID(videoID);
+        CIAssert(stored != nil &&
+            stored.captionLanguagePriorities.count == 0 &&
+            [stored.searchTitle isEqualToString:@"Never Looking Back"],
+            @"returning to global languages must preserve lyric overrides");
 
         CIClearVideoOverride(videoID);
         CIAssert(CIVideoOverrideForVideoID(videoID) == nil,

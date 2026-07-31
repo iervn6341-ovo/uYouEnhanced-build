@@ -122,6 +122,12 @@ before-all::
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"; \
 		plutil -replace MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist"; \
+		/usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$(IPA)/Info.plist" 2>/dev/null || :; \
+		/usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsArbitraryLoadsForMedia" "$(IPA)/Info.plist" 2>/dev/null || :; \
+		/usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent" "$(IPA)/Info.plist" 2>/dev/null || :; \
+		/usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsLocalNetworking" "$(IPA)/Info.plist" 2>/dev/null || :; \
+		/usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$(IPA)/Info.plist" 2>/dev/null || \
+		/usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$(IPA)/Info.plist"; \
 		/usr/libexec/PlistBuddy -c "Add :BGTaskSchedulerPermittedIdentifiers array" "$(IPA)/Info.plist" 2>/dev/null || :; \
 		if ! /usr/libexec/PlistBuddy -c "Print :BGTaskSchedulerPermittedIdentifiers" "$(IPA)/Info.plist" 2>/dev/null | grep -Fq "$(CAPTION_ISLAND_CONTINUED_TASK_ID)"; then \
 			/usr/libexec/PlistBuddy -c "Add :BGTaskSchedulerPermittedIdentifiers: string $(CAPTION_ISLAND_CONTINUED_TASK_ID)" "$(IPA)/Info.plist"; \
@@ -150,6 +156,12 @@ before-package::
 	@test -f "$(IPA)/Info.plist"
 	@plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"
+	@/usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$(IPA)/Info.plist" 2>/dev/null || :
+	@/usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsArbitraryLoadsForMedia" "$(IPA)/Info.plist" 2>/dev/null || :
+	@/usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent" "$(IPA)/Info.plist" 2>/dev/null || :
+	@/usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsLocalNetworking" "$(IPA)/Info.plist" 2>/dev/null || :
+	@/usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$(IPA)/Info.plist" 2>/dev/null || \
+		/usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$(IPA)/Info.plist"
 	@/usr/libexec/PlistBuddy -c "Add :BGTaskSchedulerPermittedIdentifiers array" "$(IPA)/Info.plist" 2>/dev/null || :
 	@if ! /usr/libexec/PlistBuddy -c "Print :BGTaskSchedulerPermittedIdentifiers" "$(IPA)/Info.plist" 2>/dev/null | grep -Fq "$(CAPTION_ISLAND_CONTINUED_TASK_ID)"; then \
 		/usr/libexec/PlistBuddy -c "Add :BGTaskSchedulerPermittedIdentifiers: string $(CAPTION_ISLAND_CONTINUED_TASK_ID)" "$(IPA)/Info.plist"; \

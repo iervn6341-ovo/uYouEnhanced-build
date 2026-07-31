@@ -212,6 +212,44 @@ static void CIClearPiPGraphRecovery(
     }
 }
 
+static void CIInvokeNoArgumentSelector(
+    id target,
+    SEL selector
+);
+
+static NSUInteger CIDetachStoppedPiPControllers(
+    NSString *videoID
+) {
+    NSArray<YTPlayerPIPController *> *controllers;
+    @synchronized (CIPiPLifecycleControllers) {
+        controllers =
+            CIPiPLifecycleControllers.allObjects ?: @[];
+    }
+    NSUInteger detachedCount = 0;
+    for (YTPlayerPIPController *controller in controllers) {
+        YTSingleVideoController *activeVideo = nil;
+        @synchronized (CIPiPActiveVideoByController) {
+            activeVideo =
+                [CIPiPActiveVideoByController objectForKey:controller];
+        }
+        NSString *controllerVideoID =
+            activeVideo.singleVideo.videoId ?: @"";
+        BOOL matches =
+            videoID.length == 0 ||
+            controllerVideoID.length == 0 ||
+            [controllerVideoID isEqualToString:videoID];
+        if (!matches || !activeVideo) continue;
+
+        // The PiP observer must no longer own the single-video renderer before
+        // the local playback controller constructs its background graph.
+        // Otherwise AVKit's delayed teardown can still set the replacement
+        // renderer's rate to zero several seconds after Control Center Play.
+        controller.activeSingleVideo = nil;
+        detachedCount++;
+    }
+    return detachedCount;
+}
+
 static void CIArmPiPGraphRecovery(
     YTPlayerViewController *playerController,
     NSString *expectedVideoID,
@@ -257,15 +295,19 @@ static void CIArmPiPGraphRecovery(
     CIPiPGraphRecoveryInProgress = NO;
 
     // AVKit releases the PiP content source when the close button is used.
-    // Keep the YouTube owner alive, but never retain the stopped renderer.
+    // Keep the YouTube owner alive, but explicitly remove every stopped PiP
+    // observer from the active single video before creating a replacement.
     [CIBackgroundPlaybackMonitor.sharedMonitor
         attachPlayerController:playerController];
+    NSUInteger detachedCount =
+        CIDetachStoppedPiPControllers(videoID);
     [CILogStore.sharedStore
         recordLevel:CILogLevelInfo
            category:@"PlayerGraph"
-             format:@"Armed background player rebuild for video %@ at %.1fs/%.1fs after PiP released its content source.",
+             format:@"Prepared a detached background-player handoff for video %@ at %.1fs/%.1fs after releasing %lu PiP renderer owner(s).",
                     videoID, CIPiPGraphRecoveryPosition,
-                    CIPiPGraphRecoveryDuration];
+                    CIPiPGraphRecoveryDuration,
+                    (unsigned long)detachedCount];
 }
 
 static BOOL CIPiPGraphRecoveryContextMatches(
@@ -372,14 +414,24 @@ static void CIRebuildPiPPlayerGraph(
                         CIPiPGraphRecoveryMaximumRebuilds,
                     reason ?: @"requested"];
 
-    // resetWithCurrentVideoSequencer discards the AVSampleBuffer renderer
-    // released by PiP while preserving the current video sequence. Replaying
-    // after appDidEnterBackground makes YouTube select its background-capable
-    // audio path instead of sending Play to the stale PiP graph.
+    NSUInteger detachedCount =
+        CIDetachStoppedPiPControllers(
+            CIPiPGraphRecoveryVideoID
+        );
+    // resetWithCurrentVideoSequencer now runs only after every stopped PiP
+    // observer has released the active video. The replacement graph therefore
+    // belongs to the local background player instead of the PiP content source.
     CIInvokeNoArgumentSelector(
         playbackController,
         @selector(resetWithCurrentVideoSequencer)
     );
+    [CILogStore.sharedStore
+        recordLevel:CILogLevelDebug
+           category:@"PlayerGraph"
+             format:@"Detached %lu stale PiP renderer owner(s) before rebuild attempt %lu.",
+                    (unsigned long)detachedCount,
+                    (unsigned long)
+                        CIPiPGraphRecoveryRebuildAttempt];
     dispatch_after(
         dispatch_time(
             DISPATCH_TIME_NOW,
@@ -651,7 +703,7 @@ static BOOL CIHandlePiPGraphRecoveryPlayRequest(
                     CIPiPGraphRecoveryVideoID];
     CIRebuildPiPPlayerGraph(
         generation,
-        @"the first Play request after PiP dismissal"
+        @"the first Play request after the detached PiP handoff"
     );
     return YES;
 }
@@ -1544,6 +1596,9 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     }
     YTPlayerViewController *playerController =
         CIActivePlayerController;
+    [CICaptionCoordinator.sharedCoordinator
+        updatePlaybackTime:playerController.currentVideoMediaTime
+                   playing:playing];
     [CIContinuedProcessingController.sharedController
         updatePlaybackTime:playerController.currentVideoMediaTime
                   duration:
@@ -1556,6 +1611,28 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     (AVPictureInPictureController *)pictureInPictureController {
     CIObservePiPWillStop();
     %orig;
+}
+
+%end
+
+%end
+
+%group CaptionIslandPlaybackRateHooks
+
+%hook YTSingleVideoController
+
+- (void)playerRateDidChange:(float)rate {
+    %orig;
+    YTPlayerViewController *playerController =
+        CIActivePlayerController;
+    if (!playerController ||
+        playerController.activeVideo != self) return;
+    NSTimeInterval playbackTime =
+        playerController.currentVideoMediaTime;
+    if (!isfinite(playbackTime) || playbackTime < 0) return;
+    [CICaptionCoordinator.sharedCoordinator
+        updatePlaybackTime:playbackTime
+                   playing:isfinite(rate) && rate > 0.001];
 }
 
 %end
@@ -2058,6 +2135,15 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     if (class_getInstanceMethod(playerClass, finish)) {
         %init(CaptionIslandPlaybackFinishHooks);
     }
+    Class singleVideoControllerClass =
+        NSClassFromString(@"YTSingleVideoController");
+    if (singleVideoControllerClass &&
+        class_getInstanceMethod(
+            singleVideoControllerClass,
+            @selector(playerRateDidChange:)
+        )) {
+        %init(CaptionIslandPlaybackRateHooks);
+    }
     Class overlayManagerClass = NSClassFromString(@"YTPlayerOverlayManager");
     SEL captionTracksChanged =
         @selector(singleVideo:availableCaptionTracksDidChange:);
@@ -2109,8 +2195,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
         %init(CaptionIslandMLPiPRestoreHooks);
     }
     Class YTPiPClass = NSClassFromString(@"YTPlayerPIPController");
-    Class singleVideoControllerClass =
-        NSClassFromString(@"YTSingleVideoController");
     Class singleVideoClass = NSClassFromString(@"YTSingleVideo");
     BOOL hasPiPVideoIdentity =
         singleVideoControllerClass &&

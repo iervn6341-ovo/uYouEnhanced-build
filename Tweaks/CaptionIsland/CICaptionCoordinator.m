@@ -34,6 +34,7 @@ typedef NS_ENUM(NSInteger, CILoadStage) {
 // sentinel forces the first post-load render (including an intro gap) to reach
 // ActivityKit instead of leaving its loading state on screen.
 static const NSInteger CIUnrenderedCueIndex = NSIntegerMin;
+static const NSTimeInterval CILRCLIBContextSettleDelay = 0.9;
 
 static void CIPipelineLog(CILogLevel level, NSString *format, ...) {
     if (format.length == 0) return;
@@ -90,6 +91,13 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 @property (nonatomic) NSUInteger captionRequestToken;
 @property (nonatomic) NSTimeInterval contextActivatedAt;
 @property (nonatomic) NSTimeInterval lastExternalPreparationUptime;
+@property (nonatomic, strong, nullable) dispatch_source_t cueBoundaryTimer;
+@property (nonatomic) NSUInteger cueBoundaryGeneration;
+@property (nonatomic) NSTimeInterval scheduledCueBoundaryTime;
+@property (nonatomic) NSTimeInterval playbackAnchorTime;
+@property (nonatomic) NSTimeInterval playbackAnchorUptime;
+@property (nonatomic) BOOL playbackAdvancing;
+@property (nonatomic) BOOL didLogCueBoundaryScheduler;
 @property (nonatomic) BOOL youtubeSourcesExhausted;
 @property (nonatomic, strong) id<CICaptionPresenting> presenter;
 - (void)ensurePresenterForCurrentContext;
@@ -106,7 +114,6 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                           cacheKey:(NSString *)cacheKey;
 - (void)fetchLRCLIBTitle:(NSString *)title
                   artist:(NSString *)artist
-     mayRetryWithoutArtist:(BOOL)mayRetryWithoutArtist
                  context:(CIVideoContext *)context
               generation:(NSUInteger)generation
                 cacheKey:(NSString *)cacheKey;
@@ -129,6 +136,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
               token:(NSUInteger)token
          generation:(NSUInteger)generation
          completion:(void (^)(NSArray<CICaptionCue *> *cues))completion;
+- (void)cancelCueBoundaryTimer;
+- (void)scheduleCueBoundaryFromPlaybackTime:(NSTimeInterval)time;
+- (NSTimeInterval)nextCueBoundaryAfterPlaybackTime:
+    (NSTimeInterval)time;
 @end
 
 @implementation CICaptionCoordinator
@@ -231,6 +242,15 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     if (artist) *artist = effectiveArtist ?: @"";
 }
 
+- (NSArray<NSString *> *)captionLanguagePrioritiesForContext:
+    (CIVideoContext *)context {
+    CIVideoOverride *override =
+        CIVideoOverrideForVideoID(context.videoID);
+    return override.captionLanguagePriorities.count > 0
+        ? override.captionLanguagePriorities
+        : CICaptionLanguagePriorities();
+}
+
 - (NSString *)cacheKeyForContext:(CIVideoContext *)context {
     BOOL external = CIPreferenceBool(CIExternalLyricsEnabledKey, YES);
     NSString *queryTitle = @"";
@@ -240,9 +260,13 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                                      artist:&queryArtist];
     CIVideoOverride *override =
         CIVideoOverrideForVideoID(context.videoID);
-    return [NSString stringWithFormat:@"%@|%@|%d|%ld|%@|%@|%.3f",
+    NSString *languages = [[self
+        captionLanguagePrioritiesForContext:context]
+        componentsJoinedByString:@","];
+    return [NSString stringWithFormat:@"%@|%@|%@|%d|%ld|%@|%@|%.3f",
         context.videoID,
-        CIPreferredLanguage(),
+        languages,
+        CILRCLIBBaseURL(),
         external,
         (long)CISourcePriority(),
         CINormalizedText(queryTitle),
@@ -250,24 +274,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         override.captionAdvanceSeconds];
 }
 
-- (NSString *)LRCLIBQueryKeyForTitle:(NSString *)title
-                              artist:(NSString *)artist
-                            duration:(NSTimeInterval)duration {
-    return [NSString stringWithFormat:@"%@|%@|%.0f",
-        CINormalizedText(title), CINormalizedText(artist), MAX(0, duration)];
-}
-
 - (NSString *)LRCLIBQueryKeyForContext:(CIVideoContext *)context {
-    if (!context) return @"";
-    NSString *title = @"";
-    NSString *artist = @"";
-    [self effectiveLRCLIBMetadataForContext:context
-                                      title:&title
-                                     artist:&artist];
-    if (title.length == 0) return @"";
-    return [self LRCLIBQueryKeyForTitle:title
-                                 artist:artist
-                               duration:context.duration];
+    if (context.videoID.length == 0) return @"";
+    return [NSString stringWithFormat:@"%@|%@",
+        context.videoID, CILRCLIBBaseURL()];
 }
 
 - (void)activateContext:(CIVideoContext *)context {
@@ -350,6 +360,8 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     self.loadStage = CILoadStageFinished;
     self.loadInterruptedBySuppression = NO;
     self.activeCaptionAdvanceSeconds = 0;
+    self.playbackAdvancing = NO;
+    [self cancelCueBoundaryTimer];
     self.youtubeSourcesExhausted = NO;
     self.displayedCueIndex = CIUnrenderedCueIndex;
     if (UIApplication.sharedApplication.applicationState ==
@@ -395,12 +407,24 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     if (wasPolicyExcluded) force = YES;
 
     CICaptionTrack *oldManual = self.context
-        ? [CIYouTubeInspector manualTrackInContext:self.context preferredLanguage:CIPreferredLanguage()] : nil;
-    CICaptionTrack *newManual = [CIYouTubeInspector manualTrackInContext:context preferredLanguage:CIPreferredLanguage()];
+        ? [CIYouTubeInspector
+            manualTrackInContext:self.context
+            preferredLanguages:[self
+                captionLanguagePrioritiesForContext:self.context]]
+        : nil;
+    CICaptionTrack *newManual = [CIYouTubeInspector
+        manualTrackInContext:context
+        preferredLanguages:[self
+            captionLanguagePrioritiesForContext:context]];
     CICaptionTrack *oldASR = self.context
-        ? [CIYouTubeInspector automaticTrackInContext:self.context preferredLanguage:CIPreferredLanguage()] : nil;
+        ? [CIYouTubeInspector
+            automaticTrackInContext:self.context
+            preferredLanguages:[self
+                captionLanguagePrioritiesForContext:self.context]]
+        : nil;
     CICaptionTrack *newASR = [CIYouTubeInspector automaticTrackInContext:context
-                                                       preferredLanguage:CIPreferredLanguage()];
+        preferredLanguages:[self
+            captionLanguagePrioritiesForContext:context]];
     BOOL manualTrackChanged = newManual &&
         ![newManual.baseURL isEqualToString:oldManual.baseURL];
     BOOL ASRTrackChanged = newASR &&
@@ -503,6 +527,8 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         CIVideoOverrideForVideoID(context.videoID);
     self.activeCaptionAdvanceSeconds =
         override.captionAdvanceSeconds;
+    [self cancelCueBoundaryTimer];
+    self.playbackAdvancing = NO;
     self.youtubeSourcesExhausted = NO;
     self.displayedCueIndex = CIUnrenderedCueIndex;
     if (!sameVideo) self.latestPlaybackTime = 0;
@@ -550,19 +576,16 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     }
 
     NSString *songTitle = @"";
-    NSString *songArtist = @"";
     [self effectiveLRCLIBMetadataForContext:context
                                       title:&songTitle
-                                     artist:&songArtist];
+                                     artist:NULL];
     if (songTitle.length == 0) {
         [self fallbackAfterLRCLIBForContext:context
                                  generation:generation
                                    cacheKey:cacheKey];
         return;
     }
-    NSString *queryKey = [self LRCLIBQueryKeyForTitle:songTitle
-                                               artist:songArtist
-                                             duration:context.duration];
+    NSString *queryKey = [self LRCLIBQueryKeyForContext:context];
     if ([self.lastLRCLIBQueryKey isEqualToString:queryKey]) {
         [self fallbackAfterLRCLIBForContext:context
                                  generation:generation
@@ -570,31 +593,46 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         return;
     }
     self.lastLRCLIBQueryKey = queryKey;
-    if (songArtist.length > 0) {
-        CIPipelineLog(CILogLevelInfo,
-            @"Searching LRCLIB for artist \"%@\", title \"%@\" (video %.1fs)",
-            songArtist, songTitle, context.duration);
-    } else {
-        CIPipelineLog(CILogLevelInfo,
-            @"Searching LRCLIB for title \"%@\" with no reliable artist (video %.1fs)",
-            songTitle, context.duration);
-    }
-    CIVideoOverride *override =
-        CIVideoOverrideForVideoID(context.videoID);
-    BOOL mayRetryWithoutArtist =
-        songArtist.length > 0 &&
-        override.searchArtist.length == 0;
-    [self fetchLRCLIBTitle:songTitle
-                    artist:songArtist
-       mayRetryWithoutArtist:mayRetryWithoutArtist
-                   context:context
-                generation:generation
-                  cacheKey:cacheKey];
+    CIPipelineLog(CILogLevelDebug,
+        @"Waiting %.1fs for stable LRCLIB metadata before using the one-request video budget.",
+        CILRCLIBContextSettleDelay);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+        (int64_t)(CILRCLIBContextSettleDelay * NSEC_PER_SEC)),
+        self.workQueue, ^{
+        if (generation != self.generation) return;
+        CIVideoContext *latestContext = self.context ?: context;
+        NSString *latestTitle = @"";
+        NSString *latestArtist = @"";
+        [self effectiveLRCLIBMetadataForContext:latestContext
+                                          title:&latestTitle
+                                         artist:&latestArtist];
+        NSString *latestCacheKey =
+            [self cacheKeyForContext:latestContext];
+        if (latestTitle.length == 0) {
+            [self fallbackAfterLRCLIBForContext:latestContext
+                                     generation:generation
+                                       cacheKey:latestCacheKey];
+            return;
+        }
+        if (latestArtist.length > 0) {
+            CIPipelineLog(CILogLevelInfo,
+                @"LRCLIB one-request lookup: exact artist \"%@\", title \"%@\" (video %.1fs)",
+                latestArtist, latestTitle, latestContext.duration);
+        } else {
+            CIPipelineLog(CILogLevelInfo,
+                @"LRCLIB one-request lookup: title \"%@\" with no reliable artist (video %.1fs)",
+                latestTitle, latestContext.duration);
+        }
+        [self fetchLRCLIBTitle:latestTitle
+                        artist:latestArtist
+                       context:latestContext
+                    generation:generation
+                      cacheKey:latestCacheKey];
+    });
 }
 
 - (void)fetchLRCLIBTitle:(NSString *)title
                   artist:(NSString *)artist
-     mayRetryWithoutArtist:(BOOL)mayRetryWithoutArtist
                  context:(CIVideoContext *)context
               generation:(NSUInteger)generation
                 cacheKey:(NSString *)cacheKey {
@@ -608,18 +646,6 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
             typeof(self) self = weakSelf;
             if (!self || generation != self.generation) return;
             if (!result) {
-                if (mayRetryWithoutArtist && artist.length > 0) {
-                    CIPipelineLog(CILogLevelInfo,
-                        @"No LRCLIB match for inferred artist \"%@\"; retrying title \"%@\" only.",
-                        artist, title);
-                    [self fetchLRCLIBTitle:title
-                                    artist:@""
-                       mayRetryWithoutArtist:NO
-                                   context:self.context ?: context
-                                generation:generation
-                                  cacheKey:cacheKey];
-                    return;
-                }
                 CIPipelineLog(CILogLevelInfo, @"LRCLIB lookup returned no match: %@",
                     error.localizedDescription ?: @"unknown error");
                 [self fallbackAfterLRCLIBForContext:self.context ?: context
@@ -628,8 +654,9 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                 return;
             }
             CIPipelineLog(CILogLevelInfo,
-                @"Selected source LRCLIB %@: #%ld %@ — %@ (%.1fs, delta %.1fs)",
+                @"Selected source LRCLIB %@%@: #%ld %@ — %@ (%.1fs, delta %.1fs)",
                 result.syncedCues.count > 0 ? @"Synced" : @"Plain",
+                result.fromPersistentCache ? @" [persistent cache]" : @"",
                 (long)result.recordID, result.artistName, result.trackName,
                 result.trackDuration, result.durationDifference);
             if (result.syncedCues.count > 0) {
@@ -687,10 +714,14 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                                    cacheKey:cacheKey];
         return;
     }
-    CICaptionTrack *ASR = [CIYouTubeInspector automaticTrackInContext:context
-                                                    preferredLanguage:CIPreferredLanguage()];
-    CICaptionTrack *manual = [CIYouTubeInspector manualTrackInContext:context
-                                                       preferredLanguage:CIPreferredLanguage()];
+    NSArray<NSString *> *languages =
+        [self captionLanguagePrioritiesForContext:context];
+    CICaptionTrack *ASR = [CIYouTubeInspector
+        automaticTrackInContext:context
+        preferredLanguages:languages];
+    CICaptionTrack *manual = [CIYouTubeInspector
+        manualTrackInContext:context
+        preferredLanguages:languages];
     NSMutableArray<CICaptionTrack *> *clockTracks = [NSMutableArray arrayWithCapacity:2];
     if (manual) [clockTracks addObject:manual];
     if (ASR && ![ASR.baseURL isEqualToString:manual.baseURL]) [clockTracks addObject:ASR];
@@ -777,8 +808,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                ASRFallbackCues:(NSArray<CICaptionCue *> *)ASRFallbackCues {
     if (generation != self.generation) return;
     self.loadStage = CILoadStageManualCC;
-    CICaptionTrack *manual = [CIYouTubeInspector manualTrackInContext:context
-                                                    preferredLanguage:CIPreferredLanguage()];
+    CICaptionTrack *manual = [CIYouTubeInspector
+        manualTrackInContext:context
+        preferredLanguages:[self
+            captionLanguagePrioritiesForContext:context]];
     CICaptionResult *cached = [self.cache objectForKey:cacheKey];
     if (manual && cached.cues.count > 0 &&
         cached.source == CICaptionSourceYouTubeManual) {
@@ -820,8 +853,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         [self installCues:cached.cues source:cached.source generation:generation cacheKey:nil];
         return;
     }
-    CICaptionTrack *ASR = [CIYouTubeInspector automaticTrackInContext:context
-                                                    preferredLanguage:CIPreferredLanguage()];
+    CICaptionTrack *ASR = [CIYouTubeInspector
+        automaticTrackInContext:context
+        preferredLanguages:[self
+            captionLanguagePrioritiesForContext:context]];
     if (!ASR) {
         NSTimeInterval contextAge =
             NSProcessInfo.processInfo.systemUptime -
@@ -1005,6 +1040,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         [self.cache setObject:result forKey:cacheKey cost:self.cues.count];
     }
     [self renderAtTime:self.latestPlaybackTime];
+    if (self.playbackAdvancing) {
+        [self scheduleCueBoundaryFromPlaybackTime:
+            self.latestPlaybackTime];
+    }
 }
 
 - (void)finishWithoutCaptionsForGeneration:(NSUInteger)generation {
@@ -1112,16 +1151,188 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 }
 
 - (void)updatePlaybackTime:(NSTimeInterval)time {
+    [self updatePlaybackTime:time playing:YES];
+}
+
+- (void)updatePlaybackTime:(NSTimeInterval)time
+                   playing:(BOOL)playing {
     if (!CIPreferenceBool(CIEnabledKey, YES) ||
         self.policyExcluded || !isfinite(time) || time < 0) return;
-    // YouTube may report time many times per second. Five samples per second is
-    // enough for captions; rendering still happens only when the cue changes.
-    if (time >= self.lastSubmittedTime && time - self.lastSubmittedTime < 0.18) return;
-    self.lastSubmittedTime = time;
     dispatch_async(self.workQueue, ^{
+        BOOL playbackStateChanged =
+            self.playbackAdvancing != playing;
+        // YouTube may report time many times per second. Five samples per
+        // second is enough to keep the wall-clock anchor accurate; ActivityKit
+        // is still updated only when the cue changes.
+        if (!playbackStateChanged &&
+            time >= self.lastSubmittedTime &&
+            time - self.lastSubmittedTime < 0.18) return;
+        self.lastSubmittedTime = time;
         self.latestPlaybackTime = time;
+        self.playbackAdvancing = playing;
+        self.playbackAnchorTime = time;
+        self.playbackAnchorUptime =
+            NSProcessInfo.processInfo.systemUptime;
         [self renderAtTime:time];
+        if (playing) {
+            [self scheduleCueBoundaryFromPlaybackTime:time];
+        } else {
+            [self cancelCueBoundaryTimer];
+        }
     });
+}
+
+- (NSTimeInterval)nextCueBoundaryAfterPlaybackTime:
+    (NSTimeInterval)time {
+    if (self.cues.count == 0 || !isfinite(time) || time < 0) {
+        return DBL_MAX;
+    }
+    NSTimeInterval effectiveTime =
+        CIAdjustedCaptionLookupTime(
+            time,
+            self.activeCaptionAdvanceSeconds
+        );
+    NSInteger currentIndex =
+        [self cueIndexAtTime:effectiveTime];
+    NSTimeInterval boundary = DBL_MAX;
+    if (currentIndex != NSNotFound) {
+        CICaptionCue *currentCue =
+            self.cues[(NSUInteger)currentIndex];
+        NSTimeInterval currentEnd = MAX(
+            CIAdjustedCaptionBoundary(
+                currentCue.startTime,
+                self.activeCaptionAdvanceSeconds
+            ) + 0.05,
+            currentCue.endTime -
+                self.activeCaptionAdvanceSeconds
+        );
+        if (currentEnd > time + 0.01) {
+            boundary = currentEnd;
+        }
+    }
+
+    // A following cue may overlap the current cue. In that case the binary
+    // lookup switches at the following start, before the current end.
+    NSInteger low = 0;
+    NSInteger high = (NSInteger)self.cues.count;
+    while (low < high) {
+        NSInteger middle = low + (high - low) / 2;
+        CICaptionCue *cue = self.cues[(NSUInteger)middle];
+        NSTimeInterval shiftedStart =
+            CIAdjustedCaptionBoundary(
+                cue.startTime,
+                self.activeCaptionAdvanceSeconds
+            );
+        if (shiftedStart <= time + 0.01) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    if (low < (NSInteger)self.cues.count) {
+        CICaptionCue *nextCue = self.cues[(NSUInteger)low];
+        NSTimeInterval nextStart =
+            CIAdjustedCaptionBoundary(
+                nextCue.startTime,
+                self.activeCaptionAdvanceSeconds
+            );
+        boundary = MIN(boundary, nextStart);
+    }
+    return boundary;
+}
+
+- (void)cancelCueBoundaryTimer {
+    self.cueBoundaryGeneration++;
+    dispatch_source_t timer = self.cueBoundaryTimer;
+    if (timer) {
+        dispatch_source_cancel(timer);
+        self.cueBoundaryTimer = nil;
+    }
+    self.scheduledCueBoundaryTime = 0;
+}
+
+- (void)scheduleCueBoundaryFromPlaybackTime:
+    (NSTimeInterval)time {
+    if (!self.playbackAdvancing || self.suppressed ||
+        self.policyExcluded || self.cues.count == 0) {
+        [self cancelCueBoundaryTimer];
+        return;
+    }
+    NSTimeInterval boundary =
+        [self nextCueBoundaryAfterPlaybackTime:time];
+    if (!isfinite(boundary) || boundary == DBL_MAX) {
+        [self cancelCueBoundaryTimer];
+        return;
+    }
+    NSTimeInterval delay = boundary - time;
+    if (delay < 0.02) delay = 0.02;
+    if (delay > 3600) {
+        [self cancelCueBoundaryTimer];
+        return;
+    }
+    if (self.cueBoundaryTimer &&
+        fabs(self.scheduledCueBoundaryTime - boundary) < 0.04) {
+        return;
+    }
+
+    [self cancelCueBoundaryTimer];
+    NSUInteger generation = self.cueBoundaryGeneration;
+    self.scheduledCueBoundaryTime = boundary;
+    dispatch_source_t timer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER,
+        0,
+        0,
+        self.workQueue
+    );
+    if (!timer) return;
+    self.cueBoundaryTimer = timer;
+    dispatch_source_set_timer(
+        timer,
+        dispatch_time(
+            DISPATCH_TIME_NOW,
+            (int64_t)llround(delay * NSEC_PER_SEC)
+        ),
+        DISPATCH_TIME_FOREVER,
+        (uint64_t)(0.03 * NSEC_PER_SEC)
+    );
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_event_handler(timer, ^{
+        typeof(self) self = weakSelf;
+        if (!self ||
+            generation != self.cueBoundaryGeneration ||
+            self.cueBoundaryTimer != timer) return;
+        self.cueBoundaryTimer = nil;
+        self.scheduledCueBoundaryTime = 0;
+        if (!self.playbackAdvancing) return;
+
+        NSTimeInterval uptime =
+            NSProcessInfo.processInfo.systemUptime;
+        NSTimeInterval estimatedTime =
+            self.playbackAnchorTime +
+            MAX(0, uptime - self.playbackAnchorUptime);
+        // Ensure floating-point rounding cannot leave the lookup on the old
+        // cue when the one-shot fires exactly at the boundary.
+        estimatedTime = MAX(estimatedTime, boundary + 0.015);
+        self.latestPlaybackTime = estimatedTime;
+        self.lastSubmittedTime = estimatedTime;
+        NSInteger previousIndex = self.displayedCueIndex;
+        [self renderAtTime:estimatedTime];
+        [self scheduleCueBoundaryFromPlaybackTime:estimatedTime];
+
+        if (!self.didLogCueBoundaryScheduler) {
+            self.didLogCueBoundaryScheduler = YES;
+            [CILogStore.sharedStore recordLevel:CILogLevelInfo
+                category:@"Background"
+                message:@"Cue-boundary caption scheduling is active and no longer depends on ActivityKit staleDate."];
+        }
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"Background"
+            format:@"Cue boundary %.3fs fired at estimated playback %.3fs (cue %ld → %ld).",
+                   boundary, estimatedTime,
+                   (long)previousIndex,
+                   (long)self.displayedCueIndex];
+    });
+    dispatch_resume(timer);
 }
 
 - (void)playerViewDidAppear {
@@ -1158,14 +1369,44 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         [self ensurePresenterForCurrentContext];
         self.displayedCueIndex = CIUnrenderedCueIndex;
         if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
+        if (self.playbackAdvancing) {
+            [self scheduleCueBoundaryFromPlaybackTime:
+                self.latestPlaybackTime];
+        }
+        if ([self.presenter respondsToSelector:
+                @selector(refreshPresentationForReason:)]) {
+            [self.presenter refreshPresentationForReason:
+                @"external playback transition"];
+        }
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Background"
             message:@"Prepared caption activity for Lock Screen or Picture in Picture playback."];
     });
 }
 
+- (void)refreshPresentationForReason:(NSString *)reason {
+    NSString *copiedReason = [reason copy] ?: @"presentation transition";
+    dispatch_async(self.workQueue, ^{
+        if (!self.context || self.policyExcluded || self.suppressed ||
+            !CIPreferenceBool(CIEnabledKey, YES)) return;
+        [self ensurePresenterForCurrentContext];
+        self.displayedCueIndex = CIUnrenderedCueIndex;
+        if (!self.loading) [self renderAtTime:self.latestPlaybackTime];
+        if (self.playbackAdvancing) {
+            [self scheduleCueBoundaryFromPlaybackTime:
+                self.latestPlaybackTime];
+        }
+        if ([self.presenter respondsToSelector:
+                @selector(refreshPresentationForReason:)]) {
+            [self.presenter refreshPresentationForReason:copiedReason];
+        }
+    });
+}
+
 - (void)playbackDidFinish {
     dispatch_async(self.workQueue, ^{
+        self.playbackAdvancing = NO;
+        [self cancelCueBoundaryTimer];
         self.lastSubmittedTime = -DBL_MAX;
         self.displayedCueIndex = NSNotFound;
         if (self.context && CIPreferenceBool(CIEnabledKey, YES)) {
@@ -1179,6 +1420,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         if (self.suppressed == suppressed) return;
         self.suppressed = suppressed;
         if (suppressed) {
+            [self cancelCueBoundaryTimer];
             if (self.loading) {
                 self.loadInterruptedBySuppression = YES;
                 self.generation++;
@@ -1197,6 +1439,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
             [self beginContext:self.context force:YES];
         } else {
             [self renderAtTime:self.latestPlaybackTime];
+            if (self.playbackAdvancing) {
+                [self scheduleCueBoundaryFromPlaybackTime:
+                    self.latestPlaybackTime];
+            }
         }
     });
 }
@@ -1231,6 +1477,8 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         self.policyExclusionSignature = @"";
         self.playerVisible = NO;
         self.displayedCueIndex = CIUnrenderedCueIndex;
+        self.playbackAdvancing = NO;
+        [self cancelCueBoundaryTimer];
         [self.presenter end];
     });
 }

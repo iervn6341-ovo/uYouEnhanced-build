@@ -3,9 +3,12 @@
 #import "CITextUtilities.h"
 #import <float.h>
 #import <math.h>
+#import <TargetConditionals.h>
 
 static NSString *const CILRCLIBErrorDomain = @"CaptionIsland.LRCLIB";
-static NSString *const CILRCLIBSearchEndpoint = @"https://lrclib.net/api/search";
+NSString *const CILRCLIBBaseURLKey = @"CaptionIsland.LRCLIBBaseURL";
+static NSString *const CILRCLIBDefaultBaseURLValue =
+    @"https://lrclib.net";
 static NSString *const CILRCLIBUserAgent =
     @"CaptionIsland/1.0 (+https://github.com/iervn6341-ovo/uYouEnhanced-build)";
 static const NSUInteger CILRCLIBMaximumResponseBytes = 2 * 1024 * 1024;
@@ -14,13 +17,148 @@ static const NSUInteger CILRCLIBMaximumCandidates = 50;
 static const NSUInteger CILRCLIBMaximumSyncedCues = 5000;
 static const NSUInteger CILRCLIBMaximumPlainLines = 1000;
 static const NSUInteger CILRCLIBMaximumLyricLineCharacters = 2048;
-static const NSTimeInterval CILRCLIBMinimumRequestInterval = 0.35;
-static const NSTimeInterval CILRCLIBMinimumCompletionInterval = 0.20;
+static const NSTimeInterval CILRCLIBMinimumRequestInterval = 2.0;
+static const NSTimeInterval CILRCLIBMinimumCompletionInterval = 1.0;
+static const NSTimeInterval CILRCLIBPositiveCacheLifetime = 30 * 24 * 60 * 60;
+static const NSTimeInterval CILRCLIBNegativeCacheLifetime = 12 * 60 * 60;
+static const NSTimeInterval CILRCLIBDefaultRateLimitCooldown = 15 * 60;
+static const NSTimeInterval CILRCLIBInitialBlockCooldown = 60 * 60;
+static const NSTimeInterval CILRCLIBMaximumBlockCooldown = 24 * 60 * 60;
+static const NSUInteger CILRCLIBMaximumCacheEntries = 32;
+static const NSUInteger CILRCLIBMaximumCacheBytes = 8 * 1024 * 1024;
+static NSString *const CILRCLIBCooldownDefaultsKey =
+    @"CaptionIsland.LRCLIBCooldowns";
+static NSString *const CILRCLIBCacheKindResult = @"result";
+static NSString *const CILRCLIBCacheKindMiss = @"miss";
+static NSUInteger CILRCLIBPersistentCacheGeneration = 1;
 
 static NSError *CILRCLIBError(NSInteger code, NSString *description) {
     return [NSError errorWithDomain:CILRCLIBErrorDomain code:code userInfo:@{
         NSLocalizedDescriptionKey: description ?: @"LRCLIB request failed."
     }];
+}
+
+NSString *CILRCLIBDefaultBaseURL(void) {
+    return CILRCLIBDefaultBaseURLValue;
+}
+
+NSString * _Nullable CINormalizedLRCLIBBaseURL(
+    NSString * _Nullable value,
+    NSError * _Nullable * _Nullable error
+) {
+    NSString *trimmed = [[value ?: @""
+        stringByTrimmingCharactersInSet:
+            NSCharacterSet.whitespaceAndNewlineCharacterSet]
+        copy];
+    if (trimmed.length == 0) {
+        if (error) {
+            *error = CILRCLIBError(
+                -20,
+                @"Enter an LRCLIB base URL."
+            );
+        }
+        return nil;
+    }
+    NSURLComponents *components =
+        [NSURLComponents componentsWithString:trimmed];
+    NSString *scheme = components.scheme.lowercaseString;
+    BOOL validScheme =
+        [scheme isEqualToString:@"https"] ||
+        [scheme isEqualToString:@"http"];
+    if (!components || !validScheme ||
+        components.host.length == 0 ||
+        components.user.length > 0 ||
+        components.password.length > 0 ||
+        components.query.length > 0 ||
+        components.fragment.length > 0) {
+        if (error) {
+            *error = CILRCLIBError(
+                -21,
+                @"Use an absolute HTTP or HTTPS URL without credentials, query, or fragment."
+            );
+        }
+        return nil;
+    }
+    components.scheme = scheme;
+    NSString *path = components.percentEncodedPath ?: @"";
+    while (path.length > 0 && [path hasSuffix:@"/"]) {
+        path = [path substringToIndex:path.length - 1];
+    }
+    components.percentEncodedPath = path;
+    NSURL *URL = components.URL;
+    if (!URL.absoluteString.length) {
+        if (error) {
+            *error = CILRCLIBError(
+                -22,
+                @"Unable to parse the LRCLIB base URL."
+            );
+        }
+        return nil;
+    }
+    return URL.absoluteString;
+}
+
+NSString *CILRCLIBBaseURL(void) {
+    NSString *stored = [NSUserDefaults.standardUserDefaults
+        stringForKey:CILRCLIBBaseURLKey];
+    NSString *normalized =
+        CINormalizedLRCLIBBaseURL(stored, NULL);
+    return normalized.length > 0
+        ? normalized
+        : CILRCLIBDefaultBaseURLValue;
+}
+
+NSURL *CILRCLIBSearchEndpointURL(void) {
+    NSURL *baseURL = [NSURL URLWithString:CILRCLIBBaseURL()];
+    NSString *path = baseURL.path.lowercaseString ?: @"";
+    if ([path hasSuffix:@"/api/search"]) return baseURL;
+    if ([path hasSuffix:@"/api/get"]) {
+        return [[baseURL URLByDeletingLastPathComponent]
+            URLByAppendingPathComponent:@"search"
+                            isDirectory:NO];
+    }
+    if ([path hasSuffix:@"/api"]) {
+        return [baseURL URLByAppendingPathComponent:@"search"
+                                       isDirectory:NO];
+    }
+    return [[baseURL URLByAppendingPathComponent:@"api"
+                                     isDirectory:YES]
+        URLByAppendingPathComponent:@"search"
+                        isDirectory:NO];
+}
+
+NSURL *CILRCLIBGetEndpointURL(void) {
+    NSURL *baseURL = [NSURL URLWithString:CILRCLIBBaseURL()];
+    NSString *path = baseURL.path.lowercaseString ?: @"";
+    if ([path hasSuffix:@"/api/get"]) return baseURL;
+    if ([path hasSuffix:@"/api/search"]) {
+        return [[baseURL URLByDeletingLastPathComponent]
+            URLByAppendingPathComponent:@"get"
+                            isDirectory:NO];
+    }
+    if ([path hasSuffix:@"/api"]) {
+        return [baseURL URLByAppendingPathComponent:@"get"
+                                       isDirectory:NO];
+    }
+    return [[baseURL URLByAppendingPathComponent:@"api"
+                                     isDirectory:YES]
+        URLByAppendingPathComponent:@"get"
+                        isDirectory:NO];
+}
+
+static NSString *CILRCLIBCachePath(void) {
+#if TARGET_OS_OSX
+    return [NSTemporaryDirectory()
+        stringByAppendingPathComponent:
+            @"CaptionIsland-LRCLIBCache-tests.plist"];
+#else
+    NSString *caches = NSSearchPathForDirectoriesInDomains(
+        NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    if (caches.length == 0) return @"";
+    NSString *directory =
+        [caches stringByAppendingPathComponent:@"CaptionIsland"];
+    return [directory stringByAppendingPathComponent:@"LRCLIBCache.plist"];
+#endif
 }
 
 static NSString *CILRCLIBString(id value, NSUInteger maximumLength) {
@@ -170,9 +308,13 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 @property (nonatomic, strong) NSURLSession *session;
 @property (nonatomic, strong, nullable) NSURLSessionDataTask *currentTask;
 @property (nonatomic) NSUInteger requestToken;
-@property (nonatomic) NSTimeInterval blockedUntilUptime;
 @property (nonatomic) NSTimeInterval lastRequestStartUptime;
 @property (nonatomic) NSTimeInterval lastRequestCompletionUptime;
+@property (nonatomic, copy) NSString *configuredEndpointIdentity;
+@property (nonatomic) BOOL persistentCacheLoaded;
+@property (nonatomic) NSUInteger persistentCacheGeneration;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *
+    persistentCacheEntries;
 @end
 
 @implementation CILRCLIBResult
@@ -193,19 +335,33 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 
 @implementation CILRCLIBProvider
 
++ (void)clearPersistentCache {
+    NSString *path = CILRCLIBCachePath();
+    if (path.length > 0) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    }
+    @synchronized (CILRCLIBProvider.class) {
+        CILRCLIBPersistentCacheGeneration++;
+    }
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
         NSURLSessionConfiguration *configuration =
-            NSURLSessionConfiguration.ephemeralSessionConfiguration;
+            NSURLSessionConfiguration.defaultSessionConfiguration;
         configuration.timeoutIntervalForRequest = 6.0;
         configuration.timeoutIntervalForResource = 8.0;
         configuration.HTTPMaximumConnectionsPerHost = 1;
-        configuration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-        configuration.URLCache = nil;
+        configuration.requestCachePolicy = NSURLRequestUseProtocolCachePolicy;
         configuration.HTTPCookieStorage = nil;
         configuration.HTTPShouldSetCookies = NO;
         _session = [NSURLSession sessionWithConfiguration:configuration];
+        _persistentCacheEntries = [NSMutableDictionary dictionary];
+        @synchronized (CILRCLIBProvider.class) {
+            _persistentCacheGeneration =
+                CILRCLIBPersistentCacheGeneration;
+        }
     }
     return self;
 }
@@ -220,6 +376,305 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         [self.currentTask cancel];
         self.currentTask = nil;
     }
+}
+
+- (void)loadPersistentCacheIfNeededLocked {
+    NSUInteger currentGeneration;
+    @synchronized (CILRCLIBProvider.class) {
+        currentGeneration = CILRCLIBPersistentCacheGeneration;
+    }
+    if (self.persistentCacheGeneration != currentGeneration) {
+        self.persistentCacheGeneration = currentGeneration;
+        self.persistentCacheLoaded = NO;
+        [self.persistentCacheEntries removeAllObjects];
+    }
+    if (self.persistentCacheLoaded) return;
+    self.persistentCacheLoaded = YES;
+    NSString *path = CILRCLIBCachePath();
+    NSData *data = path.length > 0
+        ? [NSData dataWithContentsOfFile:path options:0 error:nil] : nil;
+    if (data.length == 0 || data.length > CILRCLIBMaximumCacheBytes) return;
+    id root = [NSPropertyListSerialization propertyListWithData:data
+        options:NSPropertyListMutableContainersAndLeaves
+        format:NULL
+        error:nil];
+    if (![root isKindOfClass:NSDictionary.class] ||
+        ![root[@"entries"] isKindOfClass:NSDictionary.class]) return;
+    [self.persistentCacheEntries
+        addEntriesFromDictionary:root[@"entries"]];
+}
+
+- (NSData *)persistentCacheDataLocked {
+    NSDictionary *root = @{
+        @"version": @1,
+        @"entries": self.persistentCacheEntries ?: @{},
+    };
+    return [NSPropertyListSerialization dataWithPropertyList:root
+        format:NSPropertyListBinaryFormat_v1_0
+        options:0
+        error:nil];
+}
+
+- (void)writePersistentCacheLocked {
+    [self loadPersistentCacheIfNeededLocked];
+    NSArray<NSString *> *(^oldestKeys)(void) = ^NSArray<NSString *> * {
+        return [self.persistentCacheEntries.allKeys
+            sortedArrayUsingComparator:^NSComparisonResult(
+                NSString *leftKey,
+                NSString *rightKey
+            ) {
+                NSDictionary *left = self.persistentCacheEntries[leftKey];
+                NSDictionary *right = self.persistentCacheEntries[rightKey];
+                NSTimeInterval leftTime =
+                    [left[@"storedAt"] doubleValue];
+                NSTimeInterval rightTime =
+                    [right[@"storedAt"] doubleValue];
+                if (leftTime < rightTime) return NSOrderedAscending;
+                if (leftTime > rightTime) return NSOrderedDescending;
+                return [leftKey compare:rightKey];
+            }];
+    };
+    while (self.persistentCacheEntries.count >
+           CILRCLIBMaximumCacheEntries) {
+        NSString *oldest = oldestKeys().firstObject;
+        if (oldest.length == 0) break;
+        [self.persistentCacheEntries removeObjectForKey:oldest];
+    }
+    NSData *data = [self persistentCacheDataLocked];
+    while (data.length > CILRCLIBMaximumCacheBytes &&
+           self.persistentCacheEntries.count > 1) {
+        NSString *oldest = oldestKeys().firstObject;
+        if (oldest.length == 0) break;
+        [self.persistentCacheEntries removeObjectForKey:oldest];
+        data = [self persistentCacheDataLocked];
+    }
+    NSString *path = CILRCLIBCachePath();
+    if (path.length == 0 || data.length == 0 ||
+        data.length > CILRCLIBMaximumCacheBytes) return;
+    NSString *directory = [path stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:directory
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+    [data writeToFile:path options:NSDataWritingAtomic error:nil];
+}
+
+- (NSString *)cacheKeyForTitle:(NSString *)title
+                        artist:(NSString *)artist
+                      duration:(NSTimeInterval)duration
+                         exact:(BOOL)exact
+              endpointIdentity:(NSString *)endpointIdentity {
+    return [NSString stringWithFormat:@"v1\n%@\n%@\n%@\n%.0f\n%@",
+        endpointIdentity ?: @"",
+        CINormalizedText(title),
+        CINormalizedText(artist),
+        MAX(0, isfinite(duration) ? duration : 0),
+        exact ? @"get" : @"search"];
+}
+
+- (NSDictionary *)cacheEntryForResult:(CILRCLIBResult *)result
+                              expires:(NSTimeInterval)expires {
+    NSMutableArray<NSDictionary *> *cues =
+        [NSMutableArray arrayWithCapacity:result.syncedCues.count];
+    for (CICaptionCue *cue in result.syncedCues) {
+        if (cue.text.length == 0 ||
+            cue.text.length > CILRCLIBMaximumLyricLineCharacters ||
+            !isfinite(cue.startTime) || !isfinite(cue.endTime) ||
+            cue.endTime <= cue.startTime) continue;
+        [cues addObject:@{
+            @"start": @(cue.startTime),
+            @"end": @(cue.endTime),
+            @"text": cue.text,
+        }];
+    }
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    return @{
+        @"kind": CILRCLIBCacheKindResult,
+        @"storedAt": @(now),
+        @"expiresAt": @(expires),
+        @"recordID": @(result.recordID),
+        @"trackName": result.trackName ?: @"",
+        @"artistName": result.artistName ?: @"",
+        @"albumName": result.albumName ?: @"",
+        @"trackDuration": @(result.trackDuration),
+        @"durationDifference": @(result.durationDifference),
+        @"plainLyrics": result.plainLyrics ?: @"",
+        @"cues": cues,
+    };
+}
+
+- (CILRCLIBResult *)resultFromCacheEntry:(NSDictionary *)entry {
+    if (![entry isKindOfClass:NSDictionary.class] ||
+        ![entry[@"kind"] isEqual:CILRCLIBCacheKindResult]) return nil;
+    NSString *trackName = CILRCLIBString(entry[@"trackName"], 512);
+    NSString *artistName = CILRCLIBString(entry[@"artistName"], 512);
+    NSString *albumName = CILRCLIBString(entry[@"albumName"], 512);
+    NSString *plainLyrics = CILRCLIBLyricsString(entry[@"plainLyrics"]);
+    NSArray *storedCues = [entry[@"cues"] isKindOfClass:NSArray.class]
+        ? entry[@"cues"] : @[];
+    NSMutableArray<CICaptionCue *> *cues =
+        [NSMutableArray arrayWithCapacity:storedCues.count];
+    for (id object in storedCues) {
+        if (![object isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *dictionary = object;
+        NSString *text = CILRCLIBString(
+            dictionary[@"text"], CILRCLIBMaximumLyricLineCharacters);
+        double start = CILRCLIBDouble(dictionary[@"start"]);
+        double end = CILRCLIBDouble(dictionary[@"end"]);
+        if (text.length == 0 || !isfinite(start) || !isfinite(end) ||
+            start < 0 || end <= start) continue;
+        [cues addObject:[[CICaptionCue alloc]
+            initWithStartTime:start endTime:end text:text]];
+        if (cues.count >= CILRCLIBMaximumSyncedCues) break;
+    }
+    if (cues.count == 0 && CILRCLIBPlainLineCount(plainLyrics) == 0) {
+        return nil;
+    }
+    CILRCLIBResult *result = [CILRCLIBResult new];
+    result.recordID = [entry[@"recordID"] integerValue];
+    result.trackName = trackName;
+    result.artistName = artistName;
+    result.albumName = albumName;
+    result.trackDuration = [entry[@"trackDuration"] doubleValue];
+    result.durationDifference = [entry[@"durationDifference"] doubleValue];
+    result.syncedCues = cues.copy;
+    result.plainLyrics = plainLyrics;
+    result.fromPersistentCache = YES;
+    return result;
+}
+
+- (CILRCLIBResult *)cachedResultForKey:(NSString *)key
+                          negativeHit:(BOOL *)negativeHit {
+    @synchronized (self) {
+        [self loadPersistentCacheIfNeededLocked];
+        NSDictionary *entry = self.persistentCacheEntries[key];
+        if (![entry isKindOfClass:NSDictionary.class]) return nil;
+        NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+        if ([entry[@"expiresAt"] doubleValue] <= now) {
+            [self.persistentCacheEntries removeObjectForKey:key];
+            [self writePersistentCacheLocked];
+            return nil;
+        }
+        if ([entry[@"kind"] isEqual:CILRCLIBCacheKindMiss]) {
+            if (negativeHit) *negativeHit = YES;
+            return nil;
+        }
+        CILRCLIBResult *result = [self resultFromCacheEntry:entry];
+        if (!result) {
+            [self.persistentCacheEntries removeObjectForKey:key];
+            [self writePersistentCacheLocked];
+        }
+        return result;
+    }
+}
+
+- (void)storeResult:(CILRCLIBResult *)result forCacheKey:(NSString *)key {
+    if (!result || key.length == 0) return;
+    @synchronized (self) {
+        [self loadPersistentCacheIfNeededLocked];
+        NSTimeInterval expires =
+            NSDate.date.timeIntervalSince1970 + CILRCLIBPositiveCacheLifetime;
+        self.persistentCacheEntries[key] =
+            [self cacheEntryForResult:result expires:expires];
+        [self writePersistentCacheLocked];
+    }
+}
+
+- (void)storeNegativeResultForCacheKey:(NSString *)key {
+    if (key.length == 0) return;
+    @synchronized (self) {
+        [self loadPersistentCacheIfNeededLocked];
+        NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+        self.persistentCacheEntries[key] = @{
+            @"kind": CILRCLIBCacheKindMiss,
+            @"storedAt": @(now),
+            @"expiresAt": @(now + CILRCLIBNegativeCacheLifetime),
+        };
+        [self writePersistentCacheLocked];
+    }
+}
+
+- (NSMutableDictionary *)cooldowns {
+    NSDictionary *stored = [NSUserDefaults.standardUserDefaults
+        dictionaryForKey:CILRCLIBCooldownDefaultsKey];
+    return [stored isKindOfClass:NSDictionary.class]
+        ? stored.mutableCopy : [NSMutableDictionary dictionary];
+}
+
+- (NSTimeInterval)cooldownRemainingForEndpoint:(NSString *)endpoint {
+    if (endpoint.length == 0) return 0;
+    NSDictionary *entry = [self cooldowns][endpoint];
+    NSTimeInterval remaining =
+        [entry[@"until"] doubleValue] - NSDate.date.timeIntervalSince1970;
+    return MAX(0, remaining);
+}
+
+- (NSTimeInterval)retryAfterSecondsFromResponse:
+    (NSHTTPURLResponse *)response {
+    NSString *value = [response valueForHTTPHeaderField:@"Retry-After"];
+    double seconds = [value respondsToSelector:@selector(doubleValue)]
+        ? value.doubleValue : 0;
+    return isfinite(seconds) && seconds > 0
+        ? seconds : CILRCLIBDefaultRateLimitCooldown;
+}
+
+- (NSTimeInterval)recordCooldownForEndpoint:(NSString *)endpoint
+                                     status:(NSInteger)status
+                                   response:(NSHTTPURLResponse *)response {
+    if (endpoint.length == 0) return 0;
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    NSMutableDictionary *all = [self cooldowns];
+    NSDictionary *old = all[endpoint];
+    NSInteger strikes = [old[@"until"] doubleValue] > now - 24 * 60 * 60
+        ? MAX(0, [old[@"strikes"] integerValue]) + 1 : 1;
+    NSTimeInterval seconds;
+    if (status == 429) {
+        NSTimeInterval serverDelay =
+            [self retryAfterSecondsFromResponse:response];
+        NSTimeInterval protectiveDelay = MIN(
+            CILRCLIBMaximumBlockCooldown,
+            CILRCLIBDefaultRateLimitCooldown *
+                pow(2.0, MIN(5, strikes - 1)));
+        seconds = MAX(serverDelay, protectiveDelay);
+    } else {
+        seconds = MIN(
+            CILRCLIBMaximumBlockCooldown,
+            CILRCLIBInitialBlockCooldown *
+                pow(4.0, MIN(3, strikes - 1)));
+    }
+    all[endpoint] = @{
+        @"until": @(now + seconds),
+        @"strikes": @(strikes),
+        @"status": @(status),
+    };
+    [NSUserDefaults.standardUserDefaults
+        setObject:all forKey:CILRCLIBCooldownDefaultsKey];
+    return seconds;
+}
+
+- (void)clearCooldownForEndpoint:(NSString *)endpoint {
+    if (endpoint.length == 0) return;
+    NSMutableDictionary *all = [self cooldowns];
+    if (!all[endpoint]) return;
+    [all removeObjectForKey:endpoint];
+    [NSUserDefaults.standardUserDefaults
+        setObject:all forKey:CILRCLIBCooldownDefaultsKey];
+}
+
+- (BOOL)responseLooksLikeBlockPage:(NSURLResponse *)response
+                              data:(NSData *)data {
+    if ([response isKindOfClass:NSHTTPURLResponse.class] &&
+        ((NSHTTPURLResponse *)response).statusCode == 403) return YES;
+    if (data.length == 0) return NO;
+    NSUInteger length = MIN(data.length, 64 * 1024);
+    NSString *body = [[NSString alloc]
+        initWithData:[data subdataWithRange:NSMakeRange(0, length)]
+        encoding:NSUTF8StringEncoding];
+    NSString *lower = body.lowercaseString;
+    return [lower containsString:@"you have been blocked"] ||
+        [lower containsString:@"sorry, you have been blocked"] ||
+        ([lower containsString:@"cloudflare"] &&
+         [lower containsString:@"access denied"]);
 }
 
 - (BOOL)isCurrentToken:(NSUInteger)token {
@@ -239,7 +694,9 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 }
 
 - (NSURL *)searchURLForTitle:(NSString *)title artist:(NSString *)artist broad:(BOOL)broad {
-    NSURLComponents *components = [NSURLComponents componentsWithString:CILRCLIBSearchEndpoint];
+    NSURLComponents *components = [NSURLComponents
+        componentsWithURL:CILRCLIBSearchEndpointURL()
+        resolvingAgainstBaseURL:NO];
     if (broad) {
         NSString *query = artist.length > 0
             ? [NSString stringWithFormat:@"%@ %@", artist, title] : title;
@@ -257,15 +714,32 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     return components.URL;
 }
 
+- (NSURL *)getURLForTitle:(NSString *)title
+                   artist:(NSString *)artist
+                 duration:(NSTimeInterval)duration {
+    NSURLComponents *components = [NSURLComponents
+        componentsWithURL:CILRCLIBGetEndpointURL()
+        resolvingAgainstBaseURL:NO];
+    NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray arrayWithObjects:
+        [NSURLQueryItem queryItemWithName:@"track_name" value:title],
+        [NSURLQueryItem queryItemWithName:@"artist_name" value:artist],
+        nil];
+    if (duration > 0 && isfinite(duration)) {
+        [items addObject:[NSURLQueryItem queryItemWithName:@"duration"
+            value:[NSString stringWithFormat:@"%.0f", duration]]];
+    }
+    components.queryItems = items;
+    return components.URL;
+}
+
 - (NSMutableURLRequest *)requestForURL:(NSURL *)URL {
     NSMutableURLRequest *request = [NSMutableURLRequest
         requestWithURL:URL
-           cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+           cachePolicy:NSURLRequestUseProtocolCachePolicy
        timeoutInterval:6.0];
     [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
     [request setValue:CILRCLIBUserAgent forHTTPHeaderField:@"User-Agent"];
     [request setValue:CILRCLIBUserAgent forHTTPHeaderField:@"Lrclib-Client"];
-    [request setValue:@"no-cache" forHTTPHeaderField:@"Cache-Control"];
     return request;
 }
 
@@ -273,9 +747,25 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     if ([response isKindOfClass:NSHTTPURLResponse.class]) {
         NSHTTPURLResponse *HTTPResponse = (NSHTTPURLResponse *)response;
         if (HTTPResponse.statusCode < 200 || HTTPResponse.statusCode >= 300) {
-            NSString *description = HTTPResponse.statusCode == 429
-                ? @"LRCLIB rate limit reached; Retry-After will be honored."
-                : @"LRCLIB returned an HTTP error.";
+            NSString *description;
+            switch (HTTPResponse.statusCode) {
+                case 403:
+                    description =
+                        @"LRCLIB access was blocked; automatic requests are temporarily paused.";
+                    break;
+                case 404:
+                    description = @"LRCLIB returned no exact match.";
+                    break;
+                case 429:
+                    description =
+                        @"LRCLIB rate limit reached; Retry-After is being honored.";
+                    break;
+                default:
+                    description = [NSString stringWithFormat:
+                        @"LRCLIB returned HTTP %ld.",
+                        (long)HTTPResponse.statusCode];
+                    break;
+            }
             return CILRCLIBError(HTTPResponse.statusCode, description);
         }
     }
@@ -448,18 +938,8 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         ? closestSynced : closest;
 }
 
-- (CILRCLIBResult *)lyricsResultFromSearchData:(NSData *)data
-                                          title:(NSString *)title
-                                         artist:(NSString *)artist
-                                  videoDuration:(NSTimeInterval)videoDuration
-                                          error:(NSError **)error {
-    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:error];
-    if (![root isKindOfClass:NSArray.class]) {
-        if (error && !*error) *error = CILRCLIBError(-5, @"LRCLIB returned malformed JSON.");
-        return nil;
-    }
-    CILRCLIBCandidate *candidate = [self bestCandidateFromObjects:root title:title
-        artist:artist videoDuration:videoDuration];
+- (CILRCLIBResult *)resultFromCandidate:(CILRCLIBCandidate *)candidate
+                                  error:(NSError **)error {
     if (!candidate) {
         if (error) *error = CILRCLIBError(404, @"LRCLIB returned no sufficiently close match.");
         return nil;
@@ -478,19 +958,65 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     return result;
 }
 
-- (void)performSearchForTitle:(NSString *)title
+- (CILRCLIBResult *)lyricsResultFromSearchData:(NSData *)data
+                                          title:(NSString *)title
+                                         artist:(NSString *)artist
+                                  videoDuration:(NSTimeInterval)videoDuration
+                                          error:(NSError **)error {
+    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:error];
+    if (![root isKindOfClass:NSArray.class]) {
+        if (error && !*error) {
+            *error = CILRCLIBError(-5, @"LRCLIB returned malformed search JSON.");
+        }
+        return nil;
+    }
+    CILRCLIBCandidate *candidate = [self bestCandidateFromObjects:root
+        title:title artist:artist videoDuration:videoDuration];
+    return [self resultFromCandidate:candidate error:error];
+}
+
+- (CILRCLIBResult *)lyricsResultFromExactData:(NSData *)data
+                                         title:(NSString *)title
+                                        artist:(NSString *)artist
+                                 videoDuration:(NSTimeInterval)videoDuration
+                                         error:(NSError **)error {
+    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:error];
+    if (![root isKindOfClass:NSDictionary.class]) {
+        if (error && !*error) {
+            *error = CILRCLIBError(-5, @"LRCLIB returned malformed exact-match JSON.");
+        }
+        return nil;
+    }
+    CILRCLIBCandidate *candidate = [self bestCandidateFromObjects:@[root]
+        title:title artist:artist videoDuration:videoDuration];
+    return [self resultFromCandidate:candidate error:error];
+}
+
+- (void)performLookupForTitle:(NSString *)title
                        artist:(NSString *)artist
                      duration:(NSTimeInterval)duration
-                        broad:(BOOL)broad
+                        exact:(BOOL)exact
                         token:(NSUInteger)token
+                     cacheKey:(NSString *)cacheKey
                    completion:(CILRCLIBCompletion)completion {
     if (![self isCurrentToken:token]) return;
-    NSURL *URL = [self searchURLForTitle:title artist:artist broad:broad];
+    NSURL *URL = exact
+        ? [self getURLForTitle:title artist:artist duration:duration]
+        : [self searchURLForTitle:title artist:@"" broad:YES];
     if (!URL) {
         [self completeToken:token result:nil
             error:CILRCLIBError(-2, @"Unable to construct the LRCLIB URL.")
             completion:completion];
         return;
+    }
+    NSString *serviceIdentity = CILRCLIBBaseURL();
+    @synchronized (self) {
+        if (![self.configuredEndpointIdentity
+                isEqualToString:serviceIdentity]) {
+            self.configuredEndpointIdentity = serviceIdentity;
+            self.lastRequestStartUptime = 0;
+            self.lastRequestCompletionUptime = 0;
+        }
     }
 
     __weak typeof(self) weakSelf = self;
@@ -501,70 +1027,69 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         NSHTTPURLResponse *HTTPResponse =
             [response isKindOfClass:NSHTTPURLResponse.class]
                 ? (NSHTTPURLResponse *)response : nil;
-        NSURLSessionDataTask *taskToCancelForRateLimit = nil;
+        NSInteger status = HTTPResponse.statusCode;
+        BOOL blockedPage =
+            [self responseLooksLikeBlockPage:response data:data];
+        NSInteger cooldownStatus = status == 429
+            ? 429 : (blockedPage ? 403 : 0);
+        NSTimeInterval cooldownSeconds = 0;
+        if (cooldownStatus > 0) {
+            cooldownSeconds = [self recordCooldownForEndpoint:serviceIdentity
+                status:cooldownStatus response:HTTPResponse];
+        }
         @synchronized (self) {
             NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
             self.lastRequestCompletionUptime =
                 MAX(self.lastRequestCompletionUptime, now);
-            if (HTTPResponse.statusCode == 429) {
-                NSString *value = [HTTPResponse valueForHTTPHeaderField:@"Retry-After"];
-                NSTimeInterval seconds = [value respondsToSelector:@selector(doubleValue)]
-                    ? [value doubleValue] : 60.0;
-                if (!isfinite(seconds) || seconds <= 0) seconds = 60.0;
-                self.blockedUntilUptime =
-                    MAX(self.blockedUntilUptime, now + seconds);
-                if (token != self.requestToken) {
-                    taskToCancelForRateLimit = self.currentTask;
-                }
-            }
         }
-        [taskToCancelForRateLimit cancel];
         BOOL shouldHandle;
         @synchronized (self) {
             shouldHandle = token == self.requestToken;
             if (shouldHandle) self.currentTask = nil;
         }
         if (!shouldHandle) return;
+        if (cooldownStatus > 0) {
+            NSString *description = [NSString stringWithFormat:
+                @"LRCLIB HTTP %ld triggered a %.0f-minute cooldown; using YouTube captions instead.",
+                (long)cooldownStatus, ceil(cooldownSeconds / 60.0)];
+            [self completeToken:token result:nil
+                error:CILRCLIBError(cooldownStatus, description)
+                completion:completion];
+            return;
+        }
         if (networkError) {
-            if (networkError.code == NSURLErrorCancelled) {
-                BOOL blocked;
-                @synchronized (self) {
-                    blocked = NSProcessInfo.processInfo.systemUptime <
-                        self.blockedUntilUptime;
-                }
-                if (blocked) {
-                    [self completeToken:token result:nil
-                        error:CILRCLIBError(429,
-                            @"LRCLIB Retry-After period is still active.")
-                        completion:completion];
-                }
-            } else {
+            if (networkError.code != NSURLErrorCancelled) {
                 [self completeToken:token result:nil error:networkError completion:completion];
             }
             return;
         }
+        if ((status >= 200 && status < 300) || status == 404) {
+            [self clearCooldownForEndpoint:serviceIdentity];
+        }
         NSError *responseError = [self responseErrorForResponse:response data:data];
         if (responseError) {
+            if (responseError.code == 404) {
+                [self storeNegativeResultForCacheKey:cacheKey];
+            }
             [self completeToken:token result:nil error:responseError completion:completion];
             return;
         }
         NSError *parseError = nil;
-        CILRCLIBResult *result = [self lyricsResultFromSearchData:data title:title
-            artist:artist videoDuration:duration error:&parseError];
-        if (result || broad) {
-            [self completeToken:token result:result error:parseError completion:completion];
-            return;
+        CILRCLIBResult *result = exact
+            ? [self lyricsResultFromExactData:data title:title artist:artist
+                videoDuration:duration error:&parseError]
+            : [self lyricsResultFromSearchData:data title:title artist:@""
+                videoDuration:duration error:&parseError];
+        if (result) {
+            [self storeResult:result forCacheKey:cacheKey];
+        } else if ([parseError.domain isEqualToString:CILRCLIBErrorDomain] &&
+                   parseError.code == 404) {
+            [self storeNegativeResultForCacheKey:cacheKey];
         }
-        BOOL shouldTryBroad = [parseError.domain isEqualToString:CILRCLIBErrorDomain] &&
-            parseError.code == 404;
-        if (!shouldTryBroad) {
-            [self completeToken:token result:nil
-                error:parseError ?: CILRCLIBError(-5, @"Unable to parse LRCLIB response.")
-                completion:completion];
-            return;
-        }
-        [self startSearchForTitle:title artist:artist duration:duration broad:YES
-            token:token completion:completion];
+        [self completeToken:token result:result
+            error:parseError ?: (result ? nil :
+                CILRCLIBError(-5, @"Unable to parse LRCLIB response."))
+            completion:completion];
     };
     BOOL shouldStart = NO;
     BOOL rateLimited = NO;
@@ -573,7 +1098,8 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     @synchronized (self) {
         if (token == self.requestToken) {
             NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
-            rateLimited = now < self.blockedUntilUptime;
+            rateLimited =
+                [self cooldownRemainingForEndpoint:serviceIdentity] > 0;
             remainingDelay = MAX(
                 self.lastRequestStartUptime + CILRCLIBMinimumRequestInterval,
                 self.lastRequestCompletionUptime + CILRCLIBMinimumCompletionInterval) - now;
@@ -594,26 +1120,32 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     }
     if (!shouldStart) {
         if (rateLimited) {
+            NSTimeInterval remaining =
+                [self cooldownRemainingForEndpoint:serviceIdentity];
             [self completeToken:token result:nil
-                error:CILRCLIBError(429, @"LRCLIB Retry-After period is still active.")
+                error:CILRCLIBError(429, [NSString stringWithFormat:
+                    @"LRCLIB cooldown is active for another %.0f minute(s); using YouTube captions instead.",
+                    ceil(remaining / 60.0)])
                 completion:completion];
         } else if (taskCreationFailed) {
             [self completeToken:token result:nil
                 error:CILRCLIBError(-3, @"Unable to create the LRCLIB request task.")
                 completion:completion];
         } else if ([self isCurrentToken:token] && remainingDelay > 0) {
-            [self startSearchForTitle:title artist:artist duration:duration
-                broad:broad token:token completion:completion];
+            [self startLookupForTitle:title artist:artist duration:duration
+                exact:exact token:token cacheKey:cacheKey
+                completion:completion];
         }
         return;
     }
 }
 
-- (void)startSearchForTitle:(NSString *)title
+- (void)startLookupForTitle:(NSString *)title
                      artist:(NSString *)artist
                    duration:(NSTimeInterval)duration
-                      broad:(BOOL)broad
+                      exact:(BOOL)exact
                       token:(NSUInteger)token
+                   cacheKey:(NSString *)cacheKey
                  completion:(CILRCLIBCompletion)completion {
     NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
     NSTimeInterval delay;
@@ -639,12 +1171,14 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         }
         if (!shouldStart) return;
         if (remainingDelay > 0) {
-            [self startSearchForTitle:title artist:artist duration:duration
-                broad:broad token:token completion:completion];
+            [self startLookupForTitle:title artist:artist duration:duration
+                exact:exact token:token cacheKey:cacheKey
+                completion:completion];
             return;
         }
-        [self performSearchForTitle:title artist:artist duration:duration
-            broad:broad token:token completion:completion];
+        [self performLookupForTitle:title artist:artist duration:duration
+            exact:exact token:token cacheKey:cacheKey
+            completion:completion];
     });
 }
 
@@ -654,14 +1188,12 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
                  completion:(CILRCLIBCompletion)completion {
     NSString *cleanTitle = CILRCLIBString(CICleanCaptionText(title), 512);
     NSString *cleanArtist = CILRCLIBString(CICleanCaptionText(artist), 512);
-    BOOL blocked;
     NSUInteger token;
     @synchronized (self) {
         self.requestToken++;
         [self.currentTask cancel];
         self.currentTask = nil;
         token = self.requestToken;
-        blocked = NSProcessInfo.processInfo.systemUptime < self.blockedUntilUptime;
     }
     if (cleanTitle.length == 0) {
         [self completeToken:token result:nil
@@ -669,19 +1201,42 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             completion:completion];
         return;
     }
-    if (blocked) {
-        [self completeToken:token result:nil
-            error:CILRCLIBError(429, @"LRCLIB Retry-After period is still active.")
+    BOOL exact = cleanArtist.length > 0;
+    NSString *serviceIdentity = CILRCLIBBaseURL();
+    NSString *cacheKey = [self cacheKeyForTitle:cleanTitle
+        artist:cleanArtist duration:duration exact:exact
+        endpointIdentity:serviceIdentity];
+    BOOL negativeHit = NO;
+    CILRCLIBResult *cached =
+        [self cachedResultForKey:cacheKey negativeHit:&negativeHit];
+    if (cached) {
+        [self completeToken:token result:cached error:nil
             completion:completion];
         return;
     }
-    // With no trustworthy artist metadata, mirror LRCLIB's keyword search.
-    // This is the same query mode used by its web search and exposes records
-    // that a track_name-only response may omit from its 20-result limit.
-    BOOL titleOnlySearch = cleanArtist.length == 0;
-    [self startSearchForTitle:cleanTitle artist:cleanArtist duration:duration
-        broad:titleOnlySearch
-        token:token completion:completion];
+    if (negativeHit) {
+        [self completeToken:token result:nil
+            error:CILRCLIBError(404,
+                @"LRCLIB negative cache hit; the network request was skipped.")
+            completion:completion];
+        return;
+    }
+    NSTimeInterval cooldown =
+        [self cooldownRemainingForEndpoint:serviceIdentity];
+    if (cooldown > 0) {
+        [self completeToken:token result:nil
+            error:CILRCLIBError(429, [NSString stringWithFormat:
+                @"LRCLIB cooldown is active for another %.0f minute(s); the network request was skipped.",
+                ceil(cooldown / 60.0)])
+            completion:completion];
+        return;
+    }
+    // A trustworthy artist allows LRCLIB's metadata endpoint to perform one
+    // duration-aware exact lookup. Without one, perform one keyword search and
+    // let the local scorer reject ambiguous singers; never expand a playback
+    // lookup into multiple automatic requests.
+    [self startLookupForTitle:cleanTitle artist:cleanArtist duration:duration
+        exact:exact token:token cacheKey:cacheKey completion:completion];
 }
 
 @end

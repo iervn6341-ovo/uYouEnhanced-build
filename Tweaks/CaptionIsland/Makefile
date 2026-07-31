@@ -15,6 +15,7 @@ CaptionIsland_FILES = \
 	CIContinuedProcessingController.m \
 	CIPlaybackState.m \
 	CIConstants.m \
+	CILanguagePriorityViewController.m \
 	CIModels.m \
 	CICaptionTiming.m \
 	CIVideoEligibility.m \

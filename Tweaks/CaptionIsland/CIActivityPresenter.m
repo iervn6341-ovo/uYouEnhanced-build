@@ -78,6 +78,20 @@ static NSString *CIActivitySourceLabel(
         bridge, selector, self.videoID, self.title);
 }
 
+- (void)refreshPresentationForReason:(NSString *)reason {
+    if (!CIPreferenceBool(CIEnabledKey, YES) ||
+        self.videoID.length == 0) return;
+    Class bridge = [self bridgeClass];
+    SEL selector =
+        NSSelectorFromString(@"refreshForPresentationWithReason:");
+    if (![bridge respondsToSelector:selector]) return;
+    ((void (*)(id, SEL, NSString *))objc_msgSend)(
+        bridge,
+        selector,
+        reason.length > 0 ? reason : @"presentation transition"
+    );
+}
+
 - (void)presentText:(NSString *)text
              source:(CICaptionSource)source
            cueStart:(NSTimeInterval)cueStart

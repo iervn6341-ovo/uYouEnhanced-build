@@ -9,8 +9,14 @@ NS_ASSUME_NONNULL_BEGIN
                                     playerController:(nullable id)playerController;
 + (nullable CICaptionTrack *)manualTrackInContext:(CIVideoContext *)context
                                 preferredLanguage:(NSString *)preferredLanguage;
++ (nullable CICaptionTrack *)manualTrackInContext:(CIVideoContext *)context
+                                preferredLanguages:
+                                    (NSArray<NSString *> *)preferredLanguages;
 + (nullable CICaptionTrack *)automaticTrackInContext:(CIVideoContext *)context
                                    preferredLanguage:(NSString *)preferredLanguage;
++ (nullable CICaptionTrack *)automaticTrackInContext:(CIVideoContext *)context
+                                preferredLanguages:
+                                    (NSArray<NSString *> *)preferredLanguages;
 + (nullable NSURL *)requestURLForTrack:(CICaptionTrack *)track;
 + (NSArray<NSURL *> *)requestURLsForTrack:(CICaptionTrack *)track;
 @end

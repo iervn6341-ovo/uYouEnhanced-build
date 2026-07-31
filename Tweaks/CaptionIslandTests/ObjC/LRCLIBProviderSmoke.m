@@ -9,7 +9,32 @@
                                          artist:(NSString *)artist
                                   videoDuration:(NSTimeInterval)videoDuration
                                           error:(NSError **)error;
+- (CILRCLIBResult *)lyricsResultFromExactData:(NSData *)data
+                                         title:(NSString *)title
+                                        artist:(NSString *)artist
+                                 videoDuration:(NSTimeInterval)videoDuration
+                                         error:(NSError **)error;
 - (NSURL *)searchURLForTitle:(NSString *)title artist:(NSString *)artist broad:(BOOL)broad;
+- (NSURL *)getURLForTitle:(NSString *)title
+                   artist:(NSString *)artist
+                 duration:(NSTimeInterval)duration;
+- (BOOL)responseLooksLikeBlockPage:(NSURLResponse *)response
+                              data:(NSData *)data;
+- (NSString *)cacheKeyForTitle:(NSString *)title
+                        artist:(NSString *)artist
+                      duration:(NSTimeInterval)duration
+                         exact:(BOOL)exact
+              endpointIdentity:(NSString *)endpointIdentity;
+- (void)storeResult:(CILRCLIBResult *)result
+        forCacheKey:(NSString *)key;
+- (void)storeNegativeResultForCacheKey:(NSString *)key;
+- (CILRCLIBResult *)cachedResultForKey:(NSString *)key
+                          negativeHit:(BOOL *)negativeHit;
+- (NSTimeInterval)recordCooldownForEndpoint:(NSString *)endpoint
+                                     status:(NSInteger)status
+                                   response:(NSHTTPURLResponse *)response;
+- (NSTimeInterval)cooldownRemainingForEndpoint:(NSString *)endpoint;
+- (void)clearCooldownForEndpoint:(NSString *)endpoint;
 @end
 
 static NSData *CIJSONData(id object) {
@@ -56,6 +81,33 @@ static NSDictionary *CIRecord(NSInteger recordID,
 
 int main(void) {
     @autoreleasepool {
+        [NSUserDefaults.standardUserDefaults
+            removeObjectForKey:CILRCLIBBaseURLKey];
+        CIAssert([CILRCLIBBaseURL()
+            isEqualToString:@"https://lrclib.net"],
+            @"the default base URL should remain the official LRCLIB service");
+        NSError *URLValidationError = nil;
+        NSString *customBase = CINormalizedLRCLIBBaseURL(
+            @"http://127.0.0.1:3300/lyrics/",
+            &URLValidationError
+        );
+        CIAssert([customBase
+            isEqualToString:@"http://127.0.0.1:3300/lyrics"] &&
+            URLValidationError == nil,
+            @"HTTP mirror URLs and base paths should normalize safely");
+        CIAssert(CINormalizedLRCLIBBaseURL(
+            @"ftp://example.com", NULL) == nil,
+            @"non-HTTP schemes should be rejected");
+        [NSUserDefaults.standardUserDefaults
+            setObject:customBase forKey:CILRCLIBBaseURLKey];
+        CIAssert([CILRCLIBSearchEndpointURL().absoluteString
+            isEqualToString:
+                @"http://127.0.0.1:3300/lyrics/api/search"],
+            @"a mirror base path should receive the LRCLIB search endpoint");
+        CIAssert([CILRCLIBGetEndpointURL().absoluteString
+            isEqualToString:
+                @"http://127.0.0.1:3300/lyrics/api/get"],
+            @"a mirror base path should receive the LRCLIB exact endpoint");
         CILRCLIBProvider *provider = [CILRCLIBProvider new];
         NSError *error = nil;
         NSString *splitTitle;
@@ -154,6 +206,51 @@ int main(void) {
             [titleOnlyKeywordComponents.queryItems.firstObject.value
                 isEqualToString:@"Precious Star Dreamer"],
             @"title-only keyword lookup should match LRCLIB's web search mode");
+        CIAssert([titleOnlyKeywordComponents.host
+            isEqualToString:@"127.0.0.1"] &&
+            [titleOnlyKeywordComponents.path
+                isEqualToString:@"/lyrics/api/search"],
+            @"lookups should use the configured LRCLIB base URL");
+        NSURLComponents *exactComponents = [NSURLComponents componentsWithURL:
+            [provider getURLForTitle:@"Never Looking Back"
+                artist:@"Example Artist" duration:251.6]
+            resolvingAgainstBaseURL:NO];
+        NSMutableDictionary<NSString *, NSString *> *exactItems =
+            [NSMutableDictionary dictionary];
+        for (NSURLQueryItem *item in exactComponents.queryItems) {
+            exactItems[item.name] = item.value;
+        }
+        CIAssert([exactComponents.path isEqualToString:@"/lyrics/api/get"] &&
+            [exactItems[@"track_name"] isEqualToString:@"Never Looking Back"] &&
+            [exactItems[@"artist_name"] isEqualToString:@"Example Artist"] &&
+            [exactItems[@"duration"] isEqualToString:@"252"],
+            @"a reliable artist should use one duration-aware exact lookup");
+
+        NSHTTPURLResponse *blockedResponse = [[NSHTTPURLResponse alloc]
+            initWithURL:[NSURL URLWithString:@"https://lrclib.net/api/search"]
+            statusCode:200 HTTPVersion:@"HTTP/1.1"
+            headerFields:@{@"Content-Type": @"text/html"}];
+        NSData *blockedBody = [@"Sorry, you have been blocked"
+            dataUsingEncoding:NSUTF8StringEncoding];
+        CIAssert([provider responseLooksLikeBlockPage:blockedResponse
+            data:blockedBody],
+            @"an HTML block page should be recognized even if an edge returns HTTP 200");
+        NSString *cooldownEndpoint =
+            @"https://caption-island-smoke.invalid";
+        NSHTTPURLResponse *rateLimitResponse = [[NSHTTPURLResponse alloc]
+            initWithURL:[NSURL URLWithString:cooldownEndpoint]
+            statusCode:429 HTTPVersion:@"HTTP/1.1"
+            headerFields:@{@"Retry-After": @"120"}];
+        NSTimeInterval recordedCooldown = [provider
+            recordCooldownForEndpoint:cooldownEndpoint
+            status:429 response:rateLimitResponse];
+        CILRCLIBProvider *cooldownProvider =
+            [CILRCLIBProvider new];
+        CIAssert(recordedCooldown >= 120 &&
+            [cooldownProvider cooldownRemainingForEndpoint:
+                cooldownEndpoint] > 0,
+            @"rate-limit cooldowns should survive a provider restart");
+        [provider clearCooldownForEndpoint:cooldownEndpoint];
 
         error = nil;
         NSArray *titleOnlyCandidates = @[
@@ -168,6 +265,46 @@ int main(void) {
             videoDuration:252.0 error:&error];
         CIAssert(titleOnlyResult.recordID == 9 && error == nil,
             @"an empty artist should rank title matches by the closest duration");
+
+        error = nil;
+        CILRCLIBResult *exactResult = [provider lyricsResultFromExactData:
+            CIJSONData(CIRecord(90, @"Never Looking Back", @"Example Artist",
+                252.0, @"Exact first\nExact second",
+                @"[00:01.00]Exact first\n[03:20.00]Exact second"))
+            title:@"Never Looking Back" artist:@"Example Artist"
+            videoDuration:252.0 error:&error];
+        CIAssert(exactResult.recordID == 90 &&
+            exactResult.syncedCues.count == 2 && error == nil,
+            @"the metadata endpoint object should use the same safety checks as search results");
+        [CILRCLIBProvider clearPersistentCache];
+        NSString *persistentKey = [provider
+            cacheKeyForTitle:@"Never Looking Back"
+            artist:@"Example Artist" duration:252.0 exact:YES
+            endpointIdentity:CILRCLIBBaseURL()];
+        [provider storeResult:exactResult forCacheKey:persistentKey];
+        CILRCLIBProvider *reloadedProvider =
+            [CILRCLIBProvider new];
+        BOOL negativeHit = NO;
+        CILRCLIBResult *persistentResult =
+            [reloadedProvider cachedResultForKey:persistentKey
+                negativeHit:&negativeHit];
+        CIAssert(persistentResult.recordID == 90 &&
+            persistentResult.fromPersistentCache &&
+            persistentResult.syncedCues.count == 2 &&
+            !negativeHit,
+            @"a successful lookup should survive a provider restart without another request");
+        NSString *negativeKey = [provider
+            cacheKeyForTitle:@"Missing Song"
+            artist:@"" duration:180.0 exact:NO
+            endpointIdentity:CILRCLIBBaseURL()];
+        [provider storeNegativeResultForCacheKey:negativeKey];
+        CILRCLIBProvider *negativeProvider =
+            [CILRCLIBProvider new];
+        negativeHit = NO;
+        CIAssert([negativeProvider cachedResultForKey:negativeKey
+            negativeHit:&negativeHit] == nil && negativeHit,
+            @"a recent no-result lookup should suppress repeated network searches");
+        [CILRCLIBProvider clearPersistentCache];
 
         error = nil;
         NSArray *artistConstrainedCandidates = @[
@@ -426,6 +563,8 @@ int main(void) {
             title:@"Example Song" artist:@"Example Artist" videoDuration:211.0 error:&error];
         CIAssert(result == nil && error != nil, @"non-array search roots should fail safely");
 
+        [NSUserDefaults.standardUserDefaults
+            removeObjectForKey:CILRCLIBBaseURLKey];
         NSLog(@"LRCLIB provider smoke passed");
     }
     return 0;

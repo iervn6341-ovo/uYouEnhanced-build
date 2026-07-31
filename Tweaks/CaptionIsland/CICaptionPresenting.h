@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)beginVideoID:(NSString *)videoID title:(NSString *)title;
 @optional
 - (void)ensureVideoID:(NSString *)videoID title:(NSString *)title;
+- (void)refreshPresentationForReason:(NSString *)reason;
 - (void)presentText:(NSString *)text
              source:(CICaptionSource)source
            cueStart:(NSTimeInterval)cueStart

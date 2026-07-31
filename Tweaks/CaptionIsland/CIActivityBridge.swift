@@ -154,6 +154,17 @@ public final class CIActivityBridge: NSObject {
         }
     }
 
+    @objc(refreshForPresentationWithReason:)
+    public static func refreshForPresentation(reason: String) {
+        guard targetSupportsLiveActivities(logIfMissing: false) else { return }
+        let safeReason = sanitizedActivityText(reason, maximumBytes: 160)
+        enqueue {
+            await CIActivityManager.shared.refreshPresentation(
+                reason: safeReason
+            )
+        }
+    }
+
     @objc(updateWithText:source:cueStart:cueEnd:position:playing:nextText:nextCueStart:nextCueEnd:)
     public static func update(
         text: String,
@@ -495,6 +506,48 @@ private actor CIActivityManager {
         await start(videoID: videoID, title: title)
     }
 
+    func refreshPresentation(reason: String) async {
+        guard hasUpdatableActivity(), let activity else {
+            CIActivityBridge.emit(
+                level: "warning",
+                message: "Could not refresh Dynamic Island presentation "
+                    + "because no caption Live Activity is active"
+            )
+            return
+        }
+        revision += 1
+        let state: CICaptionActivityAttributes.ContentState
+        if lastLine.isEmpty {
+            state = waitingState()
+        } else {
+            state = CICaptionActivityAttributes.ContentState(
+                line: lastLine,
+                source: lastSource,
+                videoID: videoID,
+                videoTitle: title,
+                isPlaying: lastPlaying,
+                cueStartMS: lastCueStartMS,
+                cueEndMS: lastCueEndMS,
+                nextLine: lastNextLine.isEmpty ? nil : lastNextLine,
+                nextCueStartMS: lastNextLine.isEmpty
+                    ? nil : lastNextCueStartMS,
+                nextCueEndMS: lastNextLine.isEmpty
+                    ? nil : lastNextCueEndMS,
+                revision: revision
+            )
+        }
+        await updateState(state)
+        let localActivityCount =
+            Activity<CICaptionActivityAttributes>.activities.count
+        CIActivityBridge.emit(
+            level: "info",
+            message: "Refreshed caption Live Activity \(activity.id) "
+                + "for \(reason.isEmpty ? "presentation transition" : reason) "
+                + "(state \(activity.activityState), "
+                + "\(localActivityCount) local caption activity)"
+        )
+    }
+
     private func observeActivityState(
         for observedActivity:
             Activity<CICaptionActivityAttributes>
@@ -632,17 +685,11 @@ private actor CIActivityManager {
             nextCueEndMS: nextLine.isEmpty ? nil : nextCueEndMS,
             revision: revision
         )
-        // Background-audio processes can have subsequent local ActivityKit
-        // updates deferred after the screen turns off. Pre-schedule one
-        // system-owned handoff so the already-delivered next line can replace
-        // the current line at its cue boundary even if the host update is
-        // temporarily budgeted. A later normal update clears the stale state.
-        let staleDate = nextLineHandoffDate(
-            position: position,
-            nextCueStartMS: nextCueStartMS,
-            isPlaying: isPlaying
-        )
-        await updateState(state, staleDate: staleDate)
+        // Cue transitions are submitted by the host's background-audio clock.
+        // staleDate only marks content as out of date; it is not a WidgetKit
+        // render scheduler and must not be used to promote the next line.
+        _ = position
+        await updateState(state)
         if shouldReportSource {
             CIActivityBridge.emit(
                 level: "info",
@@ -720,14 +767,13 @@ private actor CIActivityManager {
     }
 
     private func updateState(
-        _ state: CICaptionActivityAttributes.ContentState,
-        staleDate: Date? = nil
+        _ state: CICaptionActivityAttributes.ContentState
     ) async {
         guard let activity else { return }
         let safeState = boundedState(state, attributes: activity.attributes)
         let content = ActivityContent(
             state: safeState,
-            staleDate: staleDate,
+            staleDate: nil,
             relevanceScore: 1
         )
         // Use the baseline ActivityKit update API because some standalone
@@ -749,20 +795,6 @@ private actor CIActivityManager {
                     + "\(safeState.revision) (\(activity.activityState))"
             )
         }
-    }
-
-    private func nextLineHandoffDate(
-        position: Double,
-        nextCueStartMS: Int,
-        isPlaying: Bool
-    ) -> Date? {
-        guard isPlaying, position.isFinite, position >= 0,
-              nextCueStartMS > 0 else {
-            return nil
-        }
-        let delay = Double(nextCueStartMS) / 1_000.0 - position
-        guard delay >= 0.25, delay <= 120 else { return nil }
-        return Date().addingTimeInterval(delay)
     }
 
     private func boundedState(

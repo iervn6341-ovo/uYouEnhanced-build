@@ -13,6 +13,8 @@ int main(void) {
             @"https://www.youtube.com/api/timedtext?v=test&lang=zh-TW"];
         NSURL *ASRURL = [NSURL URLWithString:
             @"https://www.youtube.com/api/timedtext?v=test&lang=en&kind=asr"];
+        NSURL *JapaneseURL = [NSURL URLWithString:
+            @"https://www.youtube.com/api/timedtext?v=test&lang=ja"];
         NSDictionary *manualTrack = @{
             @"URL": manualURL,
             @"displayName": @"中文（繁體）",
@@ -25,9 +27,17 @@ int main(void) {
             @"languageCode": @"en",
             @"VSSID": @"a.en",
         };
+        NSDictionary *JapaneseTrack = @{
+            @"URL": JapaneseURL,
+            @"displayName": @"日本語",
+            @"languageCode": @"ja",
+            @"VSSID": @".ja",
+        };
         NSDictionary *controller = @{
             @"activeVideo": @{
-                @"availableCaptionTracks": @[manualTrack, ASRTrack],
+                @"availableCaptionTracks": @[
+                    manualTrack, ASRTrack, JapaneseTrack
+                ],
             },
             @"currentVideoID": @"video-id",
             @"currentVideoTotalMediaTime": @210,
@@ -61,7 +71,7 @@ int main(void) {
         CIAssert(context != nil, @"valid player data should create a context");
         CIAssert(context.isShorts,
             @"explicit YouTube Shorts metadata should be preserved");
-        CIAssert(context.captionTracks.count == 2,
+        CIAssert(context.captionTracks.count == 3,
             @"active player URL tracks should take priority over protobuf metadata");
         CIAssert([context.captionTracks.firstObject.baseURL isEqualToString:manualURL.absoluteString],
             @"NSURL caption track properties should become absolute URL strings");
@@ -71,6 +81,12 @@ int main(void) {
                                   preferredLanguage:@"zh-Hant"];
         CIAssert(manual != nil && !manual.isAutomatic,
             @"Traditional Chinese source CC should be selected as manual");
+        CICaptionTrack *orderedManual =
+            [CIYouTubeInspector manualTrackInContext:context
+                                  preferredLanguages:
+                                      @[@"ja", @"zh-Hant", @"en"]];
+        CIAssert([orderedManual.languageCode isEqualToString:@"ja"],
+            @"manual CC should follow the saved language priority order");
         CICaptionTrack *automatic =
             [CIYouTubeInspector automaticTrackInContext:context
                                      preferredLanguage:@"en"];

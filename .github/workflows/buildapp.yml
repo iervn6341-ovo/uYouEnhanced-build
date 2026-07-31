@@ -105,6 +105,13 @@ jobs:
           "$smoke_dir/VideoOverridesSmoke"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -framework Foundation \
+            Tweaks/CaptionIslandTests/ObjC/ConfigurationSmoke.m \
+            Tweaks/CaptionIsland/CIConstants.m \
+            Tweaks/CaptionIsland/CILogStore.m \
+            -o "$smoke_dir/ConfigurationSmoke"
+          "$smoke_dir/ConfigurationSmoke"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
             Tweaks/CaptionIslandTests/ObjC/CaptionTimingSmoke.m \
             Tweaks/CaptionIsland/CICaptionTiming.m \
             -o "$smoke_dir/CaptionTimingSmoke"

@@ -79,6 +79,21 @@ static NSInteger CILanguageScore(NSString *candidate, NSString *preferred) {
     return [targetBase isEqualToString:valueBase] ? 80 : 0;
 }
 
+static NSInteger CILanguagePriorityScore(
+    NSString *candidate,
+    NSArray<NSString *> *priorities
+) {
+    for (NSUInteger index = 0; index < priorities.count; index++) {
+        NSInteger match =
+            CILanguageScore(candidate, priorities[index]);
+        if (match <= 0) continue;
+        return (NSInteger)(priorities.count - index) * 1000 + match;
+    }
+    // This is a priority list, not an exclusion list. A source-language
+    // caption that is not listed is still preferable to having no captions.
+    return 1;
+}
+
 static BOOL CITrackIsTranslated(CICaptionTrack *track) {
     NSURLComponents *components = [NSURLComponents componentsWithString:track.baseURL];
     for (NSURLQueryItem *item in components.queryItems) {
@@ -227,11 +242,22 @@ static NSArray<CICaptionTrack *> *CITracksFromRawTracks(id rawTracks) {
 
 + (CICaptionTrack *)manualTrackInContext:(CIVideoContext *)context
                        preferredLanguage:(NSString *)preferredLanguage {
+    return [self manualTrackInContext:context
+                   preferredLanguages:preferredLanguage.length > 0
+                       ? @[preferredLanguage] : @[]];
+}
+
++ (CICaptionTrack *)manualTrackInContext:(CIVideoContext *)context
+                      preferredLanguages:
+                          (NSArray<NSString *> *)preferredLanguages {
     CICaptionTrack *best;
-    NSInteger bestScore = 0;
+    NSInteger bestScore = NSIntegerMin;
     for (CICaptionTrack *track in context.captionTracks) {
         if (track.isAutomatic || CITrackIsTranslated(track)) continue;
-        NSInteger score = CILanguageScore(track.languageCode, preferredLanguage);
+        NSInteger score = CILanguagePriorityScore(
+            track.languageCode,
+            preferredLanguages
+        );
         if (score > bestScore) { best = track; bestScore = score; }
     }
     return best;
@@ -239,13 +265,22 @@ static NSArray<CICaptionTrack *> *CITracksFromRawTracks(id rawTracks) {
 
 + (CICaptionTrack *)automaticTrackInContext:(CIVideoContext *)context
                           preferredLanguage:(NSString *)preferredLanguage {
+    return [self automaticTrackInContext:context
+                      preferredLanguages:preferredLanguage.length > 0
+                          ? @[preferredLanguage] : @[]];
+}
+
++ (CICaptionTrack *)automaticTrackInContext:(CIVideoContext *)context
+                         preferredLanguages:
+                             (NSArray<NSString *> *)preferredLanguages {
     CICaptionTrack *best;
     NSInteger bestScore = NSIntegerMin;
     for (CICaptionTrack *track in context.captionTracks) {
         if (!track.isAutomatic || CITrackIsTranslated(track)) continue;
-        NSInteger languageScore = CILanguageScore(track.languageCode, preferredLanguage);
-        // A mismatched ASR language is still more useful than no clock at all.
-        NSInteger score = languageScore > 0 ? languageScore : 1;
+        NSInteger score = CILanguagePriorityScore(
+            track.languageCode,
+            preferredLanguages
+        );
         if (score > bestScore) { best = track; bestScore = score; }
     }
     return best;

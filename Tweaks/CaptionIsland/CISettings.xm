@@ -9,6 +9,8 @@
 #import "CICaptionCoordinator.h"
 #import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
+#import "CILanguagePriorityViewController.h"
+#import "CILRCLIBProvider.h"
 #import "CILogViewController.h"
 #import "CITextUtilities.h"
 #import "CIToastPresenter.h"
@@ -38,12 +40,6 @@ static void CISynchronizeContinuedTaskFromCurrentVideo(void) {
                        duration:context.duration
                          shorts:context.isShorts];
         }];
-}
-
-static NSString *CILanguageTitle(NSString *code) {
-    if ([code isEqualToString:@"en"]) return CILocalized(@"LANGUAGE_ENGLISH", @"English");
-    if ([code isEqualToString:@"ja"]) return CILocalized(@"LANGUAGE_JAPANESE", @"Japanese");
-    return CILocalized(@"LANGUAGE_TRADITIONAL_CHINESE", @"Traditional Chinese");
 }
 
 static NSString *CIDurationLimitTitle(NSInteger minutes) {
@@ -133,6 +129,194 @@ static BOOL CIParseCaptionAdvance(
 
 static const void *CICaptionAdvanceValidatorKey =
     &CICaptionAdvanceValidatorKey;
+
+@interface CILRCLIBURLValidator : NSObject
+@property (nonatomic, weak) UIAlertAction *saveAction;
+- (void)URLDidChange:(UITextField *)field;
+@end
+
+@implementation CILRCLIBURLValidator
+
+- (void)URLDidChange:(UITextField *)field {
+    self.saveAction.enabled =
+        CINormalizedLRCLIBBaseURL(field.text, NULL).length > 0;
+}
+
+@end
+
+static const void *CILRCLIBURLValidatorKey =
+    &CILRCLIBURLValidatorKey;
+
+static void CIPresentLRCLIBBaseURL(
+    YTSettingsViewController *settingsViewController
+) {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:CILocalized(
+            @"LRCLIB_BASE_URL",
+            @"LRCLIB base URL"
+        )
+        message:CILocalized(
+            @"LRCLIB_BASE_URL_MESSAGE",
+            @"Enter the root URL of the LRCLIB-compatible service. /api/search is appended automatically. To support arbitrary HTTP mirrors, this build permits cleartext connections app-wide; use HTTPS whenever possible."
+        )
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = CILRCLIBBaseURL();
+        field.placeholder = CILRCLIBDefaultBaseURL();
+        field.keyboardType = UIKeyboardTypeURL;
+        field.autocapitalizationType =
+            UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.clearButtonMode =
+            UITextFieldViewModeWhileEditing;
+    }];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"CANCEL", @"Cancel")
+        style:UIAlertActionStyleCancel
+        handler:nil]];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CILocalized(
+            @"LRCLIB_BASE_URL_RESET",
+            @"Use official server"
+        )
+        style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            [NSUserDefaults.standardUserDefaults
+                removeObjectForKey:CILRCLIBBaseURLKey];
+            [CICaptionCoordinator.sharedCoordinator
+                reloadPreferences];
+            [settingsViewController reloadData];
+            CIShowToast(CILocalized(
+                @"LRCLIB_BASE_URL_RESET_DONE",
+                @"Restored the official LRCLIB server."
+            ));
+        }]];
+    UIAlertAction *saveAction = [UIAlertAction
+        actionWithTitle:CILocalized(@"SAVE", @"Save")
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *normalized =
+                CINormalizedLRCLIBBaseURL(
+                    alert.textFields.firstObject.text,
+                    NULL
+                );
+            if (normalized.length == 0) {
+                CIShowToast(CILocalized(
+                    @"LRCLIB_BASE_URL_INVALID",
+                    @"Enter a valid HTTP or HTTPS base URL."
+                ));
+                return;
+            }
+            [NSUserDefaults.standardUserDefaults
+                setObject:normalized
+                   forKey:CILRCLIBBaseURLKey];
+            [CICaptionCoordinator.sharedCoordinator
+                reloadPreferences];
+            [settingsViewController reloadData];
+            CIShowToast(CILocalized(
+                @"LRCLIB_BASE_URL_SAVED",
+                @"LRCLIB server saved and the current lookup was restarted."
+            ));
+        }];
+    [alert addAction:saveAction];
+    CILRCLIBURLValidator *validator =
+        [CILRCLIBURLValidator new];
+    validator.saveAction = saveAction;
+    [alert.textFields.firstObject
+        addTarget:validator
+           action:@selector(URLDidChange:)
+ forControlEvents:UIControlEventEditingChanged];
+    objc_setAssociatedObject(
+        alert,
+        CILRCLIBURLValidatorKey,
+        validator,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    );
+    [validator URLDidChange:alert.textFields.firstObject];
+    [settingsViewController presentViewController:alert
+                                         animated:YES
+                                       completion:nil];
+}
+
+static void CIPresentGlobalLanguagePriorities(
+    YTSettingsViewController *settingsViewController
+) {
+    CILanguagePriorityViewController *controller =
+        [[CILanguagePriorityViewController alloc]
+            initWithTitle:CILocalized(
+                @"LANGUAGE_PRIORITY",
+                @"Caption language priority"
+            )
+            priorities:CICaptionLanguagePriorities()
+            resetActionTitle:CILocalized(
+                @"LANGUAGE_PRIORITY_RESET",
+                @"Restore default order"
+            )
+            completion:^(NSArray<NSString *> *priorities) {
+                CISetCaptionLanguagePriorities(priorities);
+                [CICaptionCoordinator.sharedCoordinator
+                    reloadPreferences];
+                [settingsViewController reloadData];
+                CIShowToast(CILocalized(
+                    @"LANGUAGE_PRIORITY_SAVED",
+                    @"Caption language order saved."
+                ));
+            }];
+    [settingsViewController pushViewController:controller];
+}
+
+static void CIPresentCurrentVideoLanguagePriorities(
+    YTSettingsViewController *settingsViewController
+) {
+    [CICaptionCoordinator.sharedCoordinator
+        currentVideoContextWithCompletion:^(CIVideoContext *context) {
+        if (!context.videoID.length) {
+            CIShowToast(CILocalized(
+                @"VIDEO_OVERRIDE_NO_VIDEO",
+                @"Open a video first, then return here."
+            ));
+            return;
+        }
+        CIVideoOverride *override =
+            CIVideoOverrideForVideoID(context.videoID);
+        NSArray<NSString *> *priorities =
+            override.captionLanguagePriorities.count > 0
+                ? override.captionLanguagePriorities
+                : CICaptionLanguagePriorities();
+        CILanguagePriorityViewController *controller =
+            [[CILanguagePriorityViewController alloc]
+                initWithTitle:CILocalized(
+                    @"VIDEO_LANGUAGE_PRIORITY",
+                    @"Current video caption languages"
+                )
+                priorities:priorities
+                resetActionTitle:CILocalized(
+                    @"VIDEO_LANGUAGE_PRIORITY_INHERIT",
+                    @"Use global order for this video"
+                )
+                completion:^(NSArray<NSString *> *savedPriorities) {
+                    CISaveVideoCaptionLanguagePriorities(
+                        context.videoID,
+                        savedPriorities,
+                        context.title
+                    );
+                    [CICaptionCoordinator.sharedCoordinator
+                        reloadPreferences];
+                    [settingsViewController reloadData];
+                    CIShowToast(savedPriorities.count > 0
+                        ? CILocalized(
+                            @"VIDEO_LANGUAGE_PRIORITY_SAVED",
+                            @"Saved the language order for this video."
+                        )
+                        : CILocalized(
+                            @"VIDEO_LANGUAGE_PRIORITY_RESET_DONE",
+                            @"This video now uses the global language order."
+                        ));
+                }];
+        if (!settingsViewController.viewIfLoaded.window) return;
+        [settingsViewController pushViewController:controller];
+    }];
+}
 
 static void CIPresentCurrentVideoOverride(
     YTSettingsViewController *settingsViewController
@@ -359,31 +543,26 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             return YES;
         } settingItemId:0]];
 
-    NSString *languageTitle = CILocalized(@"PREFERRED_LANGUAGE", @"Preferred caption language");
-    NSArray<NSString *> *languageCodes = @[@"zh-Hant", @"en", @"ja"];
+    NSString *languageTitle = CILocalized(
+        @"LANGUAGE_PRIORITY",
+        @"Caption language priority"
+    );
     YTSettingsSectionItem *language = [%c(YTSettingsSectionItem)
         itemWithTitle:languageTitle
-        titleDescription:CILocalized(@"PREFERRED_LANGUAGE_DESCRIPTION", @"Only original manual CC is selected; auto-translation is never requested.")
+        titleDescription:CILocalized(
+            @"LANGUAGE_PRIORITY_DESCRIPTION",
+            @"Drag YouTube caption languages into priority order. Original manual CC and ASR tracks are supported; auto-translation is excluded."
+        )
         accessibilityIdentifier:@"CaptionIsland.Language"
-        detailTextBlock:^NSString *{ return CILanguageTitle(CIPreferredLanguage()); }
+        detailTextBlock:^NSString *{
+            return CICaptionLanguagePrioritySummary(
+                CICaptionLanguagePriorities()
+            );
+        }
         selectBlock:^BOOL(__unused YTSettingsCell *cell, __unused NSUInteger sectionItemIndex) {
-            NSMutableArray<YTSettingsSectionItem *> *rows = [NSMutableArray array];
-            for (NSString *code in languageCodes) {
-                [rows addObject:[%c(YTSettingsSectionItem) checkmarkItemWithTitle:CILanguageTitle(code)
-                    selectBlock:^BOOL(__unused YTSettingsCell *pickerCell,
-                                      __unused NSUInteger pickerIndex) {
-                        [NSUserDefaults.standardUserDefaults setObject:code forKey:CIPreferredLanguageKey];
-                        [CICaptionCoordinator.sharedCoordinator reloadPreferences];
-                        [settingsViewController reloadData];
-                        return YES;
-                    }]];
-            }
-            NSUInteger selected = [languageCodes indexOfObject:CIPreferredLanguage()];
-            if (selected == NSNotFound) selected = 0;
-            YTSettingsPickerViewController *picker = [[%c(YTSettingsPickerViewController) alloc]
-                initWithNavTitle:languageTitle pickerSectionTitle:nil rows:rows
-                selectedItemIndex:selected parentResponder:[settingsViewController parentResponder]];
-            [settingsViewController pushViewController:picker];
+            CIPresentGlobalLanguagePriorities(
+                settingsViewController
+            );
             return YES;
         }];
     [items addObject:language];
@@ -611,6 +790,52 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
 
     [items addObject:[%c(YTSettingsSectionItem)
         itemWithTitle:CILocalized(
+            @"LRCLIB_BASE_URL",
+            @"LRCLIB base URL"
+        )
+        titleDescription:CILocalized(
+            @"LRCLIB_BASE_URL_DESCRIPTION",
+            @"Use the official service, a compatible mirror, or your own LRCLIB instance. HTTP and HTTPS are accepted."
+        )
+        accessibilityIdentifier:@"CaptionIsland.LRCLIBBaseURL"
+        detailTextBlock:^NSString * {
+            return CILRCLIBBaseURL();
+        }
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            CIPresentLRCLIBBaseURL(settingsViewController);
+            return YES;
+        }]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(
+            @"LRCLIB_CLEAR_CACHE",
+            @"Clear LRCLIB lookup cache"
+        )
+        titleDescription:CILocalized(
+            @"LRCLIB_CLEAR_CACHE_DESCRIPTION",
+            @"Forget saved matches and misses, then retry the current video. Rate-limit cooldowns are kept."
+        )
+        accessibilityIdentifier:@"CaptionIsland.LRCLIBClearCache"
+        detailTextBlock:nil
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            [CILRCLIBProvider clearPersistentCache];
+            [CICaptionCoordinator.sharedCoordinator
+                reloadPreferences];
+            CIShowToast(CILocalized(
+                @"LRCLIB_CLEAR_CACHE_DONE",
+                @"LRCLIB lookup cache cleared."
+            ));
+            return YES;
+        }]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(
             @"VIDEO_OVERRIDE",
             @"Current video lyric settings"
         )
@@ -631,6 +856,33 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             __unused NSUInteger sectionItemIndex
         ) {
             CIPresentCurrentVideoOverride(settingsViewController);
+            return YES;
+        }]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(
+            @"VIDEO_LANGUAGE_PRIORITY",
+            @"Current video caption languages"
+        )
+        titleDescription:CILocalized(
+            @"VIDEO_LANGUAGE_PRIORITY_DESCRIPTION",
+            @"Save a separate YouTube caption-language order for the video that is currently playing."
+        )
+        accessibilityIdentifier:
+            @"CaptionIsland.VideoLanguagePriority"
+        detailTextBlock:^NSString * {
+            return CILocalized(
+                @"VIDEO_LANGUAGE_PRIORITY_OPEN",
+                @"Configure"
+            );
+        }
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            CIPresentCurrentVideoLanguagePriorities(
+                settingsViewController
+            );
             return YES;
         }]];
 

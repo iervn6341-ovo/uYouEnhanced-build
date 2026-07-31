@@ -274,6 +274,19 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.hasNativePlaybackTime = NO;
     [self resetClockState];
     [self startTimerIfNeeded];
+    [CICaptionCoordinator.sharedCoordinator
+        refreshPresentationForReason:@"YouTube entered the background"];
+    NSDictionary<NSString *, id> *nowPlayingInfo =
+        MPNowPlayingInfoCenter.defaultCenter.nowPlayingInfo;
+    if (nowPlayingInfo.count > 0) {
+        [CILogStore.sharedStore recordLevel:CILogLevelInfo
+            category:@"Activity"
+            message:@"Caption Island and YouTube Now Playing are both active. Submitted a fresh maximum-relevance caption revision; iOS still owns final Dynamic Island presentation arbitration."];
+    } else {
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"Activity"
+            message:@"Submitted a fresh caption revision for the background transition; no YouTube Now Playing metadata was published at that moment."];
+    }
     if (CIContinuedProcessingController.sharedController.taskActive) {
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"ContinuedTask"
