@@ -9,7 +9,6 @@
 static NSString *const CIContinuedTaskIdentifierSuffix =
     @".captionisland.background-captions";
 static const NSTimeInterval CIContinuedProgressMinimumInterval = 0.75;
-static const NSInteger CIContinuedSubmissionStrategyFail = 0;
 
 static NSString *CIContinuedClippedText(
     NSString *value,
@@ -43,6 +42,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 @property (nonatomic, strong, nullable) id scheduler;
 @property (nonatomic, strong, nullable) id runningTask;
 @property (nonatomic, copy) NSString *taskIdentifier;
+@property (nonatomic, copy) NSString *taskIdentifierPrefix;
 @property (nonatomic, copy) NSString *permittedTaskIdentifier;
 @property (nonatomic, copy) NSString *videoID;
 @property (nonatomic, copy) NSString *videoTitle;
@@ -52,15 +52,15 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 @property (nonatomic) NSTimeInterval playbackTime;
 @property (nonatomic) BOOL videoIsShorts;
 @property (nonatomic) NSTimeInterval lastProgressUptime;
-@property (nonatomic) BOOL registered;
 @property (nonatomic) BOOL requestPending;
 @property (nonatomic) BOOL needsForegroundRestart;
 @property (nonatomic) BOOL playing;
 @property (nonatomic) BOOL suppressed;
 @property (nonatomic) BOOL didLogBackgroundStartRejection;
 @property (nonatomic) BOOL applicationEnteredBackground;
-- (BOOL)registerTaskIfNeeded;
-- (void)handleLaunchedTask:(id)task;
+- (BOOL)registerTaskIdentifier:(NSString *)taskIdentifier;
+- (void)handleLaunchedTask:(id)task
+                 identifier:(NSString *)taskIdentifier;
 - (void)handleTaskExpiration:(id)task;
 - (void)updateRunningTaskUI;
 - (void)updateRunningTaskProgressForce:(BOOL)force;
@@ -86,8 +86,8 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             NSBundle.mainBundle.bundleIdentifier ?: @"";
         NSString *taskPrefix = [bundleID
             stringByAppendingString:CIContinuedTaskIdentifierSuffix];
-        _taskIdentifier = [taskPrefix
-            stringByAppendingString:@".current"];
+        _taskIdentifierPrefix = taskPrefix;
+        _taskIdentifier = @"";
         _permittedTaskIdentifier = [taskPrefix
             stringByAppendingString:@".*"];
         _videoID = @"";
@@ -211,7 +211,18 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     self.didLogBackgroundStartRejection = NO;
 
-    if (![self registerTaskIfNeeded]) return;
+    // Continued-processing identifiers represent individual jobs. Reusing a
+    // single ".current" identifier leaves the next request competing with a
+    // completed or still-draining predecessor. Give every foreground session
+    // its own dynamic suffix under the permitted wildcard.
+    self.taskIdentifier = [self.taskIdentifierPrefix
+        stringByAppendingFormat:@".%@",
+            NSUUID.UUID.UUIDString.lowercaseString];
+    if (![self registerTaskIdentifier:self.taskIdentifier]) {
+        self.taskIdentifier = @"";
+        self.needsForegroundRestart = YES;
+        return;
+    }
 
     Class requestClass =
         NSClassFromString(@"BGContinuedProcessingTaskRequest");
@@ -237,6 +248,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
                category:@"ContinuedTask"
                  format:@"iOS 26 rejected creation of the background caption request: %@",
                         exception.reason ?: exception.name];
+        self.needsForegroundRestart = YES;
         return;
     }
     if (!request) {
@@ -244,17 +256,13 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             recordLevel:CILogLevelError
                category:@"ContinuedTask"
                 message:@"Unable to create the iOS 26 continued processing request."];
+        self.needsForegroundRestart = YES;
         return;
     }
-    SEL strategySelector =
-        NSSelectorFromString(@"setStrategy:");
-    if ([request respondsToSelector:strategySelector]) {
-        ((void (*)(id, SEL, NSInteger))objc_msgSend)(
-            request,
-            strategySelector,
-            CIContinuedSubmissionStrategyFail
-        );
-    }
+    // Keep the framework's default queue strategy. A third background cycle
+    // can begin while the previous task is still draining; failing an
+    // otherwise valid request merely because it cannot start immediately
+    // makes the next AOD session lose its execution lease.
 
     NSError *error = nil;
     SEL submitSelector =
@@ -272,6 +280,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             );
     } @catch (NSException *exception) {
         self.requestPending = NO;
+        self.needsForegroundRestart = YES;
         [CILogStore.sharedStore
             recordLevel:CILogLevelError
                category:@"ContinuedTask"
@@ -281,6 +290,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     if (!submitted) {
         self.requestPending = NO;
+        self.needsForegroundRestart = YES;
         [CILogStore.sharedStore
             recordLevel:CILogLevelError
                category:@"ContinuedTask"
@@ -288,17 +298,17 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
                         error.localizedDescription ?: @"unknown error"];
         return;
     }
+    self.needsForegroundRestart = NO;
 
     [CILogStore.sharedStore
         recordLevel:CILogLevelInfo
            category:@"ContinuedTask"
-             format:@"Submitted an iOS 26 continued background caption task for video %@.",
-                    videoID];
+             format:@"Submitted queued iOS 26 continued caption task %@ for video %@.",
+                    self.taskIdentifier, videoID];
 }
 
-- (BOOL)registerTaskIfNeeded {
-    if (self.registered && self.scheduler) return YES;
-
+- (BOOL)registerTaskIdentifier:(NSString *)taskIdentifier {
+    if (taskIdentifier.length == 0) return NO;
     NSArray<NSString *> *permittedIdentifiers =
         [NSBundle.mainBundle objectForInfoDictionaryKey:
             @"BGTaskSchedulerPermittedIdentifiers"];
@@ -313,13 +323,16 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         return NO;
     }
 
-    Class schedulerClass = NSClassFromString(@"BGTaskScheduler");
-    SEL sharedSelector = NSSelectorFromString(@"sharedScheduler");
-    id scheduler = [schedulerClass respondsToSelector:sharedSelector]
-        ? ((id (*)(id, SEL))objc_msgSend)(
-            schedulerClass,
-            sharedSelector
-        ) : nil;
+    id scheduler = self.scheduler;
+    if (!scheduler) {
+        Class schedulerClass = NSClassFromString(@"BGTaskScheduler");
+        SEL sharedSelector = NSSelectorFromString(@"sharedScheduler");
+        scheduler = [schedulerClass respondsToSelector:sharedSelector]
+            ? ((id (*)(id, SEL))objc_msgSend)(
+                schedulerClass,
+                sharedSelector
+            ) : nil;
+    }
     if (!scheduler) {
         [CILogStore.sharedStore
             recordLevel:CILogLevelError
@@ -329,9 +342,11 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
 
     __weak typeof(self) weakSelf = self;
+    NSString *registeredIdentifier = [taskIdentifier copy];
     void (^launchHandler)(id) = ^(id task) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf handleLaunchedTask:task];
+            [weakSelf handleLaunchedTask:task
+                              identifier:registeredIdentifier];
         });
     };
     SEL registerSelector = NSSelectorFromString(
@@ -345,7 +360,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
                 objc_msgSend)(
                     scheduler,
                     registerSelector,
-                    self.taskIdentifier,
+                    taskIdentifier,
                     dispatch_get_main_queue(),
                     launchHandler
                 );
@@ -362,22 +377,39 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             recordLevel:CILogLevelError
                category:@"ContinuedTask"
                  format:@"BGTaskScheduler rejected registration for %@.",
-                        self.taskIdentifier];
+                        taskIdentifier];
         return NO;
     }
 
     self.scheduler = scheduler;
-    self.registered = YES;
     [CILogStore.sharedStore
         recordLevel:CILogLevelDebug
            category:@"ContinuedTask"
              format:@"Registered iOS 26 background task identifier %@.",
-                    self.taskIdentifier];
+                    taskIdentifier];
     return YES;
 }
 
-- (void)handleLaunchedTask:(id)task {
+- (void)handleLaunchedTask:(id)task
+                 identifier:(NSString *)taskIdentifier {
     if (!task) return;
+    if (![taskIdentifier isEqualToString:self.taskIdentifier]) {
+        SEL completeSelector =
+            NSSelectorFromString(@"setTaskCompletedWithSuccess:");
+        if ([task respondsToSelector:completeSelector]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(
+                task,
+                completeSelector,
+                NO
+            );
+        }
+        [CILogStore.sharedStore
+            recordLevel:CILogLevelWarning
+               category:@"ContinuedTask"
+                 format:@"Rejected a delayed launch for superseded continued task %@.",
+                        taskIdentifier];
+        return;
+    }
     self.requestPending = NO;
     if (!CIPreferenceBool(
             CIContinuedBackgroundProcessingEnabledKey,
@@ -641,6 +673,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             );
         }
     }
+    self.taskIdentifier = @"";
 
     self.videoID = @"";
     self.videoTitle = @"";
