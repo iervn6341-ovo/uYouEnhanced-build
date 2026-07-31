@@ -56,10 +56,10 @@ ActivityKit push server。本 Tweak 不會播放無聲音訊來規避系統限�
 「螢幕關閉」時面板本身不會發光：iPhone 11 會在喚醒鎖定畫面時看到最新字幕；
 支援 Always-On Display 的機型則仍由 iOS 的 AOD 顯示規則決定刷新頻率。iOS 會節流
 類似逐句歌詞的本機 Live Activity 更新，而且 AOD 不播放 WidgetKit 動畫；因此本
-Tweak 會一次提供目前句與下一句，並把下一句開始時間設為一次性的 stale handoff：
-若背景更新恰好被延後，WidgetKit 仍可把已送達的下一句提升成目前句。這只能涵蓋一個
-cue 邊界，仍不能保證 AOD 長時間逐句即時重畫。本版本只使用 App 內的本機
-ActivityKit 更新，不含 APNs Live Activity push 或外部 relay。
+Tweak 會一次提供目前句與下一句，讓被節流時至少仍看得到下一句預告。ActivityKit 的
+`staleDate` 只能標記內容過期，不能在指定時間替 Widget 切換字幕；若 YouTube 程序被
+暫停，仍不能保證 AOD 長時間逐句即時重畫。本版本只使用 App 內的本機 ActivityKit
+更新，不含 APNs Live Activity push 或外部 relay。
 
 iOS 26 以上另提供預設關閉的「持續背景字幕」實驗模式。它使用公開的
 `BGContinuedProcessingTaskRequest`，以影片播放作為由使用者啟動、可完成且具有
@@ -100,8 +100,11 @@ Dynamic Island 仍可能依系統規則把兩張活動縮成 minimal；這個模
 手動 PiP 被叉叉關閉時，AVKit 會釋放該 PiP 的 sample-buffer renderer。若使用者
 之後從控制中心按播放，Caption Island 會先保存的影片 ID／時間重建 YouTube
 背景播放器，再 seek 回原位置；不會把 Play 送回已失效的 PiP renderer。重建後會
-觀察播放時鐘 12 秒，時鐘停滯時最多重建一次。影片切換、PiP 返回 YouTube 或 App
-回到前景時會取消這項恢復，避免操作到錯誤的影片。
+觀察播放時鐘 12 秒，時鐘停滯時最多自動重建一次；兩次都失敗時會保留影片與時間，
+讓下一次明確的控制中心 Play 再開啟一輪恢復，而不是回到已失效的 renderer。舊 PiP
+延遲送到的 teardown pause 在恢復期間會被忽略。回到 App 再次手動觸發 PiP 時，會先
+把目前影片重新綁定至 PiP 控制器；影片切換或 PiP 返回 YouTube 則會取消舊恢復，避免
+操作到錯誤的影片。
 
 ## Log 與隱私
 

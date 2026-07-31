@@ -204,6 +204,20 @@ static double CIQuantizedPlaybackRate(double rate) {
     CICaptionCoordinator *coordinator =
         CICaptionCoordinator.sharedCoordinator;
     [coordinator prepareForExternalPlayback];
+    // PiP is an explicit foreground action and therefore the most reliable
+    // point to (re)submit the optional iOS 26 continued-processing request.
+    // A request created only from the earlier video-activation callback may
+    // already have expired by the time the user starts PiP.
+    CIVideoContext *context = [CIYouTubeInspector
+        contextFromPlaybackData:nil
+               playerController:controller];
+    if (context.videoID.length > 0) {
+        [CIContinuedProcessingController.sharedController
+            beginForVideoID:context.videoID
+                      title:context.title ?: @""
+                   duration:context.duration
+                     shorts:context.isShorts];
+    }
     NSTimeInterval playbackTime = controller.currentVideoMediaTime;
     if (isfinite(playbackTime) && playbackTime >= 0) {
         [coordinator updatePlaybackTime:playbackTime];
