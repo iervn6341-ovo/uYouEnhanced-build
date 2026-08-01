@@ -10,6 +10,10 @@ static NSString *const CIContinuedTaskIdentifierSuffix =
     @".captionisland.background-captions";
 static const NSTimeInterval CIContinuedProgressMinimumInterval = 0.75;
 
+NSNotificationName const
+    CIContinuedProcessingRuntimeDidChangeNotification =
+        @"CIContinuedProcessingRuntimeDidChangeNotification";
+
 static NSString *CIContinuedClippedText(
     NSString *value,
     NSUInteger maximumCharacters
@@ -40,7 +44,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 
 @interface CIContinuedProcessingController ()
 @property (nonatomic, strong, nullable) id scheduler;
-@property (nonatomic, strong, nullable) id runningTask;
+@property (atomic, strong, nullable) id runningTask;
 @property (nonatomic, copy) NSString *taskIdentifier;
 @property (nonatomic, copy) NSString *taskIdentifierPrefix;
 @property (nonatomic, copy) NSString *permittedTaskIdentifier;
@@ -52,12 +56,23 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 @property (nonatomic) NSTimeInterval playbackTime;
 @property (nonatomic) BOOL videoIsShorts;
 @property (nonatomic) NSTimeInterval lastProgressUptime;
-@property (nonatomic) BOOL requestPending;
+@property (atomic) BOOL requestPending;
+@property (nonatomic) NSTimeInterval requestSubmittedUptime;
 @property (nonatomic) BOOL needsForegroundRestart;
 @property (nonatomic) BOOL playing;
 @property (nonatomic) BOOL suppressed;
 @property (nonatomic) BOOL didLogBackgroundStartRejection;
-@property (nonatomic) BOOL applicationEnteredBackground;
+@property (atomic) BOOL applicationEnteredBackground;
+@property (nonatomic, copy) NSString *progressVideoID;
+@property (nonatomic) int64_t progressBaseUnitCount;
+@property (nonatomic) int64_t progressVideoMaximumUnitCount;
+@property (nonatomic) int64_t lastReportedCompletedUnitCount;
+@property (nonatomic) int64_t lastReportedTotalUnitCount;
+@property (nonatomic) NSUInteger backgroundCycleCount;
+- (BOOL)hasTaskSession;
+- (void)prepareProgressSegmentForVideoID:(NSString *)videoID;
+- (void)resetProgressAccounting;
+- (void)notifyRuntimeChanged;
 - (BOOL)registerTaskIdentifier:(NSString *)taskIdentifier;
 - (void)handleLaunchedTask:(id)task
                  identifier:(NSString *)taskIdentifier;
@@ -94,7 +109,11 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         _videoTitle = @"";
         _captionLine = @"";
         _nextCaptionLine = @"";
+        _progressVideoID = @"";
         _playing = YES;
+        _applicationEnteredBackground =
+            UIApplication.sharedApplication.applicationState ==
+                UIApplicationStateBackground;
         [NSNotificationCenter.defaultCenter
             addObserver:self
                selector:@selector(applicationDidBecomeActive:)
@@ -114,7 +133,27 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 }
 
 - (BOOL)isTaskActive {
+    return self.runningTask != nil;
+}
+
+- (BOOL)isTaskPending {
+    return self.requestPending;
+}
+
+- (BOOL)hasTaskSession {
     return self.runningTask != nil || self.requestPending;
+}
+
+- (BOOL)localActivityUpdatesPermitted {
+    if (!CIContinuedBackgroundProcessingSupported() ||
+        !CIPreferenceBool(
+            CIContinuedBackgroundProcessingEnabledKey,
+            NO
+        ) ||
+        !self.applicationEnteredBackground) {
+        return YES;
+    }
+    return self.taskActive;
 }
 
 - (void)beginForVideoID:(NSString *)videoID
@@ -142,7 +181,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     if (!captionIslandEnabled || !preferenceEnabled ||
         !CIContinuedBackgroundProcessingSupported() ||
         videoID.length == 0) {
-        if ((self.taskActive || self.needsForegroundRestart) &&
+        if (([self hasTaskSession] || self.needsForegroundRestart) &&
             (!captionIslandEnabled || !preferenceEnabled)) {
             [self endWithReason:
                 !captionIslandEnabled
@@ -161,7 +200,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             CIMaximumVideoDurationMinutes()
         );
     if (exclusion != CIVideoExclusionReasonNone) {
-        if (self.taskActive || self.needsForegroundRestart) {
+        if ([self hasTaskSession] || self.needsForegroundRestart) {
             [self endWithReason:exclusion ==
                     CIVideoExclusionReasonShorts
                     ? @"the active video is a Short"
@@ -172,7 +211,10 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
 
     BOOL sameVideo = [self.videoID isEqualToString:videoID];
-    BOOL existingSession = self.taskActive;
+    BOOL existingSession = [self hasTaskSession];
+    if (existingSession && !sameVideo) {
+        [self prepareProgressSegmentForVideoID:videoID];
+    }
     self.videoID = [videoID copy];
     self.videoTitle =
         title.length > 0 ? [title copy] : @"YouTube";
@@ -186,11 +228,10 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             self.playbackTime = 0;
             self.captionLine = @"";
             self.nextCaptionLine = @"";
-            self.lastProgressUptime = 0;
             [CILogStore.sharedStore
                 recordLevel:CILogLevelInfo
                    category:@"ContinuedTask"
-                     format:@"Retargeted the active iOS 26 background caption task to video %@.",
+                     format:@"Retargeted the existing iOS 26 background caption session to video %@ without replacing its runtime lease.",
                             videoID];
         }
         [self updateRunningTaskProgressForce:!sameVideo];
@@ -218,6 +259,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     self.taskIdentifier = [self.taskIdentifierPrefix
         stringByAppendingFormat:@".%@",
             NSUUID.UUID.UUIDString.lowercaseString];
+    self.backgroundCycleCount = 0;
     if (![self registerTaskIdentifier:self.taskIdentifier]) {
         self.taskIdentifier = @"";
         self.needsForegroundRestart = YES;
@@ -243,6 +285,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
                 self.videoTitle
             );
     } @catch (NSException *exception) {
+        self.taskIdentifier = @"";
         [CILogStore.sharedStore
             recordLevel:CILogLevelError
                category:@"ContinuedTask"
@@ -252,6 +295,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         return;
     }
     if (!request) {
+        self.taskIdentifier = @"";
         [CILogStore.sharedStore
             recordLevel:CILogLevelError
                category:@"ContinuedTask"
@@ -269,6 +313,8 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         NSSelectorFromString(@"submitTaskRequest:error:");
     BOOL submitted = NO;
     self.requestPending = YES;
+    self.requestSubmittedUptime =
+        NSProcessInfo.processInfo.systemUptime;
     @try {
         submitted =
             [self.scheduler respondsToSelector:submitSelector] &&
@@ -280,6 +326,8 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             );
     } @catch (NSException *exception) {
         self.requestPending = NO;
+        self.requestSubmittedUptime = 0;
+        self.taskIdentifier = @"";
         self.needsForegroundRestart = YES;
         [CILogStore.sharedStore
             recordLevel:CILogLevelError
@@ -290,6 +338,8 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     if (!submitted) {
         self.requestPending = NO;
+        self.requestSubmittedUptime = 0;
+        self.taskIdentifier = @"";
         self.needsForegroundRestart = YES;
         [CILogStore.sharedStore
             recordLevel:CILogLevelError
@@ -411,6 +461,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         return;
     }
     self.requestPending = NO;
+    self.requestSubmittedUptime = 0;
     if (!CIPreferenceBool(
             CIContinuedBackgroundProcessingEnabledKey,
             NO) ||
@@ -424,6 +475,8 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
                 NO
             );
         }
+        self.taskIdentifier = @"";
+        self.needsForegroundRestart = NO;
         return;
     }
 
@@ -440,7 +493,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     self.runningTask = task;
     self.needsForegroundRestart = NO;
-    self.lastProgressUptime = 0;
+    [self resetProgressAccounting];
 
     __weak typeof(self) weakSelf = self;
     __weak id weakTask = task;
@@ -465,6 +518,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         recordLevel:CILogLevelInfo
            category:@"ContinuedTask"
             message:@"iOS 26 granted continued background runtime for caption synchronization."];
+    [self notifyRuntimeChanged];
 }
 
 - (void)handleTaskExpiration:(id)task {
@@ -489,11 +543,14 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     self.runningTask = nil;
     self.requestPending = NO;
+    self.requestSubmittedUptime = 0;
+    self.taskIdentifier = @"";
     self.needsForegroundRestart = YES;
     [CILogStore.sharedStore
         recordLevel:CILogLevelWarning
            category:@"ContinuedTask"
             message:@"iOS 26 expired the continued background caption task and it was completed as unsuccessful; reopen YouTube to request a fresh task."];
+    [self notifyRuntimeChanged];
 }
 
 - (void)applicationDidBecomeActive:
@@ -506,49 +563,79 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     BOOL returnedFromBackground = self.applicationEnteredBackground;
     self.applicationEnteredBackground = NO;
-    if ((!returnedFromBackground && !self.needsForegroundRestart) ||
-        (!self.needsForegroundRestart && !self.taskActive) ||
-        self.videoID.length == 0 ||
+    if (self.videoID.length == 0 ||
         !CIPreferenceBool(
             CIContinuedBackgroundProcessingEnabledKey,
         NO
     )) return;
 
-    NSString *videoID = [self.videoID copy];
-    NSString *title = [self.videoTitle copy];
-    NSTimeInterval duration = self.duration;
-    BOOL isShorts = self.videoIsShorts;
-    NSTimeInterval playbackTime = self.playbackTime;
-    NSString *captionLine = [self.captionLine copy];
-    NSString *nextCaptionLine = [self.nextCaptionLine copy];
-    BOOL playing = self.playing;
-    BOOL suppressed = self.suppressed;
+    // Foregrounding boosts an existing BGContinuedProcessingTask. Completing
+    // it here would discard that lease and make each Home -> Lock cycle race a
+    // newly queued request. Keep one task for the finite playback session.
+    if (self.taskActive) {
+        [self updateRunningTaskProgressForce:YES];
+        [self updateRunningTaskUI];
+        if (returnedFromBackground) {
+            [CILogStore.sharedStore
+                recordLevel:CILogLevelInfo
+                   category:@"ContinuedTask"
+                    message:@"Retained the granted iOS 26 continued caption task across the foreground return; the same lease will cover the next background cycle."];
+        }
+        return;
+    }
 
-    // A BGContinuedProcessingTask represents one finite user-initiated
-    // session. Returning to YouTube ends that background session. Complete or
-    // cancel it here and submit a fresh request while the app is active, so a
-    // second Home -> Lock cycle does not depend on an already-consumed task.
-    [self endWithReason:
-        @"YouTube returned to the foreground; preparing the next background session"
-              success:YES];
+    if (self.taskPending) {
+        if (returnedFromBackground) {
+            NSTimeInterval pendingSeconds = MAX(
+                0,
+                NSProcessInfo.processInfo.systemUptime -
+                    self.requestSubmittedUptime
+            );
+            [CILogStore.sharedStore
+                recordLevel:CILogLevelInfo
+                   category:@"ContinuedTask"
+                     format:@"Kept the queued iOS 26 continued caption request across the foreground return (pending %.1fs); avoiding cancel/resubmit churn.",
+                            pendingSeconds];
+        }
+        return;
+    }
+
+    if (!self.needsForegroundRestart) return;
     [CILogStore.sharedStore
         recordLevel:CILogLevelInfo
            category:@"ContinuedTask"
-            message:@"YouTube became active; requesting a fresh continued caption task for the next background transition."];
-    [self beginForVideoID:videoID
-                    title:title
-                 duration:duration
-                   shorts:isShorts];
-    self.playbackTime = playbackTime;
-    self.captionLine = captionLine ?: @"";
-    self.nextCaptionLine = nextCaptionLine ?: @"";
-    self.playing = playing;
-    self.suppressed = suppressed;
+            message:@"YouTube became active after the previous continued task expired; requesting one replacement for the current playback session."];
+    [self beginForVideoID:self.videoID
+                    title:self.videoTitle
+                 duration:self.duration
+                   shorts:self.videoIsShorts];
 }
 
 - (void)applicationDidEnterBackground:
     (__unused NSNotification *)notification {
+    [self prepareForApplicationBackground];
+}
+
+- (void)prepareForApplicationBackground {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self prepareForApplicationBackground];
+        });
+        return;
+    }
+    if (self.applicationEnteredBackground) return;
     self.applicationEnteredBackground = YES;
+    if (![self hasTaskSession]) return;
+    self.backgroundCycleCount++;
+    [CILogStore.sharedStore
+        recordLevel:self.taskActive
+            ? CILogLevelInfo : CILogLevelWarning
+           category:@"ContinuedTask"
+             format:self.taskActive
+                ? @"Background cycle %lu is reusing the granted continued caption runtime lease (%@)."
+                : @"Background cycle %lu began while the continued caption request is still queued (%@).",
+                    (unsigned long)self.backgroundCycleCount,
+                    self.taskIdentifier];
 }
 
 - (void)updatePlaybackTime:(NSTimeInterval)playbackTime
@@ -562,7 +649,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         });
         return;
     }
-    if (!self.taskActive || self.suppressed ||
+    if (self.videoID.length == 0 ||
         !isfinite(playbackTime) || playbackTime < 0) return;
     self.playbackTime = playbackTime;
     if (isfinite(duration) && duration > 0) {
@@ -570,6 +657,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     BOOL playingChanged = self.playing != playing;
     self.playing = playing;
+    if (!self.taskActive || self.suppressed) return;
     [self updateRunningTaskProgressForce:playingChanged];
     if (playingChanged) [self updateRunningTaskUI];
 }
@@ -636,7 +724,8 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         return;
     }
 
-    BOOL hadTask = self.taskActive;
+    BOOL hadTask = [self hasTaskSession];
+    BOOL hadGrantedRuntime = self.taskActive;
     if (self.requestPending && self.scheduler) {
         SEL cancelSelector =
             NSSelectorFromString(@"cancelTaskRequestWithIdentifier:");
@@ -652,6 +741,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     id task = self.runningTask;
     self.runningTask = nil;
     self.requestPending = NO;
+    self.requestSubmittedUptime = 0;
     self.needsForegroundRestart = NO;
     if (task) {
         SEL expirationSelector =
@@ -682,7 +772,8 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     self.duration = 0;
     self.playbackTime = 0;
     self.videoIsShorts = NO;
-    self.lastProgressUptime = 0;
+    self.backgroundCycleCount = 0;
+    [self resetProgressAccounting];
     self.playing = YES;
     self.suppressed = NO;
     if (hadTask) {
@@ -692,6 +783,33 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
                  format:@"Ended the iOS 26 background caption task: %@.",
                         reason.length > 0 ? reason : @"session ended"];
     }
+    if (hadGrantedRuntime) [self notifyRuntimeChanged];
+}
+
+- (void)prepareProgressSegmentForVideoID:(NSString *)videoID {
+    NSString *safeVideoID = videoID ?: @"";
+    if ([self.progressVideoID isEqualToString:safeVideoID]) return;
+    self.progressBaseUnitCount =
+        self.lastReportedCompletedUnitCount;
+    self.progressVideoMaximumUnitCount = 0;
+    self.progressVideoID = safeVideoID;
+    self.lastProgressUptime = 0;
+}
+
+- (void)resetProgressAccounting {
+    self.progressVideoID = self.videoID ?: @"";
+    self.progressBaseUnitCount = 0;
+    self.progressVideoMaximumUnitCount = 0;
+    self.lastReportedCompletedUnitCount = 0;
+    self.lastReportedTotalUnitCount = 0;
+    self.lastProgressUptime = 0;
+}
+
+- (void)notifyRuntimeChanged {
+    [NSNotificationCenter.defaultCenter
+        postNotificationName:
+            CIContinuedProcessingRuntimeDidChangeNotification
+                      object:self];
 }
 
 - (void)updateRunningTaskProgressForce:(BOOL)force {
@@ -714,16 +832,34 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     if (!progress) return;
 
-    int64_t totalUnits = self.duration > 0
+    [self prepareProgressSegmentForVideoID:self.videoID];
+    int64_t currentVideoTotalUnits = self.duration > 0
         ? MAX((int64_t)1, (int64_t)llround(self.duration * 10.0))
         : 1;
-    int64_t completedUnits = self.duration > 0
-        ? MAX((int64_t)0, MIN(
-            totalUnits,
-            (int64_t)llround(self.playbackTime * 10.0)
-        )) : 0;
+    int64_t currentVideoUnits = MAX(
+        (int64_t)0,
+        (int64_t)llround(self.playbackTime * 10.0)
+    );
+    currentVideoUnits = MIN(currentVideoTotalUnits, currentVideoUnits);
+    self.progressVideoMaximumUnitCount = MAX(
+        self.progressVideoMaximumUnitCount,
+        currentVideoUnits
+    );
+    int64_t completedUnits = self.progressBaseUnitCount +
+        self.progressVideoMaximumUnitCount;
+    completedUnits = MAX(
+        self.lastReportedCompletedUnitCount,
+        completedUnits
+    );
+    int64_t totalUnits = MAX(
+        self.progressBaseUnitCount + currentVideoTotalUnits,
+        completedUnits + 1
+    );
+    totalUnits = MAX(self.lastReportedTotalUnitCount, totalUnits);
     progress.totalUnitCount = totalUnits;
     progress.completedUnitCount = completedUnits;
+    self.lastReportedCompletedUnitCount = completedUnits;
+    self.lastReportedTotalUnitCount = totalUnits;
     self.lastProgressUptime = uptime;
 }
 

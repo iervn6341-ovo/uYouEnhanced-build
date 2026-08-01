@@ -297,6 +297,11 @@ static double CIQuantizedPlaybackRate(double rate) {
 
 - (void)applicationDidEnterBackground:(__unused NSNotification *)notification {
     self.applicationIsBackgrounded = YES;
+    CIContinuedProcessingController *continuedController =
+        CIContinuedProcessingController.sharedController;
+    // Set the controller's background phase before the first ActivityKit
+    // refresh. Notification observer ordering is not a runtime guarantee.
+    [continuedController prepareForApplicationBackground];
     if (!self.backgroundControllerLease) {
         self.backgroundControllerLease = self.playerController;
         self.controllerLeaseGeneration++;
@@ -309,7 +314,11 @@ static double CIQuantizedPlaybackRate(double rate) {
         refreshPresentationForReason:@"YouTube entered the background"];
     NSDictionary<NSString *, id> *nowPlayingInfo =
         MPNowPlayingInfoCenter.defaultCenter.nowPlayingInfo;
-    if (nowPlayingInfo.count > 0) {
+    if (!continuedController.localActivityUpdatesPermitted) {
+        [CILogStore.sharedStore recordLevel:CILogLevelWarning
+            category:@"Activity"
+            message:@"Deferred the background-transition caption revision until iOS grants the continued-processing runtime lease."];
+    } else if (nowPlayingInfo.count > 0) {
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"Activity"
             message:@"Caption Island and YouTube Now Playing are both active. Submitted a fresh maximum-relevance caption revision; iOS still owns final Dynamic Island presentation arbitration."];
@@ -318,10 +327,14 @@ static double CIQuantizedPlaybackRate(double rate) {
             category:@"Activity"
             message:@"Submitted a fresh caption revision for the background transition; no YouTube Now Playing metadata was published at that moment."];
     }
-    if (CIContinuedProcessingController.sharedController.taskActive) {
+    if (continuedController.taskActive) {
         [CILogStore.sharedStore recordLevel:CILogLevelInfo
             category:@"ContinuedTask"
-            message:@"Entered the background with an iOS 26 continued caption task pending or active."];
+            message:@"Entered the background with a granted iOS 26 continued caption runtime lease."];
+    } else if (continuedController.taskPending) {
+        [CILogStore.sharedStore recordLevel:CILogLevelWarning
+            category:@"ContinuedTask"
+            message:@"Entered the background while the iOS 26 continued caption request is still queued; local Live Activity updates will wait for the launch handler instead of being misreported as authorized."];
     } else if (CIPreferenceBool(
                    CIContinuedBackgroundProcessingEnabledKey,
                    NO) &&
