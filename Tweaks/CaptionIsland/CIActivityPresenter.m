@@ -69,7 +69,7 @@ static NSString *CIActivitySourceLabel(
             recordLevel:CILogLevelWarning
                category:@"Activity"
                 message:controller.taskPending
-                    ? @"Deferred local Live Activity updates while the iOS 26 continued caption request is queued; updates resume as soon as the system grants runtime."
+                    ? @"Deferred local Live Activity updates while the submitted iOS 26 continued caption request awaits its launch handler; updates resume only after the system grants runtime."
                     : @"Deferred local Live Activity updates because the background process has only media-playback eligibility; this avoids repeated liveactivitiesd rejections."];
     }
     return NO;
@@ -77,7 +77,10 @@ static NSString *CIActivitySourceLabel(
 
 - (void)continuedProcessingRuntimeDidChange:
     (__unused NSNotification *)notification {
-    if (!CIContinuedProcessingController.sharedController.taskActive ||
+    CIContinuedProcessingController *controller =
+        CIContinuedProcessingController.sharedController;
+    if (!controller.taskActive ||
+        !controller.localActivityUpdatesPermitted ||
         self.videoID.length == 0) return;
     self.didLogSuppressedBackgroundUpdate = NO;
     [self refreshPresentationForReason:

@@ -77,8 +77,9 @@ iOS 26 以上另提供預設關閉的「持續背景字幕」實驗模式。它�
 Dynamic Island 顯示位置。iOS 17.5～18 不會顯示此設定，仍沿用背景音訊方案。
 每次從背景真正回到 YouTube 前景時，上一輪 continued-processing session 會正常完成，
 並在 App 尚為 active 時為下一次「回主頁／鎖屏」提交具有唯一動態後綴的新 request；
-不會重用先前背景週期已消耗或仍在清理的 identifier。request 使用系統預設 queue
-策略，若上一輪剛結束、資源尚未釋放，不會因為無法立即啟動就直接丟棄第三輪工作。
+不會重用先前背景週期已消耗或仍在清理的 identifier。request 使用 immediate-fail
+策略；若上一輪剛結束、資源尚未釋放，會在 App 仍位於前景時做有限次短間隔重試，
+避免 request 排隊到後續週期才啟動，也不會把舊 task 物件誤認成仍有效的背景資格。
 因此從播放器畫面直接鎖屏與先回主畫面再鎖屏，都會使用同一份已在前景提交的工作。
 
 expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並使用三階段

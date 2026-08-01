@@ -334,7 +334,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     } else if (continuedController.taskPending) {
         [CILogStore.sharedStore recordLevel:CILogLevelWarning
             category:@"ContinuedTask"
-            message:@"Entered the background while the iOS 26 continued caption request is still queued; local Live Activity updates will wait for the launch handler instead of being misreported as authorized."];
+            message:@"Entered the background while the submitted iOS 26 continued caption request still awaits its launch handler; local Live Activity updates will remain deferred instead of being misreported as authorized."];
     } else if (CIPreferenceBool(
                    CIContinuedBackgroundProcessingEnabledKey,
                    NO) &&
