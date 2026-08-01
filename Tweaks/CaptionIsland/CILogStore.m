@@ -155,7 +155,10 @@ static NSString *CIScrubLogValue(NSString *value) {
         [self appendLineToFile:line];
 
         if (CIPreferenceBool(CIDebugLoggingKey, NO)) {
-            NSLog(@"[CaptionIsland] %@", line);
+            // line is already scrubbed by CIScrubLogValue above, so mark it
+            // public: otherwise the unified log redacts it to <private> and
+            // this diagnostic toggle stops being useful for field debugging.
+            NSLog(@"[CaptionIsland] %{public}@", line);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [NSNotificationCenter.defaultCenter
