@@ -1,6 +1,5 @@
 #import "CILRCLIBProvider.h"
 #import "CICaptionParser.h"
-#import "CILogStore.h"
 #import "CITextUtilities.h"
 #import <float.h>
 #import <math.h>
@@ -41,6 +40,13 @@ static const NSUInteger CILRCLIBCacheSchemaVersion = 2;
 // Duration gap below which two candidates count as the same edition, so a
 // synced timeline wins over plain lyrics that are only marginally closer.
 static const NSTimeInterval CILRCLIBDurationTieTolerance = 2.5;
+// A normalized title this short is usually an everyday word — "hello", "love",
+// "stay" — and carries too little identifying information to justify attaching
+// lyrics on its own, so some artist agreement is still required there. Longer
+// titles are distinctive enough to stand alone, which matters because an artist
+// inferred from an upload title is frequently wrong.
+static const NSUInteger CILRCLIBAmbiguousTitleLength = 5;
+static const double CILRCLIBMinimumArtistScoreForShortTitle = 0.42;
 
 static NSError *CILRCLIBError(NSInteger code, NSString *description) {
     return [NSError errorWithDomain:CILRCLIBErrorDomain code:code userInfo:@{
@@ -308,6 +314,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 @property (nonatomic) NSTimeInterval durationDifference;
 @property (nonatomic) double metadataScore;
 @property (nonatomic) double titleScore;
+@property (nonatomic) double artistScore;
 @property (nonatomic, copy) NSArray<CICaptionCue *> *syncedCues;
 @property (nonatomic, copy) NSString *plainLyrics;
 @end
@@ -419,12 +426,10 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         [root[@"version"] respondsToSelector:@selector(unsignedIntegerValue)]
             ? [root[@"version"] unsignedIntegerValue] : 0;
     if (storedVersion != CILRCLIBCacheSchemaVersion) {
-        [CILogStore.sharedStore
-            recordLevel:CILogLevelInfo
-               category:@"Pipeline"
-                 format:@"Discarded the LRCLIB cache written by schema %lu; the current schema is %lu.",
-                        (unsigned long)storedVersion,
-                        (unsigned long)CILRCLIBCacheSchemaVersion];
+        // Deliberately silent: this file is linked by an isolated smoke test
+        // that does not pull in CILogStore, and keeping the provider free of
+        // that dependency is worth more than one diagnostic line. A discarded
+        // cache is observable anyway, as the next lookup hits the network.
         NSString *stalePath = CILRCLIBCachePath();
         if (stalePath.length > 0) {
             [[NSFileManager defaultManager] removeItemAtPath:stalePath
@@ -831,6 +836,11 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     double artistScore = artist.length > 0
         ? CILRCLIBFieldSimilarity(artist, artistName) : 1.0;
     if (titleScore < 0.68) return nil;
+    if (artist.length > 0 &&
+        CINormalizedText(title).length <= CILRCLIBAmbiguousTitleLength &&
+        artistScore < CILRCLIBMinimumArtistScoreForShortTitle) {
+        return nil;
+    }
     // The artist is only ever a ranking signal, never a filter. An artist
     // inferred from an upload title is frequently a near-miss of LRCLIB's
     // canonical credit — "ウォルピスカーター MV", "HoneyWorks feat.ハコニワリリィ"
@@ -877,6 +887,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     candidate.durationDifference = durationDifference;
     candidate.metadataScore = metadataScore;
     candidate.titleScore = titleScore;
+    candidate.artistScore = artistScore;
     candidate.syncedCues = syncedCues;
     candidate.plainLyrics = plainLyrics;
     return candidate;
@@ -901,15 +912,37 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     // cut before the comparator could ever see it — the same failure mode as
     // filtering the query by artist, just one stage later. Artist quality still
     // influences ordering through metadataScore.
+    double bestMetadataScore = 0;
     double bestTitleScore = 0;
+    double bestArtistScore = 0;
     for (CILRCLIBCandidate *candidate in candidates) {
+        bestMetadataScore = MAX(bestMetadataScore, candidate.metadataScore);
         bestTitleScore = MAX(bestTitleScore, candidate.titleScore);
+        bestArtistScore = MAX(bestArtistScore, candidate.artistScore);
     }
-    double titleFloor = MAX(0.68, bestTitleScore - 0.08);
-    NSIndexSet *outsideFloor = [candidates indexesOfObjectsPassingTest:
-        ^BOOL(CILRCLIBCandidate *candidate, __unused NSUInteger index, __unused BOOL *stop) {
-            return candidate.titleScore + DBL_EPSILON < titleFloor;
-        }];
+    // Let the database decide whether the artist is worth filtering on. When
+    // some candidate genuinely matches it, the artist is corroborated and
+    // pruning on the combined score correctly rejects same-title songs by other
+    // performers. When nothing matches, the artist was almost certainly
+    // mis-inferred from the upload title — "ウォルピスカーター MV",
+    // "HoneyWorks feat.ハコニワリリィ" — and pruning on it would discard the
+    // very track being looked for, so fall back to judging the title alone.
+    BOOL artistCorroborated =
+        artist.length > 0 && bestArtistScore >= 0.70;
+    NSIndexSet *outsideFloor;
+    if (artistCorroborated) {
+        double metadataFloor = MAX(0.70, bestMetadataScore - 0.08);
+        outsideFloor = [candidates indexesOfObjectsPassingTest:
+            ^BOOL(CILRCLIBCandidate *candidate, __unused NSUInteger index, __unused BOOL *stop) {
+                return candidate.metadataScore + DBL_EPSILON < metadataFloor;
+            }];
+    } else {
+        double titleFloor = MAX(0.68, bestTitleScore - 0.08);
+        outsideFloor = [candidates indexesOfObjectsPassingTest:
+            ^BOOL(CILRCLIBCandidate *candidate, __unused NSUInteger index, __unused BOOL *stop) {
+                return candidate.titleScore + DBL_EPSILON < titleFloor;
+            }];
+    }
     [candidates removeObjectsAtIndexes:outsideFloor];
 
     NSComparator comparator = ^NSComparisonResult(CILRCLIBCandidate *left,
