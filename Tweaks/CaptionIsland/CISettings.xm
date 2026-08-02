@@ -624,46 +624,6 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             return YES;
         }]];
 
-    if (CIContinuedBackgroundProcessingSupported()) {
-        [items addObject:[%c(YTSettingsSectionItem)
-            switchItemWithTitle:CILocalized(
-                @"CONTINUED_PROCESSING",
-                @"iOS 26 continued background captions"
-            )
-            titleDescription:CILocalized(
-                @"CONTINUED_PROCESSING_DESCRIPTION",
-                @"Experimental zero-server mode. iOS shows its own cancellable background-task Live Activity and may still end the task when resources are constrained."
-            )
-            accessibilityIdentifier:
-                @"CaptionIsland.ContinuedBackgroundProcessing"
-            switchOn:CIPreferenceBool(
-                CIContinuedBackgroundProcessingEnabledKey,
-                NO
-            )
-            switchBlock:^BOOL(
-                __unused YTSettingsCell *cell,
-                BOOL enabled
-            ) {
-                [NSUserDefaults.standardUserDefaults
-                    setBool:enabled
-                     forKey:
-                        CIContinuedBackgroundProcessingEnabledKey];
-                CIContinuedProcessingController *controller =
-                    CIContinuedProcessingController.sharedController;
-                if (!enabled) {
-                    [controller
-                        endWithReason:@"disabled from Caption Island settings"
-                              success:YES];
-                } else {
-                    CISynchronizeContinuedTaskFromCurrentVideo();
-                }
-                [CICaptionCoordinator.sharedCoordinator
-                    reloadPreferences];
-                return YES;
-            }
-            settingItemId:0]];
-    }
-
     NSString *sourcePriorityTitle =
         CILocalized(@"SOURCE_PRIORITY", @"Preferred caption source");
     NSArray<NSNumber *> *sourcePriorityChoices = @[

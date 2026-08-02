@@ -781,11 +781,32 @@ private actor CIActivityManager {
         // overload in their Swift interface. Revision remains part of every
         // state, so rapid cue changes are still distinct and ordered.
         await activity.update(content)
-        CIActivityBridge.emit(
-            level: "debug",
-            message: "Submitted Live Activity revision \(safeState.revision) "
-                + "(\(safeState.source.isEmpty ? "gap" : safeState.source))"
-        )
+
+        // activity.update(_:) never throws and stays completely silent when
+        // liveactivitiesd refuses the write — which is exactly what happens
+        // once the process is classified as background-media-only. Read the
+        // activity back out of ActivityKit so the log records the revision the
+        // system actually stored, not merely the one we submitted.
+        let storedRevision = Activity<CICaptionActivityAttributes>.activities
+            .first { $0.id == activity.id }?
+            .content.state.revision
+        let sourceLabel = safeState.source.isEmpty ? "gap" : safeState.source
+        if storedRevision == safeState.revision {
+            CIActivityBridge.emit(
+                level: "info",
+                message: "Caption reached the Live Activity: revision "
+                    + "\(safeState.revision) (\(sourceLabel))"
+            )
+        } else {
+            CIActivityBridge.emit(
+                level: "warning",
+                message: "Live Activity did not accept revision "
+                    + "\(safeState.revision) (\(sourceLabel)); the system still "
+                    + "reports "
+                    + (storedRevision.map { "revision \($0)" }
+                        ?? "no matching activity")
+            )
+        }
         let uptime = ProcessInfo.processInfo.systemUptime
         if uptime - lastUpdateHeartbeatUptime >= 30 {
             lastUpdateHeartbeatUptime = uptime
