@@ -16,7 +16,7 @@ static const NSTimeInterval CIBackgroundClockInterval = 0.75;
 static const NSTimeInterval CIBackgroundClockLeeway = 0.15;
 static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
 static const NSTimeInterval CIBackgroundHeartbeatInterval = 30.0;
-static const NSTimeInterval CIBackgroundEligibilitySampleInterval = 5.0;
+static const NSTimeInterval CIBackgroundEligibilitySampleInterval = 2.5;
 static const NSTimeInterval CINowPlayingSynchronizationInterval = 12.0;
 static const NSTimeInterval CINowPlayingRetryInterval = 3.0;
 

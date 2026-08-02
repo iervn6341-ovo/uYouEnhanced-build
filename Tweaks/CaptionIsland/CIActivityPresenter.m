@@ -2,6 +2,7 @@
 #import "CIContinuedProcessingController.h"
 #import "CILogStore.h"
 #import "CIConstants.h"
+#import "CIProcessDiagnostics.h"
 #import <objc/message.h>
 
 static NSNotificationName const CIActivityBridgeLogNotification =
@@ -226,6 +227,16 @@ static NSString *CIActivitySourceLabel(
     else if ([level isEqualToString:@"warning"]) logLevel = CILogLevelWarning;
     else if ([level isEqualToString:@"debug"]) logLevel = CILogLevelDebug;
     [CILogStore.sharedStore recordLevel:logLevel category:@"Activity" message:message];
+
+    // A refused revision is the single most informative moment to sample the
+    // process's background eligibility: it pins the assertion set at the exact
+    // instant liveactivitiesd said no, rather than at a periodic tick that may
+    // land seconds either side of the transition.
+    if ([message hasPrefix:@"Live Activity did not accept revision"]) {
+        CILogProcessBackgroundEligibility(
+            @"A caption revision was refused"
+        );
+    }
 }
 
 @end

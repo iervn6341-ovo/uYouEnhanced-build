@@ -5,7 +5,7 @@
 #import <objc/message.h>
 #import <float.h>
 
-static const NSUInteger CIDiagnosticsMaximumDescriptionLength = 400;
+static const NSUInteger CIDiagnosticsMaximumDescriptionLength = 900;
 
 /// Returns RunningBoard's current state object for this process, or nil when
 /// the private framework or its selectors are not available. RunningBoard is
@@ -83,6 +83,53 @@ static NSString *CIDescribeStateKey(id state, NSString *key) {
     }
 }
 
+/// Summarises `rbAssertions` as a list of the assertion domains holding this
+/// process up.
+///
+/// This is the field that matters: "Process is only playing background media"
+/// is a statement about which assertions exist, and the raw description of the
+/// assertion array is far too long to log intact. Each element is an
+/// `RBSProcessAssertionInfo`, so pull just its domain (falling back to `name`).
+static NSString *CIDescribeAssertionDomains(id state) {
+    if (!state) return nil;
+    @try {
+        id assertions = [state valueForKey:@"rbAssertions"];
+        if ([assertions respondsToSelector:@selector(allObjects)]) {
+            assertions = ((id (*)(id, SEL))objc_msgSend)(
+                assertions,
+                @selector(allObjects)
+            );
+        }
+        if (![assertions isKindOfClass:NSArray.class]) return nil;
+        NSArray *items = (NSArray *)assertions;
+        if (items.count == 0) return @"none";
+        NSCountedSet<NSString *> *domains = [NSCountedSet set];
+        for (id item in items) {
+            NSString *domain = nil;
+            @try {
+                domain = [item valueForKey:@"domain"];
+                if (domain.length == 0) domain = [item valueForKey:@"name"];
+            } @catch (__unused NSException *exception) {
+                domain = nil;
+            }
+            [domains addObject:domain.length > 0 ? domain : @"?"];
+        }
+        NSMutableArray<NSString *> *described =
+            [NSMutableArray arrayWithCapacity:domains.count];
+        for (NSString *domain in domains) {
+            NSUInteger count = [domains countForObject:domain];
+            [described addObject:count > 1
+                ? [NSString stringWithFormat:@"%@ x%lu",
+                    domain, (unsigned long)count]
+                : domain];
+        }
+        [described sortUsingSelector:@selector(compare:)];
+        return [described componentsJoinedByString:@", "];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
 static NSString *CIClippedDescription(NSString *value) {
     NSString *text = value ?: @"";
     text = [text stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
@@ -112,21 +159,29 @@ void CILogProcessBackgroundEligibility(NSString *reason) {
 
     id state = CICurrentRunningBoardProcessState();
     NSString *endowments =
-        CIDescribeStateKey(state, @"endowmentNamespaces") ?: @"unavailable";
+        CIDescribeStateKey(state, @"endowmentNamespaces") ?: @"none";
     NSString *taskState =
         CIDescribeStateKey(state, @"taskState") ?: @"unavailable";
-    NSString *tags = CIDescribeStateKey(state, @"tags") ?: @"unavailable";
+    NSString *tags = CIDescribeStateKey(state, @"tags") ?: @"none";
+    NSString *cpuRole =
+        CIDescribeStateKey(state, @"cpuRole") ?: @"unavailable";
+    // The assertion list is the field that actually decides whether the
+    // process counts as "only playing background media".
+    NSString *assertions =
+        CIDescribeAssertionDomains(state) ?: @"unavailable";
 
     [CILogStore.sharedStore
         recordLevel:CILogLevelInfo
            category:@"Eligibility"
-             format:@"%@ | appState=%ld backgroundTimeRemaining=%@ | taskState=%@ tags=%@ | endowments=[%@]",
+             format:@"%@ | appState=%ld bgTimeRemaining=%@ | taskState=%@ cpuRole=%@ tags=[%@] endowments=[%@] | assertions=[%@]",
                     reason.length > 0 ? reason : @"snapshot",
                     (long)application.applicationState,
                     remainingText,
                     taskState,
+                    cpuRole,
                     tags,
-                    endowments];
+                    endowments,
+                    assertions];
 
     // The property names above are not contractual. Keep the raw description
     // as a debug-only fallback so a future iOS release that renames them still
