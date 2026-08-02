@@ -97,3 +97,5 @@
 "CONTINUED_TASK_TRANSITIONING" = "正在準備下一部影片…";
 "CONTINUED_TASK_ADVERTISEMENT" = "正在播放廣告";
 "CONTINUED_TASK_ADVERTISEMENT_DESCRIPTION" = "字幕同步已暫停";
+"REMOTE_COMMAND_NUDGE" = "維持背景字幕更新（實驗性）";
+"REMOTE_COMMAND_NUDGE_DESCRIPTION" = "螢幕關閉時每隔數秒送出一次重複的播放指令，讓 iOS 不再把 App 視為「僅播放背景媒體」，字幕才能持續更新。使用私有介面；若播放出現異常請關閉此選項。";

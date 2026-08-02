@@ -121,7 +121,12 @@ static NSString *CIRemoveVideoDecorations(NSString *value) {
         // The same metadata is sometimes introduced with a dash.
         @"(?i)\\s*[-–—]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
         // Common re-upload notes, optionally preceded by a take/track number.
-        @"(?i)\\s+(?:\\d+\\s*)?(?:音[频頻](?:优化|優化)|纯享版|純享版).*$"
+        @"(?i)\\s+(?:\\d+\\s*)?(?:音[频頻](?:优化|優化)|纯享版|純享版).*$",
+        // A bare trailing video-format phrase with no bracket or separator, as
+        // in "AiNA THE END / On The Way Official Music Video". Anchored to the
+        // end and limited to unambiguous phrases, so a song genuinely called
+        // e.g. "Video" or "Audio" is not truncated.
+        @"(?i)\\s+(?:official\\s*(?:music\\s*|lyric\\s*)?video|music\\s*video|lyric\\s*video|official\\s*audio|official\\s*visualizer)\\s*$"
     ];
     NSString *result = value;
     for (NSString *pattern in patterns) {

@@ -15,6 +15,8 @@ NSString *const CIMaximumVideoDurationMinutesKey =
 NSString *const CIReturnHomeModeKey = @"CaptionIsland.ReturnHomeMode";
 NSString *const CIContinuedBackgroundProcessingEnabledKey =
     @"CaptionIsland.ContinuedBackgroundProcessingEnabled";
+NSString *const CIRemoteCommandNudgeEnabledKey =
+    @"CaptionIsland.RemoteCommandNudgeEnabled";
 NSNotificationName const CIYouPiPAutomaticPiPSuppressedNotification =
     @"CaptionIsland.YouPiPAutomaticPiPSuppressed";
 

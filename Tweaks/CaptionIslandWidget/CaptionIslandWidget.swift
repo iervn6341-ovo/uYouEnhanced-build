@@ -108,21 +108,27 @@ struct CaptionIslandLiveActivity: Widget {
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             DynamicIsland {
+                // The leading/trailing regions sit directly beneath the sensor
+                // housing, and the system clips whatever crosses into it. 8pt
+                // was not enough headroom: the icon and its text were being cut
+                // off along the top edge once the island expanded.
                 DynamicIslandExpandedRegion(.leading) {
                     Label(captionLabel(), systemImage: "captions.bubble.fill")
                         .font(.caption.bold())
                         .foregroundStyle(.white)
                         .lineLimit(1)
+                        .padding(.vertical, 2)
                 }
                 .contentMargins(.leading, 16)
-                .contentMargins(.top, 8)
+                .contentMargins(.top, 18)
                 DynamicIslandExpandedRegion(.trailing) {
                     if !context.state.source.isEmpty {
                         sourceBadge(context.state.source)
+                            .padding(.vertical, 2)
                     }
                 }
                 .contentMargins(.trailing, 14)
-                .contentMargins(.top, 8)
+                .contentMargins(.top, 18)
                 DynamicIslandExpandedRegion(.bottom) {
                     ViewThatFits(in: .vertical) {
                         if !hasDenseExpandedLyrics(context) {

@@ -15,6 +15,7 @@
 #import "CIBackgroundPlaybackMonitor.h"
 #import "CIBackgroundTaskKeeper.h"
 #import "CICaptionCoordinator.h"
+#import "CIMediaRemoteNudge.h"
 #import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
 #import "CILogStore.h"
@@ -2358,6 +2359,7 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     if (!playerClass) return;
     (void)CIBackgroundPlaybackMonitor.sharedMonitor;
     [CIBackgroundTaskKeeper.sharedKeeper activate];
+    [CIMediaRemoteNudge.sharedNudge activate];
     CIPiPActiveVideoByController =
         [NSMapTable weakToWeakObjectsMapTable];
     CIPiPDeferredPauseControllers =

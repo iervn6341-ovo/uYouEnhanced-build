@@ -1,5 +1,6 @@
 #import "CILRCLIBProvider.h"
 #import "CICaptionParser.h"
+#import "CILogStore.h"
 #import "CITextUtilities.h"
 #import <float.h>
 #import <math.h>
@@ -31,6 +32,15 @@ static NSString *const CILRCLIBCooldownDefaultsKey =
 static NSString *const CILRCLIBCacheKindResult = @"result";
 static NSString *const CILRCLIBCacheKindMiss = @"miss";
 static NSUInteger CILRCLIBPersistentCacheGeneration = 1;
+// Bump whenever a change to query construction or candidate scoring could turn
+// a previously cached miss into a hit. Cached negatives live for 12 hours and
+// short-circuit the network entirely, so without this a search-behaviour fix
+// stays invisible until every stale entry ages out.
+//   2: search by track_name only; artist demoted to a ranking signal.
+static const NSUInteger CILRCLIBCacheSchemaVersion = 2;
+// Duration gap below which two candidates count as the same edition, so a
+// synced timeline wins over plain lyrics that are only marginally closer.
+static const NSTimeInterval CILRCLIBDurationTieTolerance = 2.5;
 
 static NSError *CILRCLIBError(NSInteger code, NSString *description) {
     return [NSError errorWithDomain:CILRCLIBErrorDomain code:code userInfo:@{
@@ -297,6 +307,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 @property (nonatomic) NSTimeInterval duration;
 @property (nonatomic) NSTimeInterval durationDifference;
 @property (nonatomic) double metadataScore;
+@property (nonatomic) double titleScore;
 @property (nonatomic, copy) NSArray<CICaptionCue *> *syncedCues;
 @property (nonatomic, copy) NSString *plainLyrics;
 @end
@@ -400,13 +411,34 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         error:nil];
     if (![root isKindOfClass:NSDictionary.class] ||
         ![root[@"entries"] isKindOfClass:NSDictionary.class]) return;
+    // The version was previously written but never read back, so entries
+    // created under older search semantics were reused indefinitely. Discard
+    // the whole file on a mismatch: it is a cache, and refetching is cheap
+    // compared with serving a stale "no lyrics" verdict for 12 hours.
+    NSUInteger storedVersion =
+        [root[@"version"] respondsToSelector:@selector(unsignedIntegerValue)]
+            ? [root[@"version"] unsignedIntegerValue] : 0;
+    if (storedVersion != CILRCLIBCacheSchemaVersion) {
+        [CILogStore.sharedStore
+            recordLevel:CILogLevelInfo
+               category:@"Pipeline"
+                 format:@"Discarded the LRCLIB cache written by schema %lu; the current schema is %lu.",
+                        (unsigned long)storedVersion,
+                        (unsigned long)CILRCLIBCacheSchemaVersion];
+        NSString *stalePath = CILRCLIBCachePath();
+        if (stalePath.length > 0) {
+            [[NSFileManager defaultManager] removeItemAtPath:stalePath
+                                                       error:nil];
+        }
+        return;
+    }
     [self.persistentCacheEntries
         addEntriesFromDictionary:root[@"entries"]];
 }
 
 - (NSData *)persistentCacheDataLocked {
     NSDictionary *root = @{
-        @"version": @1,
+        @"version": @(CILRCLIBCacheSchemaVersion),
         @"entries": self.persistentCacheEntries ?: @{},
     };
     return [NSPropertyListSerialization dataWithPropertyList:root
@@ -704,12 +736,16 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             [NSURLQueryItem queryItemWithName:@"q" value:query],
         ];
     } else {
-        NSMutableArray<NSURLQueryItem *> *items = [NSMutableArray arrayWithObject:
-            [NSURLQueryItem queryItemWithName:@"track_name" value:title]];
-        if (artist.length > 0) {
-            [items addObject:[NSURLQueryItem queryItemWithName:@"artist_name" value:artist]];
-        }
-        components.queryItems = items;
+        // Search on the track name alone. LRCLIB treats artist_name as an AND
+        // filter, so passing an artist inferred from an upload title made the
+        // API return nothing whenever that guess did not match its canonical
+        // credit exactly — the single biggest cause of "no lyrics found" for
+        // titles that are otherwise parsed correctly. The artist is still
+        // carried through to candidate scoring, where a good match wins and a
+        // bad one merely ranks lower.
+        components.queryItems = @[
+            [NSURLQueryItem queryItemWithName:@"track_name" value:title],
+        ];
     }
     return components.URL;
 }
@@ -795,8 +831,12 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     double artistScore = artist.length > 0
         ? CILRCLIBFieldSimilarity(artist, artistName) : 1.0;
     if (titleScore < 0.68) return nil;
-    if (artist.length > 0 && artistScore < 0.42) return nil;
-
+    // The artist is only ever a ranking signal, never a filter. An artist
+    // inferred from an upload title is frequently a near-miss of LRCLIB's
+    // canonical credit — "ウォルピスカーター MV", "HoneyWorks feat.ハコニワリリィ"
+    // or a character/CV name — and discarding candidates on that basis threw
+    // away the correct track. A weak artist match simply scores lower, so a
+    // genuinely better-matching candidate still wins when one exists.
     double metadataScore = artist.length > 0
         ? titleScore * 0.72 + artistScore * 0.28 : titleScore;
     if (CILRCLIBHasVersionMismatch(title, trackName)) metadataScore -= 0.18;
@@ -836,6 +876,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     candidate.duration = duration > 0 ? duration : 0;
     candidate.durationDifference = durationDifference;
     candidate.metadataScore = metadataScore;
+    candidate.titleScore = titleScore;
     candidate.syncedCues = syncedCues;
     candidate.plainLyrics = plainLyrics;
     return candidate;
@@ -855,27 +896,46 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     }
     if (candidates.count == 0) return nil;
 
-    double bestMetadataScore = 0;
+    // Prune on the title match alone. Basing this floor on the combined score
+    // let a wrong inferred artist drag an otherwise perfect candidate below the
+    // cut before the comparator could ever see it — the same failure mode as
+    // filtering the query by artist, just one stage later. Artist quality still
+    // influences ordering through metadataScore.
+    double bestTitleScore = 0;
     for (CILRCLIBCandidate *candidate in candidates) {
-        bestMetadataScore = MAX(bestMetadataScore, candidate.metadataScore);
+        bestTitleScore = MAX(bestTitleScore, candidate.titleScore);
     }
-    double metadataFloor = MAX(0.70, bestMetadataScore - 0.08);
+    double titleFloor = MAX(0.68, bestTitleScore - 0.08);
     NSIndexSet *outsideFloor = [candidates indexesOfObjectsPassingTest:
         ^BOOL(CILRCLIBCandidate *candidate, __unused NSUInteger index, __unused BOOL *stop) {
-            return candidate.metadataScore + DBL_EPSILON < metadataFloor;
+            return candidate.titleScore + DBL_EPSILON < titleFloor;
         }];
     [candidates removeObjectsAtIndexes:outsideFloor];
 
     NSComparator comparator = ^NSComparisonResult(CILRCLIBCandidate *left,
                                                   CILRCLIBCandidate *right) {
+        BOOL leftSynced = left.syncedCues.count > 0;
+        BOOL rightSynced = right.syncedCues.count > 0;
         if (videoDuration > 0) {
-            if (left.durationDifference < right.durationDifference) return NSOrderedAscending;
-            if (left.durationDifference > right.durationDifference) return NSOrderedDescending;
+            // Treat near-identical durations as a tie. LRCLIB often holds
+            // several uploads of one song whose lengths differ by well under a
+            // second, and only one of them carries a synced timeline: sorting
+            // strictly by duration would hand back plain lyrics that happen to
+            // be 0.3s closer and throw the synced version away. Beyond this
+            // band the duration really does distinguish editions (TV size,
+            // full version), so it still decides.
+            double difference =
+                fabs(left.durationDifference - right.durationDifference);
+            if (difference > CILRCLIBDurationTieTolerance) {
+                return left.durationDifference < right.durationDifference
+                    ? NSOrderedAscending : NSOrderedDescending;
+            }
+            if (leftSynced != rightSynced) {
+                return leftSynced ? NSOrderedAscending : NSOrderedDescending;
+            }
         }
         if (left.metadataScore > right.metadataScore) return NSOrderedAscending;
         if (left.metadataScore < right.metadataScore) return NSOrderedDescending;
-        BOOL leftSynced = left.syncedCues.count > 0;
-        BOOL rightSynced = right.syncedCues.count > 0;
         if (leftSynced != rightSynced) return leftSynced ? NSOrderedAscending : NSOrderedDescending;
         if (left.recordID < right.recordID) return NSOrderedAscending;
         if (left.recordID > right.recordID) return NSOrderedDescending;

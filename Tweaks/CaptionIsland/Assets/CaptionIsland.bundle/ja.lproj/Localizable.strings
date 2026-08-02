@@ -97,3 +97,5 @@
 "CONTINUED_TASK_TRANSITIONING" = "次の動画を準備中…";
 "CONTINUED_TASK_ADVERTISEMENT" = "広告を再生中";
 "CONTINUED_TASK_ADVERTISEMENT_DESCRIPTION" = "字幕同期を一時停止しています";
+"REMOTE_COMMAND_NUDGE" = "バックグラウンド字幕を維持（実験的）";
+"REMOTE_COMMAND_NUDGE_DESCRIPTION" = "画面が消えている間、数秒ごとに冗長な再生コマンドを送信し、iOS がアプリを「バックグラウンド再生のみ」と判定しないようにして字幕の更新を継続させます。プライベート API を使用します。再生に問題が出る場合はオフにしてください。";

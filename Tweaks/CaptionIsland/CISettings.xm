@@ -624,6 +624,28 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             return YES;
         }]];
 
+    [items addObject:[%c(YTSettingsSectionItem)
+        switchItemWithTitle:CILocalized(
+            @"REMOTE_COMMAND_NUDGE",
+            @"Keep background captions alive (experimental)"
+        )
+        titleDescription:CILocalized(
+            @"REMOTE_COMMAND_NUDGE_DESCRIPTION",
+            @"Sends a redundant Play command every few seconds while the screen is off, so iOS stops treating the app as media-playback-only and lets captions keep updating. Uses a private interface; turn this off if playback misbehaves."
+        )
+        accessibilityIdentifier:@"CaptionIsland.RemoteCommandNudge"
+        switchOn:CIPreferenceBool(CIRemoteCommandNudgeEnabledKey, NO)
+        switchBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            BOOL enabled
+        ) {
+            [NSUserDefaults.standardUserDefaults
+                setBool:enabled
+                 forKey:CIRemoteCommandNudgeEnabledKey];
+            return YES;
+        }
+        settingItemId:0]];
+
     NSString *sourcePriorityTitle =
         CILocalized(@"SOURCE_PRIORITY", @"Preferred caption source");
     NSArray<NSNumber *> *sourcePriorityChoices = @[

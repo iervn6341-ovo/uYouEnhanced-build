@@ -28,6 +28,7 @@ CaptionIsland_FILES = \
 	CILogStore.m \
 	CIProcessDiagnostics.m \
 	CIBackgroundTaskKeeper.m \
+	CIMediaRemoteNudge.m \
 	CILogViewController.m \
 	CIActivityPresenter.m \
 	CICaptionCoordinator.m \

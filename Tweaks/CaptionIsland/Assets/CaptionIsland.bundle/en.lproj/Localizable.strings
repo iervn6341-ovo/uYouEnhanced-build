@@ -97,3 +97,5 @@
 "CONTINUED_TASK_TRANSITIONING" = "Preparing the next video…";
 "CONTINUED_TASK_ADVERTISEMENT" = "Advertisement playing";
 "CONTINUED_TASK_ADVERTISEMENT_DESCRIPTION" = "Caption synchronization is paused";
+"REMOTE_COMMAND_NUDGE" = "Keep background captions alive (experimental)";
+"REMOTE_COMMAND_NUDGE_DESCRIPTION" = "Sends a redundant Play command every few seconds while the screen is off, so iOS stops treating the app as media-playback-only and lets captions keep updating. Uses a private interface; turn this off if playback misbehaves.";

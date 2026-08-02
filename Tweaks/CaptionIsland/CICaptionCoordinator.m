@@ -5,6 +5,7 @@
 #import "CIConstants.h"
 #import "CILRCLIBProvider.h"
 #import "CILogStore.h"
+#import "CIMediaRemoteNudge.h"
 #import "CILyricsAligner.h"
 #import "CITextUtilities.h"
 #import "CIToastPresenter.h"
@@ -1180,6 +1181,9 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                    playing:(BOOL)playing {
     if (!CIPreferenceBool(CIEnabledKey, YES) ||
         self.policyExcluded || !isfinite(time) || time < 0) return;
+    // The nudge must never send Play to a paused player, so keep it informed of
+    // the live transport state rather than letting it assume.
+    [CIMediaRemoteNudge.sharedNudge setPlaybackPlaying:playing];
     dispatch_async(self.workQueue, ^{
         BOOL playbackStateChanged =
             self.playbackAdvancing != playing;
