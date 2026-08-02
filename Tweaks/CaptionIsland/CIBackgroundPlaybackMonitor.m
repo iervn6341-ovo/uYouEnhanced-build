@@ -5,6 +5,7 @@
 #import "CIConstants.h"
 #import "CILogStore.h"
 #import "CIPlaybackState.h"
+#import "CIProcessDiagnostics.h"
 #import "CIYouTubeInspector.h"
 #import <MediaPlayer/MediaPlayer.h>
 #import <UIKit/UIKit.h>
@@ -15,6 +16,7 @@ static const NSTimeInterval CIBackgroundClockInterval = 0.75;
 static const NSTimeInterval CIBackgroundClockLeeway = 0.15;
 static const NSTimeInterval CIBackgroundMinimumTimeChange = 0.04;
 static const NSTimeInterval CIBackgroundHeartbeatInterval = 30.0;
+static const NSTimeInterval CIBackgroundEligibilitySampleInterval = 5.0;
 static const NSTimeInterval CINowPlayingSynchronizationInterval = 12.0;
 static const NSTimeInterval CINowPlayingRetryInterval = 3.0;
 
@@ -60,6 +62,7 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) NSTimeInterval lastNativePlaybackTime;
 @property (nonatomic) NSTimeInterval lastNativePlaybackUptime;
 @property (nonatomic) NSTimeInterval lastHeartbeatUptime;
+@property (nonatomic) NSTimeInterval lastEligibilitySampleUptime;
 @property (nonatomic) NSTimeInterval lastTimerCallbackUptime;
 @property (nonatomic) NSTimeInterval lastNowPlayingSynchronizationUptime;
 @property (nonatomic) NSTimeInterval lastNowPlayingAttemptUptime;
@@ -434,6 +437,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.lastNativePlaybackTime = 0;
     self.lastNativePlaybackUptime = 0;
     self.lastHeartbeatUptime = 0;
+    self.lastEligibilitySampleUptime = 0;
     self.lastTimerCallbackUptime = 0;
     self.lastNowPlayingSynchronizationUptime = 0;
     self.lastNowPlayingAttemptUptime = 0;
@@ -703,6 +707,16 @@ static double CIQuantizedPlaybackRate(double rate) {
             category:@"Background"
             format:@"Background clock heartbeat at %.1fs (callback gap %.1fs).",
                    playbackTime, callbackGap];
+    }
+    // Eligibility gets its own, much faster cadence: refusals have been seen
+    // as little as four seconds into a background cycle, which the 30s
+    // heartbeat would step straight over.
+    if (self.lastEligibilitySampleUptime == 0 ||
+        uptime - self.lastEligibilitySampleUptime >=
+            CIBackgroundEligibilitySampleInterval) {
+        self.lastEligibilitySampleUptime = uptime;
+        CILogProcessBackgroundEligibility([NSString stringWithFormat:
+            @"Background sample at %.1fs", playbackTime]);
     }
 
     BOOL clockAdvanced = self.hasPlaybackTime &&

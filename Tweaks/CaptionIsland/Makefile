@@ -26,6 +26,7 @@ CaptionIsland_FILES = \
 	CIYouTubeInspector.m \
 	CILRCLIBProvider.m \
 	CILogStore.m \
+	CIProcessDiagnostics.m \
 	CILogViewController.m \
 	CIActivityPresenter.m \
 	CICaptionCoordinator.m \

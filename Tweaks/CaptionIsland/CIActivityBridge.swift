@@ -331,6 +331,11 @@ private actor CIActivityManager {
     private var lastUpdateHeartbeatUptime: TimeInterval = 0
     private var activityStateTask: Task<Void, Never>?
     private var activityObservationGeneration = 0
+    private var pendingVerification: (
+        revision: Int,
+        source: String,
+        uptime: TimeInterval
+    )?
 
     func start(videoID: String, title: String) async {
         guard !isStartBlockedByUnsupportedTarget else { return }
@@ -447,6 +452,9 @@ private actor CIActivityManager {
     private func startActivity(
         state: CICaptionActivityAttributes.ContentState
     ) async {
+        // A revision left over from the previous activity would be checked
+        // against the new activity's id and always look rejected.
+        pendingVerification = nil
         do {
             activity = try Activity.request(
                 attributes: CICaptionActivityAttributes(
@@ -780,33 +788,13 @@ private actor CIActivityManager {
         // Theos iOS 17.5 SDK distributions don't expose the newer timestamp
         // overload in their Swift interface. Revision remains part of every
         // state, so rapid cue changes are still distinct and ordered.
+        verifyPreviousSubmission(activity: activity)
         await activity.update(content)
-
-        // activity.update(_:) never throws and stays completely silent when
-        // liveactivitiesd refuses the write — which is exactly what happens
-        // once the process is classified as background-media-only. Read the
-        // activity back out of ActivityKit so the log records the revision the
-        // system actually stored, not merely the one we submitted.
-        let storedRevision = Activity<CICaptionActivityAttributes>.activities
-            .first { $0.id == activity.id }?
-            .content.state.revision
-        let sourceLabel = safeState.source.isEmpty ? "gap" : safeState.source
-        if storedRevision == safeState.revision {
-            CIActivityBridge.emit(
-                level: "info",
-                message: "Caption reached the Live Activity: revision "
-                    + "\(safeState.revision) (\(sourceLabel))"
-            )
-        } else {
-            CIActivityBridge.emit(
-                level: "warning",
-                message: "Live Activity did not accept revision "
-                    + "\(safeState.revision) (\(sourceLabel)); the system still "
-                    + "reports "
-                    + (storedRevision.map { "revision \($0)" }
-                        ?? "no matching activity")
-            )
-        }
+        pendingVerification = (
+            revision: safeState.revision,
+            source: safeState.source.isEmpty ? "gap" : safeState.source,
+            uptime: ProcessInfo.processInfo.systemUptime
+        )
         let uptime = ProcessInfo.processInfo.systemUptime
         if uptime - lastUpdateHeartbeatUptime >= 30 {
             lastUpdateHeartbeatUptime = uptime
@@ -814,6 +802,48 @@ private actor CIActivityManager {
                 level: "info",
                 message: "Live Activity update pipeline is active at revision "
                     + "\(safeState.revision) (\(activity.activityState))"
+            )
+        }
+    }
+
+    /// Reports whether the previously submitted revision actually landed.
+    ///
+    /// `Activity.update(_:)` never throws and stays completely silent when
+    /// liveactivitiesd refuses the write, which is exactly what happens once
+    /// the process is classified as background-media-only. Reading the stored
+    /// revision back is the only way to tell — but reading it immediately
+    /// after `update(_:)` races the daemon round-trip and reports rejections
+    /// that never happened, so the check is deferred until the next cue.
+    private func verifyPreviousSubmission(
+        activity: Activity<CICaptionActivityAttributes>
+    ) {
+        guard let pending = pendingVerification else { return }
+        // Back-to-back revisions land within milliseconds of each other and
+        // would hit the same propagation race. Drop those rather than log a
+        // verdict that cannot be trusted.
+        guard ProcessInfo.processInfo.systemUptime - pending.uptime >= 0.4
+        else {
+            pendingVerification = nil
+            return
+        }
+        pendingVerification = nil
+        let storedRevision = Activity<CICaptionActivityAttributes>.activities
+            .first { $0.id == activity.id }?
+            .content.state.revision
+        if storedRevision == pending.revision {
+            CIActivityBridge.emit(
+                level: "info",
+                message: "Caption reached the Live Activity: revision "
+                    + "\(pending.revision) (\(pending.source))"
+            )
+        } else {
+            CIActivityBridge.emit(
+                level: "warning",
+                message: "Live Activity did not accept revision "
+                    + "\(pending.revision) (\(pending.source)); the system "
+                    + "still reports "
+                    + (storedRevision.map { "revision \($0)" }
+                        ?? "no matching activity")
             )
         }
     }

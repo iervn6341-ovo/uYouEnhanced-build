@@ -1,0 +1,146 @@
+#import "CIProcessDiagnostics.h"
+#import "CILogStore.h"
+#import <UIKit/UIKit.h>
+#import <dlfcn.h>
+#import <objc/message.h>
+#import <float.h>
+
+static const NSUInteger CIDiagnosticsMaximumDescriptionLength = 400;
+
+/// Returns RunningBoard's current state object for this process, or nil when
+/// the private framework or its selectors are not available. RunningBoard is
+/// the component that decides which background endowments a process holds, so
+/// its view is the one `liveactivitiesd` ultimately consults.
+static id CICurrentRunningBoardProcessState(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // UIKit apps normally have this linked already; load it explicitly so
+        // the diagnostic still works if it happens not to be resident.
+        if (!NSClassFromString(@"RBSProcessHandle")) {
+            dlopen(
+                "/System/Library/PrivateFrameworks/RunningBoardServices.framework"
+                "/RunningBoardServices",
+                RTLD_LAZY
+            );
+        }
+    });
+
+    Class handleClass = NSClassFromString(@"RBSProcessHandle");
+    SEL currentProcessSelector = NSSelectorFromString(@"currentProcess");
+    if (![handleClass respondsToSelector:currentProcessSelector]) return nil;
+
+    id handle = nil;
+    @try {
+        handle = ((id (*)(id, SEL))objc_msgSend)(
+            handleClass,
+            currentProcessSelector
+        );
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+
+    SEL currentStateSelector = NSSelectorFromString(@"currentState");
+    if (![handle respondsToSelector:currentStateSelector]) return nil;
+    @try {
+        return ((id (*)(id, SEL))objc_msgSend)(handle, currentStateSelector);
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+/// Reads one property off an RBS state object via KVC.
+///
+/// KVC is deliberate here: several of these properties return enums or
+/// collection types whose exact signatures shift between iOS releases, and
+/// guessing wrong with objc_msgSend would corrupt the stack. KVC boxes the
+/// value safely and simply throws when the key is absent.
+static NSString *CIDescribeStateKey(id state, NSString *key) {
+    if (!state || key.length == 0) return nil;
+    @try {
+        id value = [state valueForKey:key];
+        if (!value) return nil;
+        // objc_msgSend rather than performSelector: the latter trips
+        // -Warc-performSelector-leaks, and this target builds with -Werror.
+        if ([value respondsToSelector:@selector(allObjects)]) {
+            value = ((id (*)(id, SEL))objc_msgSend)(
+                value,
+                @selector(allObjects)
+            );
+        }
+        if ([value isKindOfClass:NSArray.class]) {
+            NSArray *items = (NSArray *)value;
+            if (items.count == 0) return @"none";
+            NSMutableArray<NSString *> *described =
+                [NSMutableArray arrayWithCapacity:items.count];
+            for (id item in items) {
+                [described addObject:[item description] ?: @"?"];
+            }
+            return [described componentsJoinedByString:@", "];
+        }
+        return [value description];
+    } @catch (__unused NSException *exception) {
+        return nil;
+    }
+}
+
+static NSString *CIClippedDescription(NSString *value) {
+    NSString *text = value ?: @"";
+    text = [text stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+    if (text.length <= CIDiagnosticsMaximumDescriptionLength) return text;
+    NSRange range = [text rangeOfComposedCharacterSequencesForRange:
+        NSMakeRange(0, CIDiagnosticsMaximumDescriptionLength)];
+    return [[text substringWithRange:range] stringByAppendingString:@"…"];
+}
+
+void CILogProcessBackgroundEligibility(NSString *reason) {
+    if (!NSThread.isMainThread) {
+        NSString *copiedReason = [reason copy];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            CILogProcessBackgroundEligibility(copiedReason);
+        });
+        return;
+    }
+
+    UIApplication *application = UIApplication.sharedApplication;
+    NSTimeInterval remaining = application.backgroundTimeRemaining;
+    // UIKit reports an effectively infinite allowance while a background mode
+    // such as audio is keeping the process alive, so report that distinctly
+    // rather than printing a meaningless very large number.
+    NSString *remainingText = remaining >= DBL_MAX / 2
+        ? @"unlimited"
+        : [NSString stringWithFormat:@"%.1fs", remaining];
+
+    id state = CICurrentRunningBoardProcessState();
+    NSString *endowments =
+        CIDescribeStateKey(state, @"endowmentNamespaces") ?: @"unavailable";
+    NSString *taskState =
+        CIDescribeStateKey(state, @"taskState") ?: @"unavailable";
+    NSString *tags = CIDescribeStateKey(state, @"tags") ?: @"unavailable";
+
+    [CILogStore.sharedStore
+        recordLevel:CILogLevelInfo
+           category:@"Eligibility"
+             format:@"%@ | appState=%ld backgroundTimeRemaining=%@ | taskState=%@ tags=%@ | endowments=[%@]",
+                    reason.length > 0 ? reason : @"snapshot",
+                    (long)application.applicationState,
+                    remainingText,
+                    taskState,
+                    tags,
+                    endowments];
+
+    // The property names above are not contractual. Keep the raw description
+    // as a debug-only fallback so a future iOS release that renames them still
+    // leaves something diagnosable in the log.
+    if (state) {
+        [CILogStore.sharedStore
+            recordLevel:CILogLevelDebug
+               category:@"Eligibility"
+                 format:@"RunningBoard raw state: %@",
+                        CIClippedDescription([state description])];
+    } else {
+        [CILogStore.sharedStore
+            recordLevel:CILogLevelDebug
+               category:@"Eligibility"
+                message:@"RunningBoard process state was unavailable; only the public background allowance was sampled."];
+    }
+}

@@ -1,6 +1,7 @@
 #import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
 #import "CILogStore.h"
+#import "CIProcessDiagnostics.h"
 #import "CIVideoEligibility.h"
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
@@ -815,6 +816,11 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     BOOL returnedFromBackground = self.applicationEnteredBackground;
     self.applicationEnteredBackground = NO;
     self.backgroundGeneration = 0;
+    if (returnedFromBackground) {
+        CILogProcessBackgroundEligibility(
+            @"Returned to the foreground"
+        );
+    }
     if (self.videoID.length == 0 ||
         !CIPreferenceBool(
             CIContinuedBackgroundProcessingEnabledKey,
@@ -858,6 +864,9 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     self.applicationEnteredBackground = YES;
     self.backgroundCycleCount++;
     self.backgroundGeneration = self.requestGeneration;
+    CILogProcessBackgroundEligibility([NSString stringWithFormat:
+        @"Entered background cycle %lu",
+        (unsigned long)self.backgroundCycleCount]);
     if (![self hasTaskSession]) {
         [CILogStore.sharedStore
             recordLevel:CILogLevelWarning
