@@ -79,6 +79,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 @property (nonatomic) int64_t lastReportedCompletedUnitCount;
 @property (nonatomic) int64_t lastReportedTotalUnitCount;
 @property (nonatomic) NSUInteger backgroundCycleCount;
+@property (nonatomic) BOOL registeredWildcardHandler;
 - (BOOL)hasTaskSession;
 - (BOOL)submitRequestForCurrentVideoAttempt:(NSUInteger)attempt;
 - (void)rollOverForNextBackgroundCycle;
@@ -91,11 +92,8 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 - (void)prepareProgressSegmentForVideoID:(NSString *)videoID;
 - (void)resetProgressAccounting;
 - (void)notifyRuntimeChanged;
-- (BOOL)registerTaskIdentifier:(NSString *)taskIdentifier
-                    generation:(NSUInteger)generation;
-- (void)handleLaunchedTask:(id)task
-                 identifier:(NSString *)taskIdentifier
-                 generation:(NSUInteger)generation;
+- (BOOL)ensureWildcardTaskHandlerRegistered;
+- (void)handleLaunchedTask:(id)task;
 - (void)handleTaskExpiration:(id)task
                   generation:(NSUInteger)generation;
 - (void)updateRunningTaskUI;
@@ -307,15 +305,18 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 
     // Continued-processing identifiers represent individual jobs. Reusing a
     // completed identifier makes scheduler state from an earlier foreground /
-    // background cycle ambiguous. Every request gets a generation and a
-    // unique suffix under the permitted wildcard. Only the launch handler for
-    // this exact pair is allowed to grant local ActivityKit updates.
+    // background cycle ambiguous, so every request still gets a generation
+    // and a unique suffix under the permitted wildcard. The launch handler
+    // itself, however, is registered exactly once for the wildcard pattern
+    // (see ensureWildcardTaskHandlerRegistered) — BGTaskScheduler expects a
+    // single registration per identifier for the process lifetime, and
+    // re-registering a fresh concrete identifier on every submission was
+    // rejected outright by the scheduler on every attempt.
     NSUInteger generation = self.requestGeneration + 1;
     NSString *taskIdentifier = [self.taskIdentifierPrefix
         stringByAppendingFormat:@".%@",
             NSUUID.UUID.UUIDString.lowercaseString];
-    if (![self registerTaskIdentifier:taskIdentifier
-                           generation:generation]) {
+    if (![self ensureWildcardTaskHandlerRegistered]) {
         self.needsForegroundRestart = YES;
         return NO;
     }
@@ -443,9 +444,20 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     return YES;
 }
 
-- (BOOL)registerTaskIdentifier:(NSString *)taskIdentifier
-                    generation:(NSUInteger)generation {
-    if (taskIdentifier.length == 0) return NO;
+// BGTaskScheduler expects registerForTaskWithIdentifier:usingQueue:
+// launchHandler: to be called exactly once per identifier for the process's
+// lifetime. BGContinuedProcessingTaskRequest identifiers are declared in
+// Info.plist as a single wildcard prefix (ending in ".*"), and Apple's own
+// model registers ONE handler for that wildcard string itself — individual
+// jobs only need their own unique identifier at *submission* time via
+// submitTaskRequest:. Registering a fresh concrete identifier here on every
+// submission (the previous implementation) is a different, unsupported
+// pattern: BGTaskScheduler rejected it outright on every single attempt,
+// including the very first one, which matches "register once per job" not
+// being valid usage rather than any transient scheduler capacity limit.
+- (BOOL)ensureWildcardTaskHandlerRegistered {
+    if (self.registeredWildcardHandler) return YES;
+
     NSArray<NSString *> *permittedIdentifiers =
         [NSBundle.mainBundle objectForInfoDictionaryKey:
             @"BGTaskSchedulerPermittedIdentifiers"];
@@ -479,14 +491,12 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
 
     __weak typeof(self) weakSelf = self;
-    NSString *registeredIdentifier = [taskIdentifier copy];
     void (^launchHandler)(id) = ^(id task) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf handleLaunchedTask:task
-                              identifier:registeredIdentifier
-                              generation:generation];
+            [weakSelf handleLaunchedTask:task];
         });
     };
+    NSString *wildcardIdentifier = self.permittedTaskIdentifier;
     SEL registerSelector = NSSelectorFromString(
         @"registerForTaskWithIdentifier:usingQueue:launchHandler:"
     );
@@ -498,7 +508,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
                 objc_msgSend)(
                     scheduler,
                     registerSelector,
-                    taskIdentifier,
+                    wildcardIdentifier,
                     dispatch_get_main_queue(),
                     launchHandler
                 );
@@ -515,33 +525,46 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             recordLevel:CILogLevelError
                category:@"ContinuedTask"
                  format:@"BGTaskScheduler rejected registration for %@.",
-                        taskIdentifier];
+                        wildcardIdentifier];
         return NO;
     }
 
     self.scheduler = scheduler;
+    self.registeredWildcardHandler = YES;
     [CILogStore.sharedStore
         recordLevel:CILogLevelDebug
            category:@"ContinuedTask"
-             format:@"Registered iOS 26 background task identifier %@.",
-                    taskIdentifier];
+             format:@"Registered iOS 26 background task wildcard handler %@.",
+                    wildcardIdentifier];
     return YES;
 }
 
-- (void)handleLaunchedTask:(id)task
-                 identifier:(NSString *)taskIdentifier
-                 generation:(NSUInteger)generation {
+- (void)handleLaunchedTask:(id)task {
     if (!task) return;
-    if (generation != self.requestGeneration ||
+    NSString *taskIdentifier = @"";
+    @try {
+        id candidate = [task valueForKey:@"identifier"];
+        if ([candidate isKindOfClass:NSString.class]) {
+            taskIdentifier = candidate;
+        }
+    } @catch (__unused NSException *exception) {
+        taskIdentifier = @"";
+    }
+    // The handler is now shared across every job (registered once for the
+    // wildcard), so the generation this launch corresponds to is resolved by
+    // matching the task's own identifier against whichever concrete
+    // identifier is currently outstanding, rather than a value captured at
+    // registration time.
+    NSUInteger generation = self.requestGeneration;
+    if (taskIdentifier.length == 0 ||
         ![taskIdentifier isEqualToString:self.taskIdentifier]) {
         [self completeTask:task success:NO];
         [CILogStore.sharedStore
             recordLevel:CILogLevelWarning
                category:@"ContinuedTask"
-                 format:@"Rejected delayed launch for superseded continued task generation %lu (%@); current generation is %lu.",
-                        (unsigned long)generation,
+                 format:@"Rejected delayed launch for superseded continued task (%@); current identifier is %@.",
                         taskIdentifier,
-                        (unsigned long)self.requestGeneration];
+                        self.taskIdentifier];
         return;
     }
     self.requestPending = NO;
