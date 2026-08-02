@@ -1,5 +1,6 @@
 #import "CILogStore.h"
 #import "CIConstants.h"
+#import <os/log.h>
 
 NSNotificationName const CILogStoreDidChangeNotification = @"CILogStoreDidChangeNotification";
 
@@ -158,7 +159,9 @@ static NSString *CIScrubLogValue(NSString *value) {
             // line is already scrubbed by CIScrubLogValue above, so mark it
             // public: otherwise the unified log redacts it to <private> and
             // this diagnostic toggle stops being useful for field debugging.
-            NSLog(@"[CaptionIsland] %{public}@", line);
+            // %{public} is only parsed by the os_log()/os_trace() macro
+            // family, not NSLog, so this must go through os_log directly.
+            os_log(OS_LOG_DEFAULT, "[CaptionIsland] %{public}@", line);
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             [NSNotificationCenter.defaultCenter
