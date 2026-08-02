@@ -13,6 +13,7 @@
 #import <objc/runtime.h>
 #import <math.h>
 #import "CIBackgroundPlaybackMonitor.h"
+#import "CIBackgroundTaskKeeper.h"
 #import "CICaptionCoordinator.h"
 #import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
@@ -2356,6 +2357,7 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     Class playerClass = NSClassFromString(@"YTPlayerViewController");
     if (!playerClass) return;
     (void)CIBackgroundPlaybackMonitor.sharedMonitor;
+    [CIBackgroundTaskKeeper.sharedKeeper activate];
     CIPiPActiveVideoByController =
         [NSMapTable weakToWeakObjectsMapTable];
     CIPiPDeferredPauseControllers =

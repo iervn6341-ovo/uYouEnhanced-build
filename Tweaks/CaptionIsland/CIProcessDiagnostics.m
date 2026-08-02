@@ -92,42 +92,52 @@ static NSString *CIDescribeStateKey(id state, NSString *key) {
 /// `RBSProcessAssertionInfo`, so pull just its domain (falling back to `name`).
 static NSString *CIDescribeAssertionDomains(id state) {
     if (!state) return nil;
-    @try {
-        id assertions = [state valueForKey:@"rbAssertions"];
-        if ([assertions respondsToSelector:@selector(allObjects)]) {
-            assertions = ((id (*)(id, SEL))objc_msgSend)(
-                assertions,
-                @selector(allObjects)
-            );
+    // `rbAssertions` is reachable by KVC but does not hand back an NSArray, and
+    // the element type is private, so parse the domains out of the state's own
+    // description instead. That text is the one representation RunningBoard
+    // guarantees, which makes it the sturdier choice for a diagnostic.
+    NSString *description = [state description];
+    if (description.length == 0) return nil;
+    static NSRegularExpression *expression;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        expression = [NSRegularExpression
+            regularExpressionWithPattern:@"domain:\"([^\"]*)\""
+                                 options:0
+                                   error:nil];
+    });
+    if (!expression) return nil;
+
+    NSCountedSet<NSString *> *domains = [NSCountedSet set];
+    [expression enumerateMatchesInString:description
+                                options:0
+                                  range:NSMakeRange(0, description.length)
+                             usingBlock:^(NSTextCheckingResult *match,
+                                          __unused NSMatchingFlags flags,
+                                          __unused BOOL *stop) {
+        if (match.numberOfRanges < 2) return;
+        NSString *domain =
+            [description substringWithRange:[match rangeAtIndex:1]];
+        if (domain.length == 0) return;
+        // Strip the ubiquitous prefix so the line stays readable.
+        if ([domain hasPrefix:@"com.apple."]) {
+            domain = [domain substringFromIndex:@"com.apple.".length];
         }
-        if (![assertions isKindOfClass:NSArray.class]) return nil;
-        NSArray *items = (NSArray *)assertions;
-        if (items.count == 0) return @"none";
-        NSCountedSet<NSString *> *domains = [NSCountedSet set];
-        for (id item in items) {
-            NSString *domain = nil;
-            @try {
-                domain = [item valueForKey:@"domain"];
-                if (domain.length == 0) domain = [item valueForKey:@"name"];
-            } @catch (__unused NSException *exception) {
-                domain = nil;
-            }
-            [domains addObject:domain.length > 0 ? domain : @"?"];
-        }
-        NSMutableArray<NSString *> *described =
-            [NSMutableArray arrayWithCapacity:domains.count];
-        for (NSString *domain in domains) {
-            NSUInteger count = [domains countForObject:domain];
-            [described addObject:count > 1
-                ? [NSString stringWithFormat:@"%@ x%lu",
-                    domain, (unsigned long)count]
-                : domain];
-        }
-        [described sortUsingSelector:@selector(compare:)];
-        return [described componentsJoinedByString:@", "];
-    } @catch (__unused NSException *exception) {
-        return nil;
+        [domains addObject:domain];
+    }];
+    if (domains.count == 0) return @"none";
+
+    NSMutableArray<NSString *> *described =
+        [NSMutableArray arrayWithCapacity:domains.count];
+    for (NSString *domain in domains) {
+        NSUInteger count = [domains countForObject:domain];
+        [described addObject:count > 1
+            ? [NSString stringWithFormat:@"%@ x%lu",
+                domain, (unsigned long)count]
+            : domain];
     }
+    [described sortUsingSelector:@selector(compare:)];
+    return [described componentsJoinedByString:@", "];
 }
 
 static NSString *CIClippedDescription(NSString *value) {
