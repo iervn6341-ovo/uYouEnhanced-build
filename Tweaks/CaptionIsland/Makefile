@@ -27,15 +27,13 @@ CaptionIsland_FILES = \
 	CILRCLIBProvider.m \
 	CILogStore.m \
 	CIProcessDiagnostics.m \
-	CIBackgroundTaskKeeper.m \
-	CIMediaRemoteNudge.m \
 	CILogViewController.m \
 	CIActivityPresenter.m \
 	CICaptionCoordinator.m \
 	CIActivityBridge.swift \
 	Shared/CICaptionActivityAttributes.swift
 CaptionIsland_CFLAGS = -fobjc-arc
-CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore ActivityKit MediaPlayer AVKit BackgroundTasks
+CaptionIsland_FRAMEWORKS = UIKit Foundation QuartzCore ActivityKit MediaPlayer AVKit BackgroundTasks UniformTypeIdentifiers
 CaptionIsland_SWIFT_VERSION = 5
 
 include $(THEOS_MAKE_PATH)/tweak.mk

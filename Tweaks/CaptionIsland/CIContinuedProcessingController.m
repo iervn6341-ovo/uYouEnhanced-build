@@ -80,10 +80,9 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 @property (nonatomic) int64_t lastReportedCompletedUnitCount;
 @property (nonatomic) int64_t lastReportedTotalUnitCount;
 @property (nonatomic) NSUInteger backgroundCycleCount;
-@property (nonatomic) BOOL registeredWildcardHandler;
+@property (nonatomic) NSUInteger systemUIRevision;
 - (BOOL)hasTaskSession;
 - (BOOL)submitRequestForCurrentVideoAttempt:(NSUInteger)attempt;
-- (void)rollOverForNextBackgroundCycle;
 - (void)cancelPendingRequestWithIdentifier:(NSString *)taskIdentifier;
 - (void)completeTask:(nullable id)task success:(BOOL)success;
 - (void)schedulePendingRequestDiagnosticForGeneration:(NSUInteger)generation;
@@ -93,8 +92,11 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
 - (void)prepareProgressSegmentForVideoID:(NSString *)videoID;
 - (void)resetProgressAccounting;
 - (void)notifyRuntimeChanged;
-- (BOOL)ensureWildcardTaskHandlerRegistered;
-- (void)handleLaunchedTask:(id)task;
+- (BOOL)registerTaskHandlerForIdentifier:(NSString *)taskIdentifier
+                              generation:(NSUInteger)generation;
+- (void)handleLaunchedTask:(id)task
+        expectedIdentifier:(NSString *)expectedIdentifier
+                generation:(NSUInteger)generation;
 - (void)handleTaskExpiration:(id)task
                   generation:(NSUInteger)generation;
 - (void)updateRunningTaskUI;
@@ -180,8 +182,18 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         return YES;
     }
     NSUInteger backgroundGeneration = self.backgroundGeneration;
-    return backgroundGeneration != 0 && self.taskActive &&
-        self.grantedGeneration == backgroundGeneration;
+    BOOL grantedForBackgroundCycle = backgroundGeneration != 0 &&
+        self.taskActive && self.grantedGeneration == backgroundGeneration;
+    if (!grantedForBackgroundCycle) return NO;
+
+    // Phase one deliberately keeps the custom Caption Island frozen while the
+    // system-provided BGContinuedProcessingTask Live Activity changes its
+    // title/subtitle. This isolates whether the public background-task UI works
+    // before a later A/B probe asks liveactivitiesd to accept local updates too.
+    return CIPreferenceBool(
+        CIContinuedCustomActivityProbeEnabledKey,
+        NO
+    );
 }
 
 - (void)beginForVideoID:(NSString *)videoID
@@ -304,20 +316,18 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     self.submissionRetryScheduled = NO;
 
-    // Continued-processing identifiers represent individual jobs. Reusing a
-    // completed identifier makes scheduler state from an earlier foreground /
-    // background cycle ambiguous, so every request still gets a generation
-    // and a unique suffix under the permitted wildcard. The launch handler
-    // itself, however, is registered exactly once for the wildcard pattern
-    // (see ensureWildcardTaskHandlerRegistered) — BGTaskScheduler expects a
-    // single registration per identifier for the process lifetime, and
-    // re-registering a fresh concrete identifier on every submission was
-    // rejected outright by the scheduler on every attempt.
+    // Info.plist permits a wildcard family, but Apple requires registration and
+    // submission to use the same fully composed concrete identifier. Each
+    // generation therefore receives a UUID and its own handler immediately
+    // before the matching request is submitted. Registering the literal
+    // wildcard string is rejected at runtime and never authorizes its concrete
+    // children.
     NSUInteger generation = self.requestGeneration + 1;
     NSString *taskIdentifier = [self.taskIdentifierPrefix
         stringByAppendingFormat:@".%@",
             NSUUID.UUID.UUIDString.lowercaseString];
-    if (![self ensureWildcardTaskHandlerRegistered]) {
+    if (![self registerTaskHandlerForIdentifier:taskIdentifier
+                                     generation:generation]) {
         self.needsForegroundRestart = YES;
         return NO;
     }
@@ -445,20 +455,13 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     return YES;
 }
 
-// BGTaskScheduler expects registerForTaskWithIdentifier:usingQueue:
-// launchHandler: to be called exactly once per identifier for the process's
-// lifetime. BGContinuedProcessingTaskRequest identifiers are declared in
-// Info.plist as a single wildcard prefix (ending in ".*"), and Apple's own
-// model registers ONE handler for that wildcard string itself — individual
-// jobs only need their own unique identifier at *submission* time via
-// submitTaskRequest:. Registering a fresh concrete identifier here on every
-// submission (the previous implementation) is a different, unsupported
-// pattern: BGTaskScheduler rejected it outright on every single attempt,
-// including the very first one, which matches "register once per job" not
-// being valid usage rather than any transient scheduler capacity limit.
-- (BOOL)ensureWildcardTaskHandlerRegistered {
-    if (self.registeredWildcardHandler) return YES;
-
+// The wildcard belongs only in BGTaskSchedulerPermittedIdentifiers. WWDC25 and
+// Apple DTS both specify that the fully composed identifier must be used for
+// *both* dynamic registration and submission. A UUID makes the one-registration
+// per process-lifetime rule naturally safe for every generation.
+- (BOOL)registerTaskHandlerForIdentifier:(NSString *)taskIdentifier
+                              generation:(NSUInteger)generation {
+    if (taskIdentifier.length == 0 || generation == 0) return NO;
     NSArray<NSString *> *permittedIdentifiers =
         [NSBundle.mainBundle objectForInfoDictionaryKey:
             @"BGTaskSchedulerPermittedIdentifiers"];
@@ -492,12 +495,14 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
 
     __weak typeof(self) weakSelf = self;
+    NSString *expectedIdentifier = [taskIdentifier copy];
     void (^launchHandler)(id) = ^(id task) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf handleLaunchedTask:task];
+            [weakSelf handleLaunchedTask:task
+                      expectedIdentifier:expectedIdentifier
+                              generation:generation];
         });
     };
-    NSString *wildcardIdentifier = self.permittedTaskIdentifier;
     SEL registerSelector = NSSelectorFromString(
         @"registerForTaskWithIdentifier:usingQueue:launchHandler:"
     );
@@ -509,7 +514,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
                 objc_msgSend)(
                     scheduler,
                     registerSelector,
-                    wildcardIdentifier,
+                    taskIdentifier,
                     dispatch_get_main_queue(),
                     launchHandler
                 );
@@ -525,22 +530,25 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         [CILogStore.sharedStore
             recordLevel:CILogLevelError
                category:@"ContinuedTask"
-                 format:@"BGTaskScheduler rejected registration for %@.",
-                        wildcardIdentifier];
+                 format:@"BGTaskScheduler rejected concrete registration for %@ (generation %lu).",
+                        taskIdentifier,
+                        (unsigned long)generation];
         return NO;
     }
 
     self.scheduler = scheduler;
-    self.registeredWildcardHandler = YES;
     [CILogStore.sharedStore
         recordLevel:CILogLevelDebug
            category:@"ContinuedTask"
-             format:@"Registered iOS 26 background task wildcard handler %@.",
-                    wildcardIdentifier];
+             format:@"Registered concrete iOS 26 background task handler %@ for generation %lu.",
+                    taskIdentifier,
+                    (unsigned long)generation];
     return YES;
 }
 
-- (void)handleLaunchedTask:(id)task {
+- (void)handleLaunchedTask:(id)task
+        expectedIdentifier:(NSString *)expectedIdentifier
+                generation:(NSUInteger)generation {
     if (!task) return;
     NSString *taskIdentifier = @"";
     @try {
@@ -551,21 +559,22 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     } @catch (__unused NSException *exception) {
         taskIdentifier = @"";
     }
-    // The handler is now shared across every job (registered once for the
-    // wildcard), so the generation this launch corresponds to is resolved by
-    // matching the task's own identifier against whichever concrete
-    // identifier is currently outstanding, rather than a value captured at
-    // registration time.
-    NSUInteger generation = self.requestGeneration;
-    if (taskIdentifier.length == 0 ||
-        ![taskIdentifier isEqualToString:self.taskIdentifier]) {
+    BOOL taskIdentifierMismatch = taskIdentifier.length > 0 &&
+        ![taskIdentifier isEqualToString:expectedIdentifier];
+    BOOL generationIsCurrent = generation == self.requestGeneration &&
+        [expectedIdentifier isEqualToString:self.taskIdentifier];
+    if (taskIdentifierMismatch || !generationIsCurrent) {
         [self completeTask:task success:NO];
         [CILogStore.sharedStore
             recordLevel:CILogLevelWarning
                category:@"ContinuedTask"
-                 format:@"Rejected delayed launch for superseded continued task (%@); current identifier is %@.",
-                        taskIdentifier,
-                        self.taskIdentifier];
+                 format:@"Rejected delayed or mismatched continued task launch (reported=%@, expected=%@, generation=%lu); current identifier=%@ generation=%lu.",
+                        taskIdentifier.length > 0
+                            ? taskIdentifier : @"unavailable",
+                        expectedIdentifier,
+                        (unsigned long)generation,
+                        self.taskIdentifier,
+                        (unsigned long)self.requestGeneration];
         return;
     }
     self.requestPending = NO;
@@ -587,6 +596,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     self.runtimeLeaseValid = YES;
     self.grantedGeneration = generation;
     self.needsForegroundRestart = NO;
+    self.systemUIRevision = 0;
     [self resetProgressAccounting];
 
     __weak typeof(self) weakSelf = self;
@@ -614,8 +624,11 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
            category:@"ContinuedTask"
              format:@"iOS 26 granted continued background runtime for generation %lu (%@); background generation is %lu.",
                     (unsigned long)generation,
-                    taskIdentifier,
+                    expectedIdentifier,
                     (unsigned long)self.backgroundGeneration];
+    CILogProcessBackgroundEligibility(
+        @"Continued processing launch handler granted runtime"
+    );
     [self notifyRuntimeChanged];
 }
 
@@ -647,6 +660,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     self.requestPending = NO;
     self.requestSubmittedUptime = 0;
     self.taskIdentifier = @"";
+    self.systemUIRevision = 0;
     self.needsForegroundRestart = YES;
     [CILogStore.sharedStore
         recordLevel:CILogLevelWarning
@@ -654,53 +668,6 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
              format:@"iOS 26 expired continued caption runtime generation %lu; local ActivityKit updates are revoked until a fresh foreground request is granted.",
                     (unsigned long)generation];
     [self notifyRuntimeChanged];
-}
-
-- (void)rollOverForNextBackgroundCycle {
-    id predecessorTask = self.runningTask;
-    NSString *predecessorIdentifier = [self.taskIdentifier copy];
-    NSUInteger predecessorGeneration = self.requestGeneration;
-    BOOL predecessorWasGranted = self.taskActive;
-
-    // Invalidate the old generation before submitting its successor. The
-    // Objective-C task object can outlive its RunningBoard assertion, so no
-    // caller may use pointer presence as proof that the next background cycle
-    // is authorized.
-    self.runningTask = nil;
-    self.runtimeLeaseValid = NO;
-    self.grantedGeneration = 0;
-    if (self.requestPending) {
-        [self cancelPendingRequestWithIdentifier:predecessorIdentifier];
-    }
-    self.requestPending = NO;
-    self.requestSubmittedUptime = 0;
-    self.submissionRetryScheduled = NO;
-    self.taskIdentifier = @"";
-    self.needsForegroundRestart = YES;
-    if (predecessorWasGranted) [self notifyRuntimeChanged];
-
-    // Finish the old scheduler job before asking for the next cycle. The new
-    // request uses the fail strategy, so a still-draining scheduler slot is
-    // visible immediately and handled by bounded foreground retries instead
-    // of becoming a stale queued request.
-    [self completeTask:predecessorTask success:YES];
-    BOOL submitted = [self submitRequestForCurrentVideoAttempt:1];
-
-    if (submitted || self.submissionRetryScheduled) {
-        [CILogStore.sharedStore
-            recordLevel:CILogLevelInfo
-               category:@"ContinuedTask"
-                 format:@"Retired foreground-return generation %lu and prepared generation %lu for the next background cycle%@.",
-                        (unsigned long)predecessorGeneration,
-                        (unsigned long)self.requestGeneration,
-                        submitted ? @"" : @" with a bounded retry"];
-    } else {
-        [CILogStore.sharedStore
-            recordLevel:CILogLevelWarning
-               category:@"ContinuedTask"
-                 format:@"Retired foreground-return generation %lu, but its replacement could not be submitted while YouTube was active.",
-                        (unsigned long)predecessorGeneration];
-    }
 }
 
 - (void)scheduleSubmissionRetryForGeneration:(NSUInteger)generation
@@ -827,25 +794,34 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
         NO
     )) return;
 
-    if (returnedFromBackground) {
-        [self rollOverForNextBackgroundCycle];
-        return;
-    }
-
     if (self.taskActive) {
         [self updateRunningTaskProgressForce:YES];
         [self updateRunningTaskUI];
+        if (returnedFromBackground) {
+            [CILogStore.sharedStore
+                recordLevel:CILogLevelInfo
+                   category:@"ContinuedTask"
+                     format:@"Retained continued caption generation %lu across the foreground return; the same concrete task will authorize the next background cycle.",
+                            (unsigned long)self.grantedGeneration];
+        }
         return;
     }
 
-    if (self.taskPending || self.submissionRetryScheduled) return;
+    if (self.taskPending || self.submissionRetryScheduled) {
+        if (returnedFromBackground) {
+            [CILogStore.sharedStore
+                recordLevel:CILogLevelWarning
+                   category:@"ContinuedTask"
+                    message:@"Returned to the foreground while the concrete continued caption request still awaits a launch handler; it was kept pending instead of being replaced automatically."];
+        }
+        return;
+    }
 
     if (!self.needsForegroundRestart) return;
     [CILogStore.sharedStore
-        recordLevel:CILogLevelInfo
+        recordLevel:CILogLevelWarning
            category:@"ContinuedTask"
-            message:@"YouTube is active without a valid continued runtime; requesting a fresh generation for the next background cycle."];
-    [self submitRequestForCurrentVideoAttempt:1];
+            message:@"YouTube returned to the foreground without a valid continued runtime. Caption Island will wait for the next explicit video or settings action instead of automatically creating a background task from a lifecycle callback."];
 }
 
 - (void)applicationDidEnterBackground:
@@ -877,16 +853,28 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     }
     BOOL grantedForCycle = self.taskActive &&
         self.grantedGeneration == self.backgroundGeneration;
-    [CILogStore.sharedStore
-        recordLevel:grantedForCycle
-            ? CILogLevelInfo : CILogLevelWarning
-           category:@"ContinuedTask"
-             format:grantedForCycle
-                ? @"Background cycle %lu is authorized by freshly granted generation %lu (%@)."
-                : @"Background cycle %lu began before generation %lu received a launch handler (%@); local ActivityKit updates are deferred until the system grants it.",
-                    (unsigned long)self.backgroundCycleCount,
-                    (unsigned long)self.backgroundGeneration,
-                    self.taskIdentifier];
+    if (grantedForCycle) {
+        BOOL customProbeEnabled = CIPreferenceBool(
+            CIContinuedCustomActivityProbeEnabledKey,
+            NO
+        );
+        [CILogStore.sharedStore
+            recordLevel:CILogLevelInfo
+               category:@"ContinuedTask"
+                 format:@"Background cycle %lu is authorized by continued generation %lu (%@); system task UI is active and the custom ActivityKit probe is %@.",
+                        (unsigned long)self.backgroundCycleCount,
+                        (unsigned long)self.backgroundGeneration,
+                        self.taskIdentifier,
+                        customProbeEnabled ? @"enabled" : @"disabled"];
+    } else {
+        [CILogStore.sharedStore
+            recordLevel:CILogLevelWarning
+               category:@"ContinuedTask"
+                 format:@"Background cycle %lu began before generation %lu received a launch handler (%@); local ActivityKit updates are deferred until the system grants it.",
+                        (unsigned long)self.backgroundCycleCount,
+                        (unsigned long)self.backgroundGeneration,
+                        self.taskIdentifier];
+    }
 }
 
 - (void)updatePlaybackTime:(NSTimeInterval)playbackTime
@@ -1001,6 +989,7 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
     self.playbackTime = 0;
     self.videoIsShorts = NO;
     self.backgroundCycleCount = 0;
+    self.systemUIRevision = 0;
     [self resetProgressAccounting];
     self.playing = YES;
     self.suppressed = NO;
@@ -1142,6 +1131,14 @@ BOOL CIContinuedBackgroundProcessingSupported(void) {
             title,
             subtitle
         );
+        self.systemUIRevision++;
+        [CILogStore.sharedStore
+            recordLevel:CILogLevelDebug
+               category:@"ContinuedTask"
+                 format:@"Updated the system continued-task Live Activity to UI revision %lu (titleCharacters=%lu, subtitleCharacters=%lu).",
+                        (unsigned long)self.systemUIRevision,
+                        (unsigned long)title.length,
+                        (unsigned long)subtitle.length];
     }
 }
 

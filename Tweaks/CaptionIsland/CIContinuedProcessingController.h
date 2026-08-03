@@ -14,27 +14,29 @@ FOUNDATION_EXPORT BOOL CIContinuedBackgroundProcessingSupported(void);
 FOUNDATION_EXPORT NSNotificationName const
     CIContinuedProcessingRuntimeDidChangeNotification;
 
-/// Owns one finite, user-visible background caption task generation for each
-/// foreground/background playback cycle. A generation is authorized only
-/// after its matching launch handler runs; retaining an older task object is
-/// never treated as a valid runtime lease. The implementation intentionally
-/// resolves iOS 26 symbols at runtime so the tweak can keep its iOS 17.5
-/// deployment target and SDK compatibility.
+/// Owns one finite, user-visible background caption task generation for the
+/// active playback job. A granted generation survives foreground/background
+/// transitions until playback finishes or iOS expires it; returning to the
+/// foreground does not replace a still-valid task. A generation is authorized
+/// only after its matching concrete-identifier launch handler runs. The
+/// implementation intentionally resolves iOS 26 symbols at runtime so the
+/// tweak can keep its iOS 17.5 deployment target and SDK compatibility.
 @interface CIContinuedProcessingController : NSObject
 
 + (instancetype)sharedController;
 
 /// YES only after BGTaskScheduler has invoked the launch handler for the
-/// current generation. This state alone does not authorize an older background
-/// cycle.
+/// current generation.
 @property (nonatomic, readonly, getter=isTaskActive) BOOL taskActive;
 
 /// YES after immediate submission succeeds but before its launch handler has
 /// supplied the runtime lease.
 @property (nonatomic, readonly, getter=isTaskPending) BOOL taskPending;
 
-/// Returns NO only for the iOS 26 experimental path when the app is in the
-/// background without a granted continued-processing runtime lease.
+/// In the iOS 26 experiment this also remains NO after a task is granted while
+/// the system-task-only phase is selected. Enabling the separate custom
+/// ActivityKit probe allows local Caption Island writes for that granted
+/// background generation.
 @property (nonatomic, readonly) BOOL localActivityUpdatesPermitted;
 
 /// Marks the transition before the presenter publishes its first background

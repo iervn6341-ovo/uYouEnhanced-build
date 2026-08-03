@@ -66,12 +66,22 @@ static NSString *CIActivitySourceLabel(
     }
     if (!self.didLogSuppressedBackgroundUpdate) {
         self.didLogSuppressedBackgroundUpdate = YES;
+        NSString *message = nil;
+        if (controller.taskPending) {
+            message = @"Deferred local Live Activity updates while the submitted iOS 26 continued caption request awaits its launch handler; updates resume only after the system grants runtime.";
+        } else if (controller.taskActive &&
+                   !CIPreferenceBool(
+                       CIContinuedCustomActivityProbeEnabledKey,
+                       NO
+                   )) {
+            message = @"System-task-only experiment is active: the granted iOS 26 task continues updating its own title and subtitle, while custom Caption Island ActivityKit writes remain intentionally disabled.";
+        } else {
+            message = @"Deferred local Live Activity updates because the background process has only media-playback eligibility; this avoids repeated liveactivitiesd rejections.";
+        }
         [CILogStore.sharedStore
             recordLevel:CILogLevelWarning
                category:@"Activity"
-                message:controller.taskPending
-                    ? @"Deferred local Live Activity updates while the submitted iOS 26 continued caption request awaits its launch handler; updates resume only after the system grants runtime."
-                    : @"Deferred local Live Activity updates because the background process has only media-playback eligibility; this avoids repeated liveactivitiesd rejections."];
+                message:message];
     }
     return NO;
 }

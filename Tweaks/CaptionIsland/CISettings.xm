@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 #import <YouTubeHeader/YTIIcon.h>
 #import <YouTubeHeader/YTSettingsGroupData.h>
@@ -146,6 +147,182 @@ static const void *CICaptionAdvanceValidatorKey =
 
 static const void *CILRCLIBURLValidatorKey =
     &CILRCLIBURLValidatorKey;
+
+/// Owns the document picker for a lyric import.
+///
+/// UIKit only holds the picker's delegate weakly, and the settings screen has no
+/// object of its own to hang this on, so the importer keeps itself alive via an
+/// associated object on the presenting controller until the picker finishes.
+@interface CILRCLIBCacheImporter : NSObject <UIDocumentPickerDelegate>
+@property (nonatomic, weak) YTSettingsViewController *settingsViewController;
+@end
+
+static const void *CILRCLIBCacheImporterKey = &CILRCLIBCacheImporterKey;
+
+@implementation CILRCLIBCacheImporter
+
+- (void)finish {
+    YTSettingsViewController *controller = self.settingsViewController;
+    if (controller) {
+        objc_setAssociatedObject(
+            controller,
+            CILRCLIBCacheImporterKey,
+            nil,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
+    }
+}
+
+- (void)documentPicker:(__unused UIDocumentPickerViewController *)picker
+    didPickDocumentsAtURLs:(NSArray<NSURL *> *)URLs {
+    NSURL *URL = URLs.firstObject;
+    YTSettingsViewController *controller = self.settingsViewController;
+    if (!URL) {
+        [self finish];
+        return;
+    }
+    // A picked file lives outside the sandbox, so the read has to happen inside
+    // a coordinated security-scoped access.
+    BOOL scoped = [URL startAccessingSecurityScopedResource];
+    NSError *error = nil;
+    NSUInteger imported =
+        [CILRCLIBProvider importCacheFromURL:URL error:&error];
+    if (scoped) [URL stopAccessingSecurityScopedResource];
+
+    if (imported > 0) {
+        [CICaptionCoordinator.sharedCoordinator reloadPreferences];
+        [controller reloadData];
+        CIShowToast([NSString stringWithFormat:CILocalized(
+            @"LRCLIB_CACHE_IMPORT_DONE",
+            @"Imported %lu songs."
+        ), (unsigned long)imported]);
+    } else {
+        CIShowToast(error.localizedDescription ?: CILocalized(
+            @"LRCLIB_CACHE_IMPORT_FAILED",
+            @"Could not import that file."
+        ));
+    }
+    [self finish];
+}
+
+- (void)documentPickerWasCancelled:
+    (__unused UIDocumentPickerViewController *)picker {
+    [self finish];
+}
+
+@end
+
+static void CIPresentLRCLIBCacheImport(
+    YTSettingsViewController *settingsViewController
+) {
+    CILRCLIBCacheImporter *importer = [CILRCLIBCacheImporter new];
+    importer.settingsViewController = settingsViewController;
+    objc_setAssociatedObject(
+        settingsViewController,
+        CILRCLIBCacheImporterKey,
+        importer,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    );
+
+    // Exports are binary property lists. Accept generic data too, since a file
+    // that has travelled through AirDrop or another app can lose its type.
+    UTType *propertyList =
+        [UTType typeWithIdentifier:@"com.apple.property-list"];
+    NSArray<UTType *> *types = propertyList
+        ? @[propertyList, UTTypeData] : @[UTTypeData];
+    UIDocumentPickerViewController *picker =
+        [[UIDocumentPickerViewController alloc]
+            initForOpeningContentTypes:types];
+    picker.delegate = importer;
+    picker.allowsMultipleSelection = NO;
+    [settingsViewController presentViewController:picker
+                                        animated:YES
+                                      completion:nil];
+}
+
+static void CIPresentLRCLIBCacheExport(
+    YTSettingsViewController *settingsViewController
+) {
+    NSError *error = nil;
+    NSURL *URL = [CILRCLIBProvider exportCacheWithError:&error];
+    if (!URL) {
+        CIShowToast(error.localizedDescription ?: CILocalized(
+            @"LRCLIB_CACHE_EXPORT_FAILED",
+            @"Could not export the saved lyrics."
+        ));
+        return;
+    }
+    UIActivityViewController *share = [[UIActivityViewController alloc]
+        initWithActivityItems:@[URL]
+        applicationActivities:nil];
+    share.popoverPresentationController.sourceView =
+        settingsViewController.view;
+    share.popoverPresentationController.sourceRect =
+        CGRectMake(CGRectGetMidX(settingsViewController.view.bounds),
+                   CGRectGetMidY(settingsViewController.view.bounds),
+                   1, 1);
+    [settingsViewController presentViewController:share
+                                        animated:YES
+                                      completion:nil];
+}
+
+static void CIPresentLRCLIBCache(
+    YTSettingsViewController *settingsViewController
+) {
+    CILRCLIBCacheSummary *summary = [CILRCLIBProvider cacheSummary];
+    NSString *message = [NSString stringWithFormat:CILocalized(
+        @"LRCLIB_CACHE_SUMMARY",
+        @"%lu songs saved, %lu lookups remembered as having no lyrics, %@ on disk."
+    ), (unsigned long)summary.lyricCount,
+       (unsigned long)summary.missCount,
+       [NSByteCountFormatter stringFromByteCount:(long long)summary.byteCount
+                                      countStyle:NSByteCountFormatterCountStyleFile]];
+
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:CILocalized(@"LRCLIB_CACHE", @"Saved lyrics")
+        message:message
+        preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"LRCLIB_CACHE_EXPORT", @"Export…")
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            CIPresentLRCLIBCacheExport(settingsViewController);
+        }]];
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"LRCLIB_CACHE_IMPORT", @"Import…")
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            CIPresentLRCLIBCacheImport(settingsViewController);
+        }]];
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"LRCLIB_CLEAR_CACHE", @"Clear")
+        style:UIAlertActionStyleDestructive
+        handler:^(__unused UIAlertAction *action) {
+            [CILRCLIBProvider clearPersistentCache];
+            [CICaptionCoordinator.sharedCoordinator reloadPreferences];
+            [settingsViewController reloadData];
+            CIShowToast(CILocalized(
+                @"LRCLIB_CLEAR_CACHE_DONE",
+                @"LRCLIB lookup cache cleared."
+            ));
+        }]];
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"CANCEL", @"Cancel")
+        style:UIAlertActionStyleCancel
+        handler:nil]];
+
+    // Required on iPad, where an action sheet must be anchored.
+    sheet.popoverPresentationController.sourceView =
+        settingsViewController.view;
+    sheet.popoverPresentationController.sourceRect =
+        CGRectMake(CGRectGetMidX(settingsViewController.view.bounds),
+                   CGRectGetMidY(settingsViewController.view.bounds),
+                   1, 1);
+    [settingsViewController presentViewController:sheet
+                                        animated:YES
+                                      completion:nil];
+}
 
 static void CIPresentLRCLIBBaseURL(
     YTSettingsViewController *settingsViewController
@@ -624,27 +801,75 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             return YES;
         }]];
 
-    [items addObject:[%c(YTSettingsSectionItem)
-        switchItemWithTitle:CILocalized(
-            @"REMOTE_COMMAND_NUDGE",
-            @"Keep background captions alive (experimental)"
-        )
-        titleDescription:CILocalized(
-            @"REMOTE_COMMAND_NUDGE_DESCRIPTION",
-            @"Sends a redundant Play command every few seconds while the screen is off, so iOS stops treating the app as media-playback-only and lets captions keep updating. Uses a private interface; turn this off if playback misbehaves."
-        )
-        accessibilityIdentifier:@"CaptionIsland.RemoteCommandNudge"
-        switchOn:CIPreferenceBool(CIRemoteCommandNudgeEnabledKey, NO)
-        switchBlock:^BOOL(
-            __unused YTSettingsCell *cell,
-            BOOL enabled
-        ) {
-            [NSUserDefaults.standardUserDefaults
-                setBool:enabled
-                 forKey:CIRemoteCommandNudgeEnabledKey];
-            return YES;
+    if (CIContinuedBackgroundProcessingSupported()) {
+        [items addObject:[%c(YTSettingsSectionItem)
+            switchItemWithTitle:CILocalized(
+                @"CONTINUED_PROCESSING",
+                @"iOS 26 continued background captions"
+            )
+            titleDescription:CILocalized(
+                @"CONTINUED_PROCESSING_DESCRIPTION",
+                @"Experimental zero-server mode. iOS shows its own cancellable background-task Live Activity and may still end the task when resources are constrained."
+            )
+            accessibilityIdentifier:@"CaptionIsland.ContinuedProcessing"
+            switchOn:CIPreferenceBool(
+                CIContinuedBackgroundProcessingEnabledKey,
+                NO
+            )
+            switchBlock:^BOOL(
+                __unused YTSettingsCell *cell,
+                BOOL enabled
+            ) {
+                CIStoreBool(
+                    CIContinuedBackgroundProcessingEnabledKey,
+                    enabled
+                );
+                if (enabled) {
+                    // Enabling the option is an explicit foreground action,
+                    // which is the correct time to submit an iOS 26 continued
+                    // processing request for the active video.
+                    CISynchronizeContinuedTaskFromCurrentVideo();
+                } else {
+                    [CIContinuedProcessingController.sharedController
+                        endWithReason:
+                            @"the iOS 26 continued background caption option was disabled"
+                              success:YES];
+                }
+                [settingsViewController reloadData];
+                return YES;
+            } settingItemId:0]];
+
+        if (CIPreferenceBool(
+                CIContinuedBackgroundProcessingEnabledKey,
+                NO
+            )) {
+            [items addObject:[%c(YTSettingsSectionItem)
+                switchItemWithTitle:CILocalized(
+                    @"CONTINUED_CUSTOM_ACTIVITY_PROBE",
+                    @"Test custom Live Activity in background"
+                )
+                titleDescription:CILocalized(
+                    @"CONTINUED_CUSTOM_ACTIVITY_PROBE_DESCRIPTION",
+                    @"Keep this off for the first test so only the system background-task Live Activity changes lyrics. Turn it on later to test whether the same runtime also authorizes Caption Island updates."
+                )
+                accessibilityIdentifier:
+                    @"CaptionIsland.ContinuedCustomActivityProbe"
+                switchOn:CIPreferenceBool(
+                    CIContinuedCustomActivityProbeEnabledKey,
+                    NO
+                )
+                switchBlock:^BOOL(
+                    __unused YTSettingsCell *cell,
+                    BOOL enabled
+                ) {
+                    CIStoreBool(
+                        CIContinuedCustomActivityProbeEnabledKey,
+                        enabled
+                    );
+                    return YES;
+                } settingItemId:0]];
         }
-        settingItemId:0]];
+    }
 
     NSString *sourcePriorityTitle =
         CILocalized(@"SOURCE_PRIORITY", @"Preferred caption source");
@@ -793,90 +1018,29 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
 
     [items addObject:[%c(YTSettingsSectionItem)
         itemWithTitle:CILocalized(
-            @"LRCLIB_CLEAR_CACHE",
-            @"Clear LRCLIB lookup cache"
+            @"LRCLIB_CACHE",
+            @"Saved lyrics"
         )
         titleDescription:CILocalized(
-            @"LRCLIB_CLEAR_CACHE_DESCRIPTION",
-            @"Forget saved matches and misses, then retry the current video. Rate-limit cooldowns are kept."
+            @"LRCLIB_CACHE_DESCRIPTION",
+            @"Export the saved lyrics to move them to another device, import a previous export, or forget everything and look the current video up again."
         )
-        accessibilityIdentifier:@"CaptionIsland.LRCLIBClearCache"
-        detailTextBlock:nil
-        selectBlock:^BOOL(
-            __unused YTSettingsCell *cell,
-            __unused NSUInteger sectionItemIndex
-        ) {
-            [CILRCLIBProvider clearPersistentCache];
-            [CICaptionCoordinator.sharedCoordinator
-                reloadPreferences];
-            CIShowToast(CILocalized(
-                @"LRCLIB_CLEAR_CACHE_DONE",
-                @"LRCLIB lookup cache cleared."
-            ));
-            return YES;
-        }]];
-
-    [items addObject:[%c(YTSettingsSectionItem)
-        itemWithTitle:CILocalized(
-            @"VIDEO_OVERRIDE",
-            @"Current video lyric settings"
-        )
-        titleDescription:CILocalized(
-            @"VIDEO_OVERRIDE_DESCRIPTION",
-            @"Override the LRCLIB title, artist, and caption timing for the current video."
-        )
-        accessibilityIdentifier:@"CaptionIsland.VideoOverride"
+        accessibilityIdentifier:@"CaptionIsland.LRCLIBCache"
         detailTextBlock:^NSString * {
-            NSUInteger count = CIVideoOverrideCount();
+            CILRCLIBCacheSummary *summary =
+                [CILRCLIBProvider cacheSummary];
             return [NSString stringWithFormat:CILocalized(
-                @"VIDEO_OVERRIDE_COUNT",
-                @"%lu saved"
-            ), (unsigned long)count];
+                @"LRCLIB_CACHE_COUNT",
+                @"%lu songs"
+            ), (unsigned long)summary.lyricCount];
         }
         selectBlock:^BOOL(
             __unused YTSettingsCell *cell,
             __unused NSUInteger sectionItemIndex
         ) {
-            CIPresentCurrentVideoOverride(settingsViewController);
+            CIPresentLRCLIBCache(settingsViewController);
             return YES;
         }]];
-
-    [items addObject:[%c(YTSettingsSectionItem)
-        itemWithTitle:CILocalized(
-            @"VIDEO_LANGUAGE_PRIORITY",
-            @"Current video caption languages"
-        )
-        titleDescription:CILocalized(
-            @"VIDEO_LANGUAGE_PRIORITY_DESCRIPTION",
-            @"Save a separate YouTube caption-language order for the video that is currently playing."
-        )
-        accessibilityIdentifier:
-            @"CaptionIsland.VideoLanguagePriority"
-        detailTextBlock:^NSString * {
-            return CILocalized(
-                @"VIDEO_LANGUAGE_PRIORITY_OPEN",
-                @"Configure"
-            );
-        }
-        selectBlock:^BOOL(
-            __unused YTSettingsCell *cell,
-            __unused NSUInteger sectionItemIndex
-        ) {
-            CIPresentCurrentVideoLanguagePriorities(
-                settingsViewController
-            );
-            return YES;
-        }]];
-
-    [items addObject:[%c(YTSettingsSectionItem)
-        switchItemWithTitle:CILocalized(@"SOURCE_BADGE", @"Show source badge")
-        titleDescription:CILocalized(@"SOURCE_BADGE_DESCRIPTION", @"Display CC or ASR beside the current line. LRCLIB is always identified.")
-        accessibilityIdentifier:@"CaptionIsland.SourceBadge"
-        switchOn:CIPreferenceBool(CIShowSourceBadgeKey, YES)
-        switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
-            CIStoreBool(CIShowSourceBadgeKey, enabled);
-            return YES;
-        } settingItemId:0]];
 
     [items addObject:[%c(YTSettingsSectionItem)
         switchItemWithTitle:CILocalized(@"DEBUG_LOGGING", @"Detailed logging")

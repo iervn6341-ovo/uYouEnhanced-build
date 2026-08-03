@@ -67,25 +67,93 @@ Tweak 會一次提供目前句與下一句，讓被節流時至少仍看得到�
 暫停，仍不能保證 AOD 長時間逐句即時重畫。本版本只使用 App 內的本機 ActivityKit
 更新，不含 APNs Live Activity push 或外部 relay。
 
-iOS 26 以上另提供預設關閉的「持續背景字幕」實驗模式。它使用公開的
-`BGContinuedProcessingTaskRequest`，以影片播放作為由使用者啟動、可完成且具有
-進度的背景工作；目前時間會持續回報到 `NSProgress`，目前句與下一句也會更新到
-系統提供的背景任務 Live Activity。影片結束、切換為不符合 Shorts／長度政策的
-內容、播放器釋放或 App 終止時會完成並清除任務，系統提前收回執行資格時則寫入
-`ContinuedTask` Warning。此模式不需要 APNs 或外部伺服器，但系統仍可因資源限制
-終止任務，而且系統背景任務 Activity 可能與 Caption Island 自訂 Activity 競爭
-Dynamic Island 顯示位置。iOS 17.5～18 不會顯示此設定，仍沿用背景音訊方案。
-每次從背景真正回到 YouTube 前景時，上一輪 continued-processing session 會正常完成，
-並在 App 尚為 active 時為下一次「回主頁／鎖屏」提交具有唯一動態後綴的新 request；
-不會重用先前背景週期已消耗或仍在清理的 identifier。request 使用 immediate-fail
-策略；若上一輪剛結束、資源尚未釋放，會在 App 仍位於前景時做有限次短間隔重試，
-避免 request 排隊到後續週期才啟動，也不會把舊 task 物件誤認成仍有效的背景資格。
-因此從播放器畫面直接鎖屏與先回主畫面再鎖屏，都會使用同一份已在前景提交的工作。
-
 expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並使用三階段
 `ViewThatFits`：一般內容顯示影片標題，長歌詞優先隱藏標題，極長歌詞再縮小字級與
 行數，避免最底部被系統上限裁切。leading／trailing／bottom region 都保留額外安全
 邊距，避免字幕 icon 貼近圓角或 TrueDepth 區域。
+
+## 背景更新為何會停止
+
+背景字幕會停止更新，根本原因不在本 Tweak，而在 `liveactivitiesd` 的一道檢查。
+被拒絕時系統會記錄：
+
+```text
+Process is only playing background media so is forbidden to update activity: <pid>
+```
+
+實測（多份 log、數十次拒絕，無例外）確立的規則是——`liveactivitiesd` 查詢
+RunningBoard 取得該 **process** 目前持有的 assertion 清單，若清單裡「只有」
+`com.apple.mediaexperience:MediaPlayback`（加上人人都有的
+`com.apple.underlying:defaultUnderlyingAppAssertion`），就拒絕本機 ActivityKit
+寫入；只要多出任何一項其他 assertion 就放行。錯誤訊息中的 pid 即說明這是跨程序的
+process 層級判斷。
+
+觀測到能讓判斷通過的 assertion，以及它們何時消失：
+
+| assertion | 來源 | 消失時機 |
+| --- | --- | --- |
+| `pagein-prefetching:LaunchPrefetch` | iOS 啟動期 page-in 量測 | App **第一次從背景回到前景**的瞬間（3/3 樣本吻合），並非計時器 |
+| `sessionkitd:DeliverEvent` | Live Activity 事件投遞 | 數秒內自行消失；也可能是更新成功的副產物而非原因 |
+| `mediaremote:Command` | 使用者實際操作鎖定畫面／控制中心的傳輸控制 | 停手後數秒 |
+| `pictureinpicture:PIPVisible` | PiP 啟動 | 僅在啟動瞬間出現，無法持續持有 |
+
+這四項都是系統為了與字幕無關的理由授予的，**無法申請、無法延長、消失後無法重新
+取得**。因此背景可用時間長短取決於系統當下的授予狀況，本 Tweak 無法保證。
+
+實務上最可靠的用法是：**開啟 App → 播放影片 → 直接鎖屏 → 中途不要回到 App**。
+只要沒有回過前景，`LaunchPrefetch` 就可能長時間保留（最新樣本約 4 分 51 秒，期間
+跨越多部影片）。一旦回到 App 一次，該次 App session 即失去此資格，之後不論換第
+幾部影片或是否使用 PiP 都無法恢復；需要強制關閉 YouTube 再重新開啟才會重置。
+
+判讀 log 時有一個陷阱：**「沒有出現拒絕」不等於「有資格」**。拒絕只在實際發起
+更新時才會產生，而字幕僅在 cue 邊界更新，因此兩次換句之間的空白期不能當作有資格
+的證據。
+
+### 已實測否決的做法
+
+- `UIApplication beginBackgroundTask`：只能提供有限的收尾時間，不能建立可長期
+  續期的字幕服務；在 media-playback-only 狀態下也沒有恢復持續 ActivityKit 更新。
+- 以私有 `MRMediaRemoteSendCommand` 送出多餘的 Play 指令換取
+  `mediaremote:Command`：41 次送出、0 次產生該 assertion（App 內部呼叫不會走
+  mediaremoted 的外部遙控投遞路徑），且會讓使用者暫停的影片自行繼續播放。
+- 在 App 內偽造前景狀態：狀態由 FrontBoard／RunningBoard 授予並由
+  `liveactivitiesd` 跨程序查詢，hook 自身 `applicationState` 只能騙到本程序的
+  程式碼。
+- ShazamKit 作為標題搜尋的備援：需要 `com.apple.developer.shazamkit` entitlement
+  （必須綁定自有 App ID），且需麥克風權限——戴耳機時無法辨識播放中的音樂。
+
+### iOS 26 continued-processing 實驗
+
+先前 `BGContinuedProcessingTaskRequest` 的失敗樣本使用了錯誤的註冊模型：Info.plist
+雖正確允許 `<prefix>.*`，程式卻把 wildcard 字串本身註冊成 handler，再以 concrete
+UUID identifier 提交 request。WWDC25 與 Apple DTS 指定的流程是：wildcard 只放在
+Info.plist；每一代都以**同一個完整 concrete identifier**依序 register 與 submit。
+
+修正版預設執行「system-task-only」第一階段：系統授予 task 後，以
+`updateTitle:subtitle:` 更新 iOS 自己建立的可取消 Live Activity，暫停 Caption Island
+自訂 ActivityKit 寫入。設定中的第二個 probe 開關可在下一階段允許兩者同時更新，以
+判斷 continued-processing assertion 是否也讓 `liveactivitiesd` 接受自訂 revision。
+已授予的 task 會跨前景／背景切換沿用，不再因回到前景而自動完成並重建。
+
+Apple 對此的正式立場（開發者論壇 thread 776031，Apple Frameworks Engineer 回覆）
+是：背景更新 Live Activity **只支援透過推播通知**。要真正突破，必須改用 APNs
+Live Activity push；而推播憑證必須綁定自有 Team ID 與 App ID，因此需要先以自己
+擁有的 bundle ID 重新簽署整個 App 與所有 `.appex`。
+
+### 診斷工具
+
+`CIProcessDiagnostics` 會在進入背景、回到前景，以及背景期間每 5 秒，記錄一筆
+`Eligibility` 分類的快照，內容包含 `UIApplication.backgroundTimeRemaining` 與
+RunningBoard 對本 process 的 `taskState`、`tags` 與 assertion 清單。要比對「可正常
+更新」與「被拒絕」兩種週期的差異，直接看這個分類即可。assertion 清單是從
+`RBSProcessState` 的 description 以字串解析取得——該欄位可由 KVC 讀到但回傳型別
+並非 `NSArray`，而 description 是 RunningBoard 唯一保證的表示形式。
+
+`Activity.update(_:)` 不會 throw，被 `liveactivitiesd` 拒絕時完全沒有回饋，因此
+bridge 會在下一次送出前回讀 ActivityKit 實際儲存的 revision，記錄
+`Caption reached the Live Activity` 或 `did not accept revision`。驗證刻意延後到
+下一個 cue 才做：緊接在 `update(_:)` 之後回讀會與 daemon 的往返競爭而誤報拒絕；
+相隔不到 0.4 秒的連續更新則直接略過驗證，寧可少一筆資料也不記錄不可信的結論。
 
 ## 設定
 
@@ -94,10 +162,12 @@ expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並�
 - 啟用或停用原生 Live Activity；
 - 選擇返回主畫面時使用 YouPiP 自動子母畫面，或使用 Caption Island 背景
   字幕模式；背景字幕模式只阻止自動 PiP，播放器內的手動 PiP 按鈕仍可使用；
-- 在 iOS 26 選擇是否啟用不需伺服器的持續背景字幕實驗模式；
+- 在 iOS 26 啟用持續背景字幕；第一輪保持「測試背景自訂 Live Activity」關閉，先只
+  驗證系統背景任務 UI，第二輪才開啟自訂 ActivityKit probe；
 - 選擇中文（繁體）、英文或日文人工字幕；
 - 選擇 LRCLIB 優先或 YouTube 內建字幕優先；
 - 啟用或停用 LRCLIB 查詢；
+- 在「已儲存的歌詞」查看已快取首數、查無歌詞筆數與占用空間，並匯出／匯入／清除；
 - 為目前影片指定 LRCLIB 搜尋歌名、歌手與字幕提前／延後秒數（正值代表提早，
   範圍為 -30～+30 秒）；設定以 YouTube video ID 個別保存；
 - 選擇是否顯示 `CC`／`ASR` 來源標記；LRCLIB 來源固定標示；
@@ -146,14 +216,36 @@ PiP 關閉後的控制中心恢復會另外使用 `PlayerGraph` 分類，依序�
 Topic／VEVO／Official Artist Channel 才會加入歌手條件。無法可靠推導時會只查
 歌名，使用者可用目前影片的專屬設定消除同名歌曲歧義。
 
-Provider 使用 LRCLIB `GET /api/search`。先以歌曲名稱與歌手搜尋，沒有可信候選時
-再做一次較寬鬆搜尋。搜尋最多評估 50 筆資料，排除 instrumental、無歌詞、歌手或
-文字相似度過低，以及與影片版本／長度明顯不符的候選。
+Provider 使用 LRCLIB `GET /api/search`，且**只送 `track_name`**。LRCLIB 把
+`artist_name` 當成 AND 條件，而從上傳標題推導出的歌手經常與 LRCLIB 的正式署名
+不完全一致（例如 `ウォルピスカーター MV`、`HoneyWorks feat.ハコニワリリィ`、
+角色／CV 名稱），一旦送出就會得到零筆結果——這是「標題明明正確卻找不到歌詞」的
+主要原因。歌手因此只作為候選排序訊號，不作為任何過濾條件。沒有可信候選時再做
+一次較寬鬆的 `q` 全文搜尋。搜尋會排除 instrumental、無歌詞、歌名相似度過低，以及
+與影片版本／長度明顯不符的候選。
 
-候選先通過歌名／歌手門檻，再以影片總時間選擇最接近的版本。LRCLIB 曲目比影片長
-時只容許約 18～35 秒差距，避免 90 秒 TV Size 誤配到較長版本；影片比曲目長時則
-容許約 35～60 秒，保留 MV 劇情片頭／片尾的空間。在安全的長度差距內優先使用
-同步歌詞；同步時間軸不合理時，會退回同筆純文字歌詞。
+候選篩選門檻依歌手是否被資料佐證而定：若有任何候選的歌手相似度達標，則歌手可信，
+沿用歌名與歌手的合併分數作為門檻；若完全沒有候選對得上，則判定歌手為誤推，改為
+只以歌名分數篩選，避免把正確曲目連帶剔除。唯一的例外是正規化後長度極短（5 字元
+以內）的歌名——這類通常是常見單字，資訊量不足以單獨判定，仍要求基本的歌手相符。
+
+通過門檻後以影片總時間選擇最接近的版本。LRCLIB 曲目比影片長時只容許約 18～35 秒
+差距，避免 90 秒 TV Size 誤配到較長版本；影片比曲目長時則容許約 35～60 秒，保留
+MV 劇情片頭／片尾的空間。時間差在 2.5 秒以內視為同一版本並列，此時**優先選擇有
+同步歌詞的候選**——LRCLIB 常收錄同一首歌的多筆上傳，長度僅差不到一秒但只有其中
+一筆帶時間軸，嚴格照時間差排序會為了 0.3 秒之差而丟掉同步版本。同步時間軸不合理
+時，會退回同筆純文字歌詞。
+
+查詢結果會寫入本機快取，最多 512 筆、檔案上限 8 MB，成功保留 30 天、失敗（查無
+結果）保留 12 小時。快取可在設定頁匯出成單一 plist 以搬移到其他裝置；匯出只包含
+未過期且確實有歌詞的項目，「查無歌詞」的負向記錄短命且無遷移價值，不會帶走。
+匯入時每一筆都會重新走一次與網路回應相同的驗證流程（長度、數量、時間軸合理性），
+任何不合格的項目直接略過而不會讓整次匯入失敗；schema 版本不符或檔案無法解析則會
+明確回報錯誤。因為快取位於 `Library/Caches`，系統在空間不足時可能清除，匯出檔是
+唯一能長期保存的形式。快取檔帶有
+schema 版本，載入時會比對；只要查詢構成或評分規則改動就遞增該版本，整份快取即自動
+失效。這是必要的：負向快取會完全跳過網路請求，若不失效，搜尋邏輯的修正在舊項目
+過期前都不會生效。
 LRCLIB 內容不跨影片寫入磁碟快取。若要公開發行，仍應自行確認歌詞內容的顯示權利。
 
 ## 資源使用
@@ -173,7 +265,8 @@ LRCLIB 內容不跨影片寫入磁碟快取。若要公開發行，仍應自行�
 專案由根 Makefile 編譯 tweak、嵌入 `CaptionIsland.bundle`，並封裝
 `CaptionIslandWidget.appex`。封裝時也會把
 `<主程式 Bundle ID>.captionisland.background-captions.*` 加入主程式的
-`BGTaskSchedulerPermittedIdentifiers`。iOS 26 API 以 runtime availability
+`BGTaskSchedulerPermittedIdentifiers`；執行時則為每一代產生一個 UUID concrete
+identifier，並以該完整值依序 register 與 submit。iOS 26 API 以 runtime availability
 檢查，因此最低部署版本與建置 SDK 仍可維持 iOS 17.5。在 Theos、theos-jailed、
 iOS SDK 與合法取得的
 decrypted YouTube IPA 都已準備好時，可沿用專案原本的建置方式：
@@ -182,12 +275,68 @@ decrypted YouTube IPA 都已準備好時，可沿用專案原本的建置方式�
 make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
 ```
 
+`Scripts/build-local.sh` 可在本機重現 CI 的「Build and Release uYouEnhanced」
+流程：帶入一份 decrypted IPA，建置**當前工作樹**（含未提交的改動），跑完整測試與
+建置後的 IPA 驗證，輸出到 `build-output/` 並附上分支、commit 與 SHA256：
+
+```sh
+Scripts/build-local.sh --ipa ~/Downloads/YouTube.ipa
+```
+
+Theos、theos-jailed 與 SDK 會依 CI 釘選的版本下載並快取於 `.build-toolchain/`。
+若本機 Xcode 的 Swift 大版本與釘選 SDK 不符（Swift 無法用不同大版本的編譯器重建
+SDK 的 `.swiftinterface`），腳本會在建置前就中止並提示兩種解法：`--use-xcode-sdk`
+改用本機 Xcode 的 iOS SDK（部署目標仍為 17.5），或 `--developer-dir` 指向 Swift
+版本相符的 Xcode。
+
 純 Foundation fixtures 位於 `Tweaks/CaptionIslandTests`：
 
 ```sh
 swift test --package-path Tweaks/CaptionIslandTests
 ```
 
+同目錄的 `ObjC/` 另有六個獨立 smoke test，各自只連結所需的少數 `.m`，用來守住
+標題解析、LRCLIB 候選評分、影片政策、逐句時間等行為。它們刻意維持最小依賴，因此
+為某個模組新增 `#import` 時可能造成連結失敗；CI 的完整指令列於
+`.github/workflows/buildapp.yml`，`build-local.sh` 也會全部執行。
+
 YouTube 的私有 class／selector 可能隨版本改動；更新 YouTube 後，應在真機重新測試
 一般影片、Shorts、廣告切換、seek、PiP、鎖定畫面與背景播放。安裝前也必須遞迴簽署
 主 App 與所有 `.appex`，否則系統不會載入 Live Activity extension。
+
+## Todo
+
+### 待實作
+
+- **播放器內的歌詞選擇按鈕**：讓使用者為目前影片指定要用哪一筆 LRCLIB 結果，或
+  選擇完全不使用歌詞；選擇需以 YouTube video ID 持久保存，再次開啟同一支影片時
+  自動套用。按鈕的擺放位置尚未決定。
+
+### 已完成
+
+- 歌詞快取的匯出／匯入，以及設定頁的已快取首數、查無歌詞筆數與占用空間顯示
+  （原本只有一個沒有任何數量資訊的「清除快取」按鈕）。快取上限同時由 32 筆提高到
+  512 筆——32 首歌太少，不值得做遷移。
+
+### 待修的已知問題
+
+- **音訊已停止但字幕仍繼續推進**：背景監控器在 YouTube 私有 media-time getter
+  停住時，會改用系統 Now Playing 的 playback rate 延續時間軸。若 Now Playing 仍
+  回報「正在播放」而實際音訊已停，字幕就會在無聲的情況下繼續換句。log 中對應
+  `YouTube's private background clock paused while Now Playing still reported
+  active playback`。需要一份「播放中途自行暫停」的 log 來確認 Now Playing rate 與
+  私有時鐘各自回報什麼。
+
+### 待驗證
+
+- **expanded Dynamic Island 頂部邊距**：leading／trailing region 的
+  `.contentMargins(.top,)` 已由 8 調整為 18 以修正 icon 與文字被裁切，但尚未在
+  真機上目視確認；若留白過多需再往下調整。
+- **`build-local.sh --use-xcode-sdk` 的完整建置**：已驗證能通過 SDK 選擇與工具鏈
+  檢查並進入編譯，但尚未實際完成一次「編譯到底 + 通過 IPA 驗證」的完整流程。
+- **快取匯出／匯入的實機流程**：往返、負向項目排除與惡意輸入拒絕都已用純 Foundation
+  測試驗證，`UIDocumentPickerViewController` 與 `UIActivityViewController` 的呼叫也
+  已對 iOS SDK 型別檢查，但尚未在真機上實際跑過一次分享與挑檔。
+- **`sessionkitd:DeliverEvent` 的因果關係**：它與「可更新」高度相關，但可能只是
+  Live Activity 更新成功後的副產物。要分辨需要一個「只有 MediaPlayback +
+  sessionkitd 且確實發生 cue 更新嘗試」的乾淨樣本。

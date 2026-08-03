@@ -28,8 +28,33 @@ FOUNDATION_EXPORT NSURL *CILRCLIBGetEndpointURL(void);
 typedef void (^CILRCLIBCompletion)(CILRCLIBResult * _Nullable result,
                                    NSError * _Nullable error);
 
+/// A snapshot of what the on-disk LRCLIB cache currently holds.
+@interface CILRCLIBCacheSummary : NSObject
+/// Unexpired entries that carry usable lyrics.
+@property (nonatomic) NSUInteger lyricCount;
+/// Unexpired "this track has no lyrics" entries, which suppress repeat lookups.
+@property (nonatomic) NSUInteger missCount;
+/// Size of the cache file on disk.
+@property (nonatomic) unsigned long long byteCount;
+@end
+
 @interface CILRCLIBProvider : NSObject
 + (void)clearPersistentCache;
+
+/// Counts what is currently cached, ignoring entries that have already expired.
++ (CILRCLIBCacheSummary *)cacheSummary;
+
+/// Writes the cached lyrics to a shareable file and returns its location, or nil
+/// with `error` set. Misses and expired entries are left out: they are
+/// short-lived and worthless to carry to another device.
++ (nullable NSURL *)exportCacheWithError:(NSError * _Nullable * _Nullable)error;
+
+/// Merges an exported file into the cache and returns how many entries were
+/// added. The file is untrusted input, so every entry is re-validated and
+/// anything malformed is skipped rather than failing the whole import.
++ (NSUInteger)importCacheFromURL:(NSURL *)URL
+                           error:(NSError * _Nullable * _Nullable)error;
+
 - (void)fetchLyricsForTitle:(NSString *)title
                      artist:(NSString *)artist
                    duration:(NSTimeInterval)duration

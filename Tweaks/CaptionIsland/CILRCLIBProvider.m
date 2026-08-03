@@ -24,12 +24,17 @@ static const NSTimeInterval CILRCLIBNegativeCacheLifetime = 12 * 60 * 60;
 static const NSTimeInterval CILRCLIBDefaultRateLimitCooldown = 15 * 60;
 static const NSTimeInterval CILRCLIBInitialBlockCooldown = 60 * 60;
 static const NSTimeInterval CILRCLIBMaximumBlockCooldown = 24 * 60 * 60;
-static const NSUInteger CILRCLIBMaximumCacheEntries = 32;
+// Raised from 32 once the cache became exportable: 32 songs is too small to be
+// worth migrating. The 8 MB file cap below remains the real guard, and a cached
+// entry is only a few KB.
+static const NSUInteger CILRCLIBMaximumCacheEntries = 512;
 static const NSUInteger CILRCLIBMaximumCacheBytes = 8 * 1024 * 1024;
 static NSString *const CILRCLIBCooldownDefaultsKey =
     @"CaptionIsland.LRCLIBCooldowns";
 static NSString *const CILRCLIBCacheKindResult = @"result";
 static NSString *const CILRCLIBCacheKindMiss = @"miss";
+static NSString *const CILRCLIBExportFileName =
+    @"CaptionIsland-Lyrics.plist";
 static NSUInteger CILRCLIBPersistentCacheGeneration = 1;
 // Bump whenever a change to query construction or candidate scoring could turn
 // a previously cached miss into a hit. Cached negatives live for 12 hours and
@@ -333,6 +338,10 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 @property (nonatomic) NSUInteger persistentCacheGeneration;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *
     persistentCacheEntries;
+- (nullable CILRCLIBResult *)resultFromCacheEntry:(NSDictionary *)entry;
+- (NSDictionary *)cacheEntryForResult:(CILRCLIBResult *)result
+                              expires:(NSTimeInterval)expires;
+- (void)storeCacheEntry:(NSDictionary *)entry forKey:(NSString *)key;
 @end
 
 @implementation CILRCLIBResult
@@ -351,7 +360,174 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 
 @end
 
+@implementation CILRCLIBCacheSummary
+@end
+
 @implementation CILRCLIBProvider
+
+/// Reads the cache file straight from disk. Summary, export and import all work
+/// on the file rather than any live instance's dictionary, so they agree with
+/// each other regardless of which providers happen to exist.
++ (NSDictionary *)entriesFromDiskWithByteCount:(unsigned long long *)byteCount {
+    if (byteCount) *byteCount = 0;
+    NSString *path = CILRCLIBCachePath();
+    if (path.length == 0) return @{};
+    NSData *data = [NSData dataWithContentsOfFile:path options:0 error:nil];
+    if (data.length == 0 || data.length > CILRCLIBMaximumCacheBytes) return @{};
+    if (byteCount) *byteCount = data.length;
+    id root = [NSPropertyListSerialization propertyListWithData:data
+                                                        options:0
+                                                         format:NULL
+                                                          error:nil];
+    if (![root isKindOfClass:NSDictionary.class]) return @{};
+    NSUInteger storedVersion =
+        [root[@"version"] respondsToSelector:@selector(unsignedIntegerValue)]
+            ? [root[@"version"] unsignedIntegerValue] : 0;
+    if (storedVersion != CILRCLIBCacheSchemaVersion) return @{};
+    id entries = root[@"entries"];
+    return [entries isKindOfClass:NSDictionary.class] ? entries : @{};
+}
+
++ (CILRCLIBCacheSummary *)cacheSummary {
+    CILRCLIBCacheSummary *summary = [CILRCLIBCacheSummary new];
+    unsigned long long byteCount = 0;
+    NSDictionary *entries = [self entriesFromDiskWithByteCount:&byteCount];
+    summary.byteCount = byteCount;
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    for (id key in entries) {
+        NSDictionary *entry = entries[key];
+        if (![entry isKindOfClass:NSDictionary.class]) continue;
+        if ([entry[@"expiresAt"] doubleValue] <= now) continue;
+        if ([entry[@"kind"] isEqual:CILRCLIBCacheKindMiss]) summary.missCount++;
+        else if ([entry[@"kind"] isEqual:CILRCLIBCacheKindResult]) {
+            summary.lyricCount++;
+        }
+    }
+    return summary;
+}
+
++ (NSURL *)exportCacheWithError:(NSError **)error {
+    NSDictionary *entries = [self entriesFromDiskWithByteCount:NULL];
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    NSMutableDictionary *exported = [NSMutableDictionary dictionary];
+    for (id key in entries) {
+        if (![key isKindOfClass:NSString.class]) continue;
+        NSDictionary *entry = entries[key];
+        if (![entry isKindOfClass:NSDictionary.class] ||
+            ![entry[@"kind"] isEqual:CILRCLIBCacheKindResult] ||
+            [entry[@"expiresAt"] doubleValue] <= now) continue;
+        exported[key] = entry;
+    }
+    if (exported.count == 0) {
+        if (error) {
+            *error = CILRCLIBError(-30, @"There are no cached lyrics to export.");
+        }
+        return nil;
+    }
+
+    NSData *data = [NSPropertyListSerialization
+        dataWithPropertyList:@{
+            @"version": @(CILRCLIBCacheSchemaVersion),
+            @"entries": exported,
+        }
+        format:NSPropertyListBinaryFormat_v1_0
+        options:0
+        error:nil];
+    if (data.length == 0) {
+        if (error) {
+            *error = CILRCLIBError(-31, @"Unable to encode the cached lyrics.");
+        }
+        return nil;
+    }
+    // A stable name inside a unique directory keeps the shared filename
+    // meaningful without colliding across repeated exports.
+    NSString *directory = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:directory
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil]) {
+        if (error) {
+            *error = CILRCLIBError(-32, @"Unable to prepare the export file.");
+        }
+        return nil;
+    }
+    NSString *path =
+        [directory stringByAppendingPathComponent:CILRCLIBExportFileName];
+    if (![data writeToFile:path options:NSDataWritingAtomic error:nil]) {
+        if (error) {
+            *error = CILRCLIBError(-33, @"Unable to write the export file.");
+        }
+        return nil;
+    }
+    return [NSURL fileURLWithPath:path];
+}
+
++ (NSUInteger)importCacheFromURL:(NSURL *)URL error:(NSError **)error {
+    NSData *data = [NSData dataWithContentsOfURL:URL options:0 error:nil];
+    if (data.length == 0 || data.length > CILRCLIBMaximumCacheBytes) {
+        if (error) {
+            *error = CILRCLIBError(-34, data.length == 0
+                ? @"The selected file could not be read."
+                : @"The selected file is too large to import.");
+        }
+        return 0;
+    }
+    id root = [NSPropertyListSerialization propertyListWithData:data
+                                                        options:0
+                                                         format:NULL
+                                                          error:nil];
+    NSUInteger version =
+        [root isKindOfClass:NSDictionary.class] &&
+        [root[@"version"] respondsToSelector:@selector(unsignedIntegerValue)]
+            ? [root[@"version"] unsignedIntegerValue] : 0;
+    id incoming = [root isKindOfClass:NSDictionary.class]
+        ? root[@"entries"] : nil;
+    if (![incoming isKindOfClass:NSDictionary.class]) {
+        if (error) {
+            *error = CILRCLIBError(-35,
+                @"The selected file is not a Caption Island lyric export.");
+        }
+        return 0;
+    }
+    if (version != CILRCLIBCacheSchemaVersion) {
+        if (error) {
+            *error = CILRCLIBError(-36,
+                @"The export was written by an incompatible version.");
+        }
+        return 0;
+    }
+
+    CILRCLIBProvider *provider = [CILRCLIBProvider new];
+    NSUInteger imported = 0;
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    for (id key in incoming) {
+        if (imported >= CILRCLIBMaximumCacheEntries) break;
+        if (![key isKindOfClass:NSString.class] ||
+            ((NSString *)key).length == 0) continue;
+        NSDictionary *entry = incoming[key];
+        if (![entry isKindOfClass:NSDictionary.class]) continue;
+        // Round-tripping through resultFromCacheEntry re-applies every length,
+        // count and timing rule the network path uses, so a hand-edited or
+        // corrupted file cannot inject anything the app would not have accepted
+        // from LRCLIB itself.
+        CILRCLIBResult *result = [provider resultFromCacheEntry:entry];
+        if (!result) continue;
+        NSTimeInterval expires = [entry[@"expiresAt"] doubleValue];
+        if (expires <= now) {
+            expires = now + CILRCLIBPositiveCacheLifetime;
+        }
+        [provider storeCacheEntry:[provider cacheEntryForResult:result
+                                                       expires:expires]
+                          forKey:key];
+        imported++;
+    }
+    if (imported == 0 && error) {
+        *error = CILRCLIBError(-37,
+            @"The export contained no usable lyrics.");
+    }
+    return imported;
+}
 
 + (void)clearPersistentCache {
     NSString *path = CILRCLIBCachePath();
@@ -613,6 +789,15 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             NSDate.date.timeIntervalSince1970 + CILRCLIBPositiveCacheLifetime;
         self.persistentCacheEntries[key] =
             [self cacheEntryForResult:result expires:expires];
+        [self writePersistentCacheLocked];
+    }
+}
+
+- (void)storeCacheEntry:(NSDictionary *)entry forKey:(NSString *)key {
+    if (entry.count == 0 || key.length == 0) return;
+    @synchronized (self) {
+        [self loadPersistentCacheIfNeededLocked];
+        self.persistentCacheEntries[key] = entry;
         [self writePersistentCacheLocked];
     }
 }
