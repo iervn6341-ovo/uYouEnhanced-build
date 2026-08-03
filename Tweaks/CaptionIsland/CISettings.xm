@@ -1043,6 +1043,57 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
         }]];
 
     [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(
+            @"VIDEO_OVERRIDE",
+            @"Current video lyric settings"
+        )
+        titleDescription:CILocalized(
+            @"VIDEO_OVERRIDE_DESCRIPTION",
+            @"Override the LRCLIB title, artist, and caption timing for the current video."
+        )
+        accessibilityIdentifier:@"CaptionIsland.VideoOverride"
+        detailTextBlock:^NSString * {
+            return [NSString stringWithFormat:CILocalized(
+                @"VIDEO_OVERRIDE_COUNT",
+                @"%lu videos saved"
+            ), (unsigned long)CIVideoOverrideCount()];
+        }
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            CIPresentCurrentVideoOverride(settingsViewController);
+            return YES;
+        }]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(
+            @"VIDEO_LANGUAGE_PRIORITY",
+            @"Current video caption languages"
+        )
+        titleDescription:CILocalized(
+            @"VIDEO_LANGUAGE_PRIORITY_DESCRIPTION",
+            @"Save a separate YouTube caption-language order for the video that is currently playing."
+        )
+        accessibilityIdentifier:
+            @"CaptionIsland.VideoLanguagePriority"
+        detailTextBlock:^NSString * {
+            return CILocalized(
+                @"VIDEO_LANGUAGE_PRIORITY_OPEN",
+                @"Configure"
+            );
+        }
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            CIPresentCurrentVideoLanguagePriorities(
+                settingsViewController
+            );
+            return YES;
+        }]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
         switchItemWithTitle:CILocalized(@"DEBUG_LOGGING", @"Detailed logging")
         titleDescription:CILocalized(@"DEBUG_LOGGING_DESCRIPTION", @"Include detailed diagnostics. Lyrics, URLs, cookies, and authorization data are never recorded.")
         accessibilityIdentifier:@"CaptionIsland.Debug"
