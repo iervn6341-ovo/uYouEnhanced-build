@@ -102,7 +102,7 @@
 "CONTINUED_TASK_ADVERTISEMENT" = "広告を再生中";
 "CONTINUED_TASK_ADVERTISEMENT_DESCRIPTION" = "字幕同期を一時停止しています";
 "LRCLIB_CACHE" = "保存済みの歌詞";
-"LRCLIB_CACHE_DESCRIPTION" = "別のデバイスへ移すために書き出す、以前の書き出しを読み込む、またはすべて消去して現在の動画を再検索します。";
+"LRCLIB_CACHE_DESCRIPTION" = "歌詞は無期限に保存されるため、同じ動画を開き直しても再検索しません。閲覧・検索・削除ができ、書き出して別のデバイスへ移せます。";
 "LRCLIB_CACHE_COUNT" = "%lu 曲";
 "LRCLIB_CACHE_SUMMARY" = "%lu 曲を保存、%lu 件は歌詞なしとして記録、ディスク使用量 %@。";
 "LRCLIB_CACHE_EXPORT" = "書き出す…";
@@ -110,3 +110,17 @@
 "LRCLIB_CACHE_IMPORT_DONE" = "%lu 曲を読み込みました。";
 "LRCLIB_CACHE_IMPORT_FAILED" = "このファイルは読み込めませんでした。";
 "LRCLIB_CACHE_EXPORT_FAILED" = "保存済みの歌詞を書き出せませんでした。";
+"DELETE" = "削除";
+"LRCLIB_CACHE_BROWSE" = "保存済みの歌詞を管理…";
+"LRCLIB_CACHE_SEARCH_PLACEHOLDER" = "曲名・アーティスト・アルバムを検索";
+"LRCLIB_CACHE_TOTAL_COUNT" = "%lu 曲を保存 · 削除するまで保持されます";
+"LRCLIB_CACHE_FILTER_COUNT" = "%lu 件が一致（全 %lu 曲）";
+"LRCLIB_CACHE_DELETE_MATCHING" = "一致する項目を削除";
+"LRCLIB_CACHE_DELETE_MATCHING_CONFIRM" = "この検索に一致する %lu 曲を削除しますか？";
+"LRCLIB_CACHE_DELETE_ALL_CONFIRM" = "保存済みの %lu 曲すべてを削除しますか？";
+"LRCLIB_CACHE_SYNCED" = "同期あり";
+"LRCLIB_CACHE_PLAIN" = "テキストのみ";
+"LRCLIB_CACHE_SYNCED_SUFFIX" = " · 同期あり";
+"LRCLIB_CACHE_PLAIN_SUFFIX" = " · テキストのみ";
+"LRCLIB_CACHE_LINE_COUNT" = "%lu 行";
+"LRCLIB_CACHE_EMPTY" = "保存された歌詞はまだありません。歌詞が見つかる動画を再生すると保存されます。";

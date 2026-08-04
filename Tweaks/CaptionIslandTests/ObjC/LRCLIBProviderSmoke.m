@@ -186,6 +186,10 @@ int main(void) {
             @"Nachoneko", @"風になる",
             @"a title-first slash upload is parsed artist-first and relies on the reversed retry");
         CIAssertSongMetadata(
+            @"風になる / Nachoneko【ライブ映像】",
+            @"Nachoneko", @"風になる",
+            @"a Japanese live-footage block is upload metadata and must not stay in the track name");
+        CIAssertSongMetadata(
             @"Tetoris / Kasane Teto SV",
             @"Tetoris", @"",
             @"a vocal-synth suffix should reverse the slash direction without becoming a hard artist filter");
@@ -351,16 +355,49 @@ int main(void) {
         CIAssert(artistConstrainedResult.recordID == 92 && error == nil,
             @"a correct artist must beat a wrong artist even when its duration is less exact");
 
+        // With no usable artist the duration decides, because a popular song
+        // has many performers in LRCLIB and abstaining on all of them would
+        // mean never showing lyrics for the songs most likely to be watched.
         error = nil;
-        CILRCLIBResult *ambiguousTitleOnly =
+        CILRCLIBResult *durationDecides =
             [provider lyricsResultFromSearchData:
                 CIJSONData(artistConstrainedCandidates)
                 title:@"Never Looking Back"
                 artist:@""
                 videoDuration:248.0
                 error:&error];
-        CIAssert(ambiguousTitleOnly == nil && error.code == 404,
-            @"title-only lookup should abstain when different singers have equally plausible versions");
+        CIAssert(durationDecides.recordID == 91 && error == nil,
+            @"title-only lookup should take the clearly closer duration rather than abstain");
+
+        // Abstention is now reserved for a real tie: same title, different
+        // performers, identical durations, neither carrying a timeline.
+        NSArray *tiedCandidates = @[
+            CIRecord(97, @"Never Looking Back", @"Kobayashi Rin", 250.0,
+                @"Version one\nSecond line", nil),
+            CIRecord(98, @"Never Looking Back", @"Wilkinson Trio", 250.0,
+                @"Version two\nSecond line", nil),
+        ];
+        error = nil;
+        CILRCLIBResult *trueTie = [provider lyricsResultFromSearchData:
+            CIJSONData(tiedCandidates) title:@"Never Looking Back"
+            artist:@"" videoDuration:250.0 error:&error];
+        CIAssert(trueTie == nil && error.code == 404,
+            @"two indistinguishable performances at the same duration should still abstain");
+
+        // A timeline is the feature's whole point, so it breaks a duration tie
+        // instead of being treated as a coin flip.
+        error = nil;
+        CILRCLIBResult *syncedBreaksTie = [provider lyricsResultFromSearchData:
+            CIJSONData(@[
+                tiedCandidates[0],
+                CIRecord(99, @"Never Looking Back", @"Wilkinson Trio", 250.0,
+                    @"Version two\nSecond line",
+                    @"[00:01.00]Version two\n[04:00.00]Second line"),
+            ])
+            title:@"Never Looking Back" artist:@"" videoDuration:250.0
+            error:&error];
+        CIAssert(syncedBreaksTie.recordID == 99 && error == nil,
+            @"a synced timeline should resolve a duration tie between performers");
 
         // Upload titles built around a separator frequently put something other
         // than a performer on the left: a game and scene name, a franchise, a
@@ -414,10 +451,10 @@ int main(void) {
 
         error = nil;
         CILRCLIBResult *stillAbstains = [provider bestResultFromSearchData:
-            CIJSONData(artistConstrainedCandidates)
+            CIJSONData(tiedCandidates)
             title:@"Never Looking Back"
             artist:@"Unrelated Uploader"
-            videoDuration:248.0
+            videoDuration:250.0
             error:&error];
         CIAssert(stillAbstains == nil && error.code == 404,
             @"widening the search must not start guessing between indistinguishable performances");

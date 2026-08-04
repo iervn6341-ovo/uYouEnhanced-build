@@ -102,7 +102,7 @@
 "CONTINUED_TASK_ADVERTISEMENT" = "Advertisement playing";
 "CONTINUED_TASK_ADVERTISEMENT_DESCRIPTION" = "Caption synchronization is paused";
 "LRCLIB_CACHE" = "Saved lyrics";
-"LRCLIB_CACHE_DESCRIPTION" = "Export the saved lyrics to move them to another device, import a previous export, or forget everything and look the current video up again.";
+"LRCLIB_CACHE_DESCRIPTION" = "Lyrics are saved permanently, so reopening a video never repeats the lookup. Browse or delete them, search by song, and export to move them to another device.";
 "LRCLIB_CACHE_COUNT" = "%lu songs";
 "LRCLIB_CACHE_SUMMARY" = "%lu songs saved, %lu lookups remembered as having no lyrics, %@ on disk.";
 "LRCLIB_CACHE_EXPORT" = "Export…";
@@ -110,3 +110,17 @@
 "LRCLIB_CACHE_IMPORT_DONE" = "Imported %lu songs.";
 "LRCLIB_CACHE_IMPORT_FAILED" = "Could not import that file.";
 "LRCLIB_CACHE_EXPORT_FAILED" = "Could not export the saved lyrics.";
+"DELETE" = "Delete";
+"LRCLIB_CACHE_BROWSE" = "Manage saved lyrics…";
+"LRCLIB_CACHE_SEARCH_PLACEHOLDER" = "Search song, artist or album";
+"LRCLIB_CACHE_TOTAL_COUNT" = "%lu songs saved · kept until you delete them";
+"LRCLIB_CACHE_FILTER_COUNT" = "%lu of %lu saved songs match";
+"LRCLIB_CACHE_DELETE_MATCHING" = "Delete matching";
+"LRCLIB_CACHE_DELETE_MATCHING_CONFIRM" = "Delete the %lu songs matching this search?";
+"LRCLIB_CACHE_DELETE_ALL_CONFIRM" = "Delete all %lu saved songs?";
+"LRCLIB_CACHE_SYNCED" = "synced";
+"LRCLIB_CACHE_PLAIN" = "plain text";
+"LRCLIB_CACHE_SYNCED_SUFFIX" = " · synced";
+"LRCLIB_CACHE_PLAIN_SUFFIX" = " · plain text";
+"LRCLIB_CACHE_LINE_COUNT" = "%lu lines";
+"LRCLIB_CACHE_EMPTY" = "No lyrics saved yet. Playing a video that finds lyrics saves them here.";

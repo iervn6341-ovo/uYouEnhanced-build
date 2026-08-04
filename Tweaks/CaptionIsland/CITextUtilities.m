@@ -108,18 +108,18 @@ static NSString *CIRemoveVideoDecorations(NSString *value) {
         // title, so a real title such as 【アイドル】 is still preserved.
         @"^\\s*【[^】\\r\\n]*】\\s*",
         // Known decoration blocks can occur anywhere in an upload title.
-        @"(?i)[\\[［【][^\\]］】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\]］】\\r\\n]*[\\]］】]",
+        @"(?i)[\\[［【][^\\]］】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|ライブ映像|ライブ|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\]］】\\r\\n]*[\\]］】]",
         // Remove a trailing bracket only when it contains a known video,
         // version, lyric, subtitle, or transliteration marker.
-        @"(?i)\\s*[\\[(（【][^\\])）】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\])）】\\r\\n]*[\\])）】]\\s*$",
+        @"(?i)\\s*[\\[(（【][^\\])）】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|ライブ映像|ライブ|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\])）】\\r\\n]*[\\])）】]\\s*$",
         // Anime/program context following a clean song title is upload
         // metadata, not part of the LRCLIB track name.
         @"(?i)\\s*\\((?:tv\\s*)?(?:anime|アニメ)[^\\r\\n)]*(?:opening|ending|\\bop\\b|\\bed\\b|主題歌)[^\\r\\n)]*\\)\\s*$",
         // A pipe normally separates the actual title from upload metadata.
         // Unknown pipe suffixes are retained instead of being guessed away.
-        @"(?i)\\s*[|｜]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
+        @"(?i)\\s*[|｜]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|ライブ映像|ライブ|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
         // The same metadata is sometimes introduced with a dash.
-        @"(?i)\\s*[-–—]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
+        @"(?i)\\s*[-–—]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|ライブ映像|ライブ|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
         // Common re-upload notes, optionally preceded by a take/track number.
         @"(?i)\\s+(?:\\d+\\s*)?(?:音[频頻](?:优化|優化)|纯享版|純享版).*$",
         // A bare trailing video-format phrase with no bracket or separator, as

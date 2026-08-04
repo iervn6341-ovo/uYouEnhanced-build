@@ -102,7 +102,7 @@
 "CONTINUED_TASK_ADVERTISEMENT" = "正在播放廣告";
 "CONTINUED_TASK_ADVERTISEMENT_DESCRIPTION" = "字幕同步已暫停";
 "LRCLIB_CACHE" = "已儲存的歌詞";
-"LRCLIB_CACHE_DESCRIPTION" = "可匯出以搬移到其他裝置、匯入先前的匯出檔，或全部清除並重新查詢目前影片。";
+"LRCLIB_CACHE_DESCRIPTION" = "歌詞會永久保存，重看同一支影片不會再查詢一次。可瀏覽、搜尋、刪除，也可匯出以搬移到其他裝置。";
 "LRCLIB_CACHE_COUNT" = "%lu 首";
 "LRCLIB_CACHE_SUMMARY" = "已儲存 %lu 首歌詞，%lu 筆記錄為查無歌詞，占用 %@。";
 "LRCLIB_CACHE_EXPORT" = "匯出…";
@@ -110,3 +110,17 @@
 "LRCLIB_CACHE_IMPORT_DONE" = "已匯入 %lu 首歌詞。";
 "LRCLIB_CACHE_IMPORT_FAILED" = "無法匯入該檔案。";
 "LRCLIB_CACHE_EXPORT_FAILED" = "無法匯出已儲存的歌詞。";
+"DELETE" = "刪除";
+"LRCLIB_CACHE_BROWSE" = "管理已儲存的歌詞…";
+"LRCLIB_CACHE_SEARCH_PLACEHOLDER" = "搜尋歌名、歌手或專輯";
+"LRCLIB_CACHE_TOTAL_COUNT" = "已儲存 %lu 首 · 不會過期，只有你刪除時才移除";
+"LRCLIB_CACHE_FILTER_COUNT" = "符合 %lu 首，共 %lu 首";
+"LRCLIB_CACHE_DELETE_MATCHING" = "刪除符合項目";
+"LRCLIB_CACHE_DELETE_MATCHING_CONFIRM" = "要刪除符合這次搜尋的 %lu 首歌詞嗎？";
+"LRCLIB_CACHE_DELETE_ALL_CONFIRM" = "要刪除全部 %lu 首已儲存的歌詞嗎？";
+"LRCLIB_CACHE_SYNCED" = "有時間軸";
+"LRCLIB_CACHE_PLAIN" = "純文字";
+"LRCLIB_CACHE_SYNCED_SUFFIX" = " · 有時間軸";
+"LRCLIB_CACHE_PLAIN_SUFFIX" = " · 純文字";
+"LRCLIB_CACHE_LINE_COUNT" = "%lu 行";
+"LRCLIB_CACHE_EMPTY" = "尚未儲存任何歌詞。播放能找到歌詞的影片後就會存在這裡。";

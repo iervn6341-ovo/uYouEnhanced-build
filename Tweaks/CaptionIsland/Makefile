@@ -27,6 +27,7 @@ CaptionIsland_FILES = \
 	CILRCLIBProvider.m \
 	CILogStore.m \
 	CIProcessDiagnostics.m \
+	CILRCLIBCacheViewController.m \
 	CILogViewController.m \
 	CIActivityPresenter.m \
 	CICaptionCoordinator.m \

@@ -12,6 +12,7 @@
 #import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
 #import "CILanguagePriorityViewController.h"
+#import "CILRCLIBCacheViewController.h"
 #import "CILRCLIBProvider.h"
 #import "CILogViewController.h"
 #import "CITextUtilities.h"
@@ -284,6 +285,13 @@ static void CIPresentLRCLIBCache(
         message:message
         preferredStyle:UIAlertControllerStyleActionSheet];
 
+    [sheet addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"LRCLIB_CACHE_BROWSE", @"Manage saved lyrics…")
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            [settingsViewController pushViewController:
+                [CILRCLIBCacheViewController new]];
+        }]];
     [sheet addAction:[UIAlertAction
         actionWithTitle:CILocalized(@"LRCLIB_CACHE_EXPORT", @"Export…")
         style:UIAlertActionStyleDefault

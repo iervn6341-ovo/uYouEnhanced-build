@@ -19,7 +19,14 @@ static const NSUInteger CILRCLIBMaximumPlainLines = 1000;
 static const NSUInteger CILRCLIBMaximumLyricLineCharacters = 2048;
 static const NSTimeInterval CILRCLIBMinimumRequestInterval = 2.0;
 static const NSTimeInterval CILRCLIBMinimumCompletionInterval = 1.0;
-static const NSTimeInterval CILRCLIBPositiveCacheLifetime = 30 * 24 * 60 * 60;
+// Lyrics never expire: an entry is removed only when the user deletes it, or
+// when the cache exceeds its size limits and the least recently stored entries
+// are evicted. Stored as expiresAt = 0, and any positive-kind entry written by
+// an older build is also treated as permanent.
+static const NSTimeInterval CILRCLIBNeverExpires = 0;
+// Misses deliberately keep a short life. A track absent from LRCLIB today may be
+// contributed tomorrow, so a permanent "no lyrics" verdict would lock the song
+// out for good; twelve hours is enough to stop repeat lookups during playback.
 static const NSTimeInterval CILRCLIBNegativeCacheLifetime = 12 * 60 * 60;
 static const NSTimeInterval CILRCLIBDefaultRateLimitCooldown = 15 * 60;
 static const NSTimeInterval CILRCLIBInitialBlockCooldown = 60 * 60;
@@ -27,7 +34,10 @@ static const NSTimeInterval CILRCLIBMaximumBlockCooldown = 24 * 60 * 60;
 // Raised from 32 once the cache became exportable: 32 songs is too small to be
 // worth migrating. The 8 MB file cap below remains the real guard, and a cached
 // entry is only a few KB.
-static const NSUInteger CILRCLIBMaximumCacheEntries = 512;
+// Nothing expires any more, so this and the byte ceiling are the only limits.
+// Eviction is least-recently-stored, not time based, and only happens once a
+// limit is exceeded — the export file is the way to keep more than this.
+static const NSUInteger CILRCLIBMaximumCacheEntries = 2000;
 static const NSUInteger CILRCLIBMaximumCacheBytes = 8 * 1024 * 1024;
 static NSString *const CILRCLIBCooldownDefaultsKey =
     @"CaptionIsland.LRCLIBCooldowns";
@@ -79,6 +89,16 @@ static NSError *CILRCLIBError(NSInteger code, NSString *description) {
     return [NSError errorWithDomain:CILRCLIBErrorDomain code:code userInfo:@{
         NSLocalizedDescriptionKey: description ?: @"LRCLIB request failed."
     }];
+}
+
+// Only misses expire. Entries written by an older build carry a real expiry
+// date, and are promoted to permanent here rather than by rewriting the file, so
+// nothing the user already has is ever lost to the change.
+static BOOL CILRCLIBCacheEntryHasExpired(NSDictionary *entry,
+                                         NSTimeInterval now) {
+    if (![entry isKindOfClass:NSDictionary.class]) return YES;
+    if (![entry[@"kind"] isEqual:CILRCLIBCacheKindMiss]) return NO;
+    return [entry[@"expiresAt"] doubleValue] <= now;
 }
 
 NSString *CILRCLIBDefaultBaseURL(void) {
@@ -189,18 +209,52 @@ NSURL *CILRCLIBGetEndpointURL(void) {
                         isDirectory:NO];
 }
 
+#if !TARGET_OS_OSX
+// Where the cache used to live. Library/Caches is reclaimable storage: iOS may
+// delete it whenever the device is short on space, which is incompatible with
+// lyrics that are meant to be kept until the user removes them.
+static NSString *CILRCLIBLegacyCachePath(void) {
+    NSString *caches = NSSearchPathForDirectoriesInDomains(
+        NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    if (caches.length == 0) return @"";
+    return [[caches stringByAppendingPathComponent:@"CaptionIsland"]
+        stringByAppendingPathComponent:@"LRCLIBCache.plist"];
+}
+#endif
+
 static NSString *CILRCLIBCachePath(void) {
 #if TARGET_OS_OSX
     return [NSTemporaryDirectory()
         stringByAppendingPathComponent:
             @"CaptionIsland-LRCLIBCache-tests.plist"];
 #else
-    NSString *caches = NSSearchPathForDirectoriesInDomains(
-        NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-    if (caches.length == 0) return @"";
+    NSString *support = NSSearchPathForDirectoriesInDomains(
+        NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    if (support.length == 0) return @"";
     NSString *directory =
-        [caches stringByAppendingPathComponent:@"CaptionIsland"];
+        [support stringByAppendingPathComponent:@"CaptionIsland"];
     return [directory stringByAppendingPathComponent:@"LRCLIBCache.plist"];
+#endif
+}
+
+// Moves a cache written by an earlier build into the durable location. Runs at
+// most once: the legacy file is removed on success, and a failure just means the
+// next lookup refetches.
+static void CILRCLIBMigrateLegacyCacheIfNeeded(void) {
+#if !TARGET_OS_OSX
+    NSString *destination = CILRCLIBCachePath();
+    NSString *legacy = CILRCLIBLegacyCachePath();
+    if (destination.length == 0 || legacy.length == 0) return;
+    NSFileManager *manager = NSFileManager.defaultManager;
+    if (![manager fileExistsAtPath:legacy]) return;
+    if ([manager fileExistsAtPath:destination]) {
+        [manager removeItemAtPath:legacy error:nil];
+        return;
+    }
+    [manager createDirectoryAtPath:[destination stringByDeletingLastPathComponent]
+      withIntermediateDirectories:YES attributes:nil error:nil];
+    if ([manager moveItemAtPath:legacy toPath:destination error:nil]) return;
+    [manager removeItemAtPath:legacy error:nil];
 #endif
 }
 
@@ -385,6 +439,23 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 @implementation CILRCLIBCacheSummary
 @end
 
+@implementation CILRCLIBCacheEntry
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _cacheKey = @"";
+        _trackName = @"";
+        _artistName = @"";
+        _albumName = @"";
+        _lyricsText = @"";
+        _searchIndex = @"";
+    }
+    return self;
+}
+
+@end
+
 @implementation CILRCLIBProvider
 
 /// Reads the cache file straight from disk. Summary, export and import all work
@@ -392,6 +463,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 /// each other regardless of which providers happen to exist.
 + (NSDictionary *)entriesFromDiskWithByteCount:(unsigned long long *)byteCount {
     if (byteCount) *byteCount = 0;
+    CILRCLIBMigrateLegacyCacheIfNeeded();
     NSString *path = CILRCLIBCachePath();
     if (path.length == 0) return @{};
     NSData *data = [NSData dataWithContentsOfFile:path options:0 error:nil];
@@ -410,6 +482,116 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     return [entries isKindOfClass:NSDictionary.class] ? entries : @{};
 }
 
+// Renders a cached entry for reading. A timeline is shown with its timestamps
+// because that is what distinguishes a synced record from plain text, and seeing
+// the timing is the point of inspecting one.
+static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
+    NSArray *cues = entry[@"cues"];
+    if ([cues isKindOfClass:NSArray.class] && cues.count > 0) {
+        NSMutableArray<NSString *> *lines =
+            [NSMutableArray arrayWithCapacity:cues.count];
+        for (id candidate in cues) {
+            if (![candidate isKindOfClass:NSDictionary.class]) continue;
+            NSString *text = CILRCLIBString(
+                ((NSDictionary *)candidate)[@"text"],
+                CILRCLIBMaximumLyricLineCharacters
+            );
+            if (text.length == 0) continue;
+            double start = CILRCLIBDouble(
+                ((NSDictionary *)candidate)[@"start"]
+            );
+            if (!isfinite(start) || start < 0) start = 0;
+            [lines addObject:[NSString stringWithFormat:@"[%02d:%05.2f] %@",
+                (int)(start / 60.0), fmod(start, 60.0), text]];
+        }
+        if (lines.count > 0) return [lines componentsJoinedByString:@"\n"];
+    }
+    return CILRCLIBString(entry[@"plainLyrics"],
+                          CILRCLIBMaximumLyricsCharacters);
+}
+
++ (NSArray<CILRCLIBCacheEntry *> *)cachedLyricEntries {
+    NSDictionary *entries = [self entriesFromDiskWithByteCount:NULL];
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    NSMutableArray<CILRCLIBCacheEntry *> *result =
+        [NSMutableArray arrayWithCapacity:entries.count];
+    for (id key in entries) {
+        if (![key isKindOfClass:NSString.class]) continue;
+        NSDictionary *stored = entries[key];
+        if (![stored isKindOfClass:NSDictionary.class] ||
+            ![stored[@"kind"] isEqual:CILRCLIBCacheKindResult] ||
+            CILRCLIBCacheEntryHasExpired(stored, now)) continue;
+        NSString *lyrics = CILRCLIBDisplayLyricsForEntry(stored);
+        if (lyrics.length == 0) continue;
+
+        CILRCLIBCacheEntry *item = [CILRCLIBCacheEntry new];
+        item.cacheKey = key;
+        item.trackName = CILRCLIBString(stored[@"trackName"], 512);
+        item.artistName = CILRCLIBString(stored[@"artistName"], 512);
+        item.albumName = CILRCLIBString(stored[@"albumName"], 512);
+        item.trackDuration = CILRCLIBDouble(stored[@"trackDuration"]);
+        item.storedAt = CILRCLIBDouble(stored[@"storedAt"]);
+        NSArray *cues = stored[@"cues"];
+        item.hasSyncedTimeline =
+            [cues isKindOfClass:NSArray.class] && cues.count > 0;
+        item.lyricsText = lyrics;
+        item.lineCount = CINonEmptyLines(lyrics).count;
+        item.searchIndex = [[NSString stringWithFormat:@"%@\n%@\n%@",
+            item.trackName, item.artistName, item.albumName] lowercaseString];
+        [result addObject:item];
+    }
+    [result sortUsingComparator:^NSComparisonResult(CILRCLIBCacheEntry *left,
+                                                    CILRCLIBCacheEntry *right) {
+        NSComparisonResult byTrack = [left.trackName
+            compare:right.trackName
+            options:NSCaseInsensitiveSearch | NSNumericSearch];
+        if (byTrack != NSOrderedSame) return byTrack;
+        NSComparisonResult byArtist = [left.artistName
+            compare:right.artistName options:NSCaseInsensitiveSearch];
+        if (byArtist != NSOrderedSame) return byArtist;
+        return [left.cacheKey compare:right.cacheKey];
+    }];
+    return result;
+}
+
++ (NSUInteger)removeCachedEntriesWithKeys:(NSArray<NSString *> *)keys {
+    if (![keys isKindOfClass:NSArray.class] || keys.count == 0) return 0;
+    unsigned long long byteCount = 0;
+    NSDictionary *entries = [self entriesFromDiskWithByteCount:&byteCount];
+    if (entries.count == 0) return 0;
+    NSMutableDictionary *remaining = entries.mutableCopy;
+    NSUInteger removed = 0;
+    for (id key in keys) {
+        if (![key isKindOfClass:NSString.class]) continue;
+        if (!remaining[key]) continue;
+        [remaining removeObjectForKey:key];
+        removed++;
+    }
+    if (removed == 0) return 0;
+
+    NSString *path = CILRCLIBCachePath();
+    if (path.length == 0) return 0;
+    if (remaining.count == 0) {
+        [self clearPersistentCache];
+        return removed;
+    }
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:@{
+            @"version": @(CILRCLIBCacheSchemaVersion),
+            @"entries": remaining,
+        }
+        format:NSPropertyListBinaryFormat_v1_0
+        options:0
+        error:nil];
+    if (data.length == 0 || data.length > CILRCLIBMaximumCacheBytes) return 0;
+    if (![data writeToFile:path options:NSDataWritingAtomic error:nil]) return 0;
+    // Live providers hold their own copy of the dictionary, so make them reload
+    // rather than serve a deleted entry from memory.
+    @synchronized (CILRCLIBProvider.class) {
+        CILRCLIBPersistentCacheGeneration++;
+    }
+    return removed;
+}
+
 + (CILRCLIBCacheSummary *)cacheSummary {
     CILRCLIBCacheSummary *summary = [CILRCLIBCacheSummary new];
     unsigned long long byteCount = 0;
@@ -419,7 +601,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     for (id key in entries) {
         NSDictionary *entry = entries[key];
         if (![entry isKindOfClass:NSDictionary.class]) continue;
-        if ([entry[@"expiresAt"] doubleValue] <= now) continue;
+        if (CILRCLIBCacheEntryHasExpired(entry, now)) continue;
         if ([entry[@"kind"] isEqual:CILRCLIBCacheKindMiss]) summary.missCount++;
         else if ([entry[@"kind"] isEqual:CILRCLIBCacheKindResult]) {
             summary.lyricCount++;
@@ -437,7 +619,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         NSDictionary *entry = entries[key];
         if (![entry isKindOfClass:NSDictionary.class] ||
             ![entry[@"kind"] isEqual:CILRCLIBCacheKindResult] ||
-            [entry[@"expiresAt"] doubleValue] <= now) continue;
+            CILRCLIBCacheEntryHasExpired(entry, now)) continue;
         exported[key] = entry;
     }
     if (exported.count == 0) {
@@ -522,7 +704,6 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 
     CILRCLIBProvider *provider = [CILRCLIBProvider new];
     NSUInteger imported = 0;
-    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
     for (id key in incoming) {
         if (imported >= CILRCLIBMaximumCacheEntries) break;
         if (![key isKindOfClass:NSString.class] ||
@@ -535,12 +716,8 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         // from LRCLIB itself.
         CILRCLIBResult *result = [provider resultFromCacheEntry:entry];
         if (!result) continue;
-        NSTimeInterval expires = [entry[@"expiresAt"] doubleValue];
-        if (expires <= now) {
-            expires = now + CILRCLIBPositiveCacheLifetime;
-        }
         [provider storeCacheEntry:[provider cacheEntryForResult:result
-                                                       expires:expires]
+                                        expires:CILRCLIBNeverExpires]
                           forKey:key];
         imported++;
     }
@@ -606,6 +783,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     }
     if (self.persistentCacheLoaded) return;
     self.persistentCacheLoaded = YES;
+    CILRCLIBMigrateLegacyCacheIfNeeded();
     NSString *path = CILRCLIBCachePath();
     NSData *data = path.length > 0
         ? [NSData dataWithContentsOfFile:path options:0 error:nil] : nil;
@@ -785,7 +963,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         NSDictionary *entry = self.persistentCacheEntries[key];
         if (![entry isKindOfClass:NSDictionary.class]) return nil;
         NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-        if ([entry[@"expiresAt"] doubleValue] <= now) {
+        if (CILRCLIBCacheEntryHasExpired(entry, now)) {
             [self.persistentCacheEntries removeObjectForKey:key];
             [self writePersistentCacheLocked];
             return nil;
@@ -818,10 +996,9 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     if (!result || key.length == 0) return;
     @synchronized (self) {
         [self loadPersistentCacheIfNeededLocked];
-        NSTimeInterval expires =
-            NSDate.date.timeIntervalSince1970 + CILRCLIBPositiveCacheLifetime;
         self.persistentCacheEntries[key] =
-            [self cacheEntryForResult:result expires:expires];
+            [self cacheEntryForResult:result
+                              expires:CILRCLIBNeverExpires];
         [self writePersistentCacheLocked];
     }
 }
@@ -1239,9 +1416,25 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             if (fabs(closest.titleScore - other.titleScore) > 0.03) {
                 continue;
             }
+            // Let the duration decide whenever it can. A popular song carries
+            // many covers and re-uploads in LRCLIB, so requiring near-total
+            // agreement before choosing meant abstaining on exactly the songs
+            // most likely to be watched — "風になる" resolves to a dozen
+            // performers. Only a candidate this close is genuinely
+            // indistinguishable; anything further out loses to the better
+            // duration match. A wrong pick is recoverable through the per-video
+            // override, whereas abstaining gives the user nothing to correct.
             if (videoDuration > 0 &&
                 other.durationDifference >
-                    closest.durationDifference + 8.0) {
+                    closest.durationDifference +
+                        CILRCLIBDurationTieTolerance) {
+                continue;
+            }
+            // A synced timeline is a meaningful difference in its own right: it
+            // is what the feature exists to display, so prefer it rather than
+            // treating the pair as a coin flip.
+            if ((closest.syncedCues.count > 0) !=
+                (other.syncedCues.count > 0)) {
                 continue;
             }
             // With no reliable artist, two near-identical titles from
