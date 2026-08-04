@@ -20,6 +20,30 @@ static const NSTimeInterval CIBackgroundEligibilitySampleInterval = 2.5;
 static const NSTimeInterval CINowPlayingSynchronizationInterval = 12.0;
 static const NSTimeInterval CINowPlayingRetryInterval = 3.0;
 
+static id CIStoredNowPlayingValue(
+    NSDictionary<NSString *, id> *info,
+    NSString *key
+) {
+    return info[key] ?: NSNull.null;
+}
+
+static BOOL CIRestoreNowPlayingValue(
+    NSMutableDictionary<NSString *, id> *info,
+    NSString *key,
+    id storedValue
+) {
+    id currentValue = info[key];
+    if (storedValue == NSNull.null) {
+        if (!currentValue) return NO;
+        [info removeObjectForKey:key];
+        return YES;
+    }
+    if ((currentValue == storedValue) ||
+        [currentValue isEqual:storedValue]) return NO;
+    info[key] = storedValue;
+    return YES;
+}
+
 static double CIQuantizedPlaybackRate(double rate) {
     if (!isfinite(rate) || rate <= 0) return 0;
     static const double commonRates[] = {
@@ -76,6 +100,18 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) NSUInteger controllerLeaseGeneration;
 @property (nonatomic) NSTimeInterval lastPiPPreparationUptime;
 @property (nonatomic) BOOL didSuppressAutomaticPiPForBackgroundTransition;
+@property (nonatomic, copy) NSString *nowPlayingCaptionLine;
+@property (nonatomic, copy) NSString *nowPlayingNextCaptionLine;
+@property (nonatomic, copy) NSString *nowPlayingCaptionVideoID;
+@property (nonatomic, copy) NSString *nowPlayingCaptionVideoTitle;
+@property (nonatomic, strong, nullable) id originalNowPlayingTitleValue;
+@property (nonatomic, strong, nullable) id originalNowPlayingArtistValue;
+@property (nonatomic, copy) NSString *lastMirroredNowPlayingTitle;
+@property (nonatomic, copy) NSString *lastMirroredNowPlayingArtist;
+@property (nonatomic) BOOL hasCapturedNowPlayingMetadata;
+@property (nonatomic) BOOL nowPlayingLyricsMirrored;
+@property (nonatomic) BOOL didWarnAboutMissingNowPlayingLyricsMetadata;
+@property (nonatomic) NSUInteger nowPlayingLyricsRevision;
 - (void)youPiPSuppressedAutomaticPiP:(NSNotification *)notification;
 - (void)synchronizeNowPlayingAtTime:(NSTimeInterval)playbackTime
                            duration:(NSTimeInterval)duration
@@ -83,6 +119,9 @@ static double CIQuantizedPlaybackRate(double rate) {
                              uptime:(NSTimeInterval)uptime;
 - (void)scheduleControllerLeaseRelease;
 - (void)endActivityForLifecycleReason:(NSString *)reason;
+- (void)applyNowPlayingLyricsForReason:(NSString *)reason;
+- (void)restoreNowPlayingMetadataForReason:(NSString *)reason
+                        clearCachedCaption:(BOOL)clearCachedCaption;
 @end
 
 @implementation CIBackgroundPlaybackMonitor
@@ -99,6 +138,12 @@ static double CIQuantizedPlaybackRate(double rate) {
     if (self) {
         _lastVideoID = @"";
         _durationPolicyVideoID = @"";
+        _nowPlayingCaptionLine = @"";
+        _nowPlayingNextCaptionLine = @"";
+        _nowPlayingCaptionVideoID = @"";
+        _nowPlayingCaptionVideoTitle = @"";
+        _lastMirroredNowPlayingTitle = @"";
+        _lastMirroredNowPlayingArtist = @"";
         _applicationIsBackgrounded =
             UIApplication.sharedApplication.applicationState == UIApplicationStateBackground;
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
@@ -136,6 +181,188 @@ static double CIQuantizedPlaybackRate(double rate) {
         NSProcessInfo.processInfo.systemUptime -
         self.lastPlaybackAdvanceUptime;
     return elapsed >= 0 && elapsed <= interval;
+}
+
+- (void)updateNowPlayingCaptionLine:(NSString *)line
+                           nextLine:(NSString *)nextLine
+                            videoID:(NSString *)videoID
+                         videoTitle:(NSString *)videoTitle {
+    NSString *lineCopy = [line copy] ?: @"";
+    NSString *nextLineCopy = [nextLine copy] ?: @"";
+    NSString *videoIDCopy = [videoID copy] ?: @"";
+    NSString *videoTitleCopy = [videoTitle copy] ?: @"";
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self updateNowPlayingCaptionLine:lineCopy
+                                     nextLine:nextLineCopy
+                                      videoID:videoIDCopy
+                                   videoTitle:videoTitleCopy];
+        });
+        return;
+    }
+
+    BOOL videoChanged =
+        self.nowPlayingCaptionVideoID.length > 0 &&
+        videoIDCopy.length > 0 &&
+        ![self.nowPlayingCaptionVideoID isEqualToString:videoIDCopy];
+    if (videoChanged) {
+        [self restoreNowPlayingMetadataForReason:@"video changed"
+                              clearCachedCaption:YES];
+    }
+    self.nowPlayingCaptionLine = lineCopy;
+    self.nowPlayingNextCaptionLine = nextLineCopy;
+    self.nowPlayingCaptionVideoID = videoIDCopy;
+    self.nowPlayingCaptionVideoTitle = videoTitleCopy;
+
+    if (lineCopy.length == 0) {
+        [self restoreNowPlayingMetadataForReason:@"caption gap"
+                              clearCachedCaption:NO];
+        return;
+    }
+    [self applyNowPlayingLyricsForReason:@"caption revision"];
+}
+
+- (void)reloadNowPlayingLyricsPreference {
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self reloadNowPlayingLyricsPreference];
+        });
+        return;
+    }
+    if (CIPreferenceBool(CIBackgroundNowPlayingLyricsEnabledKey, NO)) {
+        [self applyNowPlayingLyricsForReason:@"setting enabled"];
+    } else {
+        [self restoreNowPlayingMetadataForReason:@"setting disabled"
+                              clearCachedCaption:NO];
+    }
+}
+
+- (void)clearNowPlayingCaptionWithReason:(NSString *)reason {
+    NSString *reasonCopy = [reason copy] ?: @"caption ended";
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self clearNowPlayingCaptionWithReason:reasonCopy];
+        });
+        return;
+    }
+    [self restoreNowPlayingMetadataForReason:reasonCopy
+                          clearCachedCaption:YES];
+}
+
+- (void)applyNowPlayingLyricsForReason:(NSString *)reason {
+    if (!self.applicationIsBackgrounded ||
+        !CIPreferenceBool(CIEnabledKey, YES) ||
+        !CIPreferenceBool(CIBackgroundNowPlayingLyricsEnabledKey, NO) ||
+        self.nowPlayingCaptionLine.length == 0) return;
+
+    MPNowPlayingInfoCenter *center = MPNowPlayingInfoCenter.defaultCenter;
+    NSDictionary<NSString *, id> *existing = center.nowPlayingInfo;
+    if (existing.count == 0) {
+        if (!self.didWarnAboutMissingNowPlayingLyricsMetadata) {
+            self.didWarnAboutMissingNowPlayingLyricsMetadata = YES;
+            [CILogStore.sharedStore recordLevel:CILogLevelWarning
+                category:@"NowPlayingLyrics"
+                message:@"YouTube has not published Now Playing metadata, so the background lyric mirror is waiting instead of replacing the media session."];
+        }
+        return;
+    }
+    self.didWarnAboutMissingNowPlayingLyricsMetadata = NO;
+
+    NSString *desiredTitle = self.nowPlayingCaptionLine;
+    NSString *desiredArtist = self.nowPlayingNextCaptionLine.length > 0
+        ? self.nowPlayingNextCaptionLine
+        : self.nowPlayingCaptionVideoTitle;
+    if (desiredArtist.length == 0) desiredArtist = @"Caption Island";
+
+    id currentTitleValue = existing[MPMediaItemPropertyTitle];
+    id currentArtistValue = existing[MPMediaItemPropertyArtist];
+    if (!self.hasCapturedNowPlayingMetadata) {
+        self.originalNowPlayingTitleValue = CIStoredNowPlayingValue(
+            existing, MPMediaItemPropertyTitle);
+        self.originalNowPlayingArtistValue = CIStoredNowPlayingValue(
+            existing, MPMediaItemPropertyArtist);
+        self.hasCapturedNowPlayingMetadata = YES;
+    } else if (self.nowPlayingLyricsMirrored) {
+        // YouTube may refresh its metadata while the mirror is active. Treat
+        // that newer value as the restore target before applying this line.
+        if (![currentTitleValue isEqual:self.lastMirroredNowPlayingTitle]) {
+            self.originalNowPlayingTitleValue =
+                currentTitleValue ?: NSNull.null;
+        }
+        if (![currentArtistValue isEqual:self.lastMirroredNowPlayingArtist]) {
+            self.originalNowPlayingArtistValue =
+                currentArtistValue ?: NSNull.null;
+        }
+    }
+
+    BOOL titleAlreadyMatches = [currentTitleValue isEqual:desiredTitle];
+    BOOL artistAlreadyMatches = [currentArtistValue isEqual:desiredArtist];
+    self.lastMirroredNowPlayingTitle = desiredTitle;
+    self.lastMirroredNowPlayingArtist = desiredArtist;
+    self.nowPlayingLyricsMirrored = YES;
+    if (titleAlreadyMatches && artistAlreadyMatches) return;
+
+    NSMutableDictionary<NSString *, id> *updated = existing.mutableCopy;
+    updated[MPMediaItemPropertyTitle] = desiredTitle;
+    updated[MPMediaItemPropertyArtist] = desiredArtist;
+    center.nowPlayingInfo = updated;
+    self.nowPlayingLyricsRevision++;
+    [CILogStore.sharedStore recordLevel:CILogLevelDebug
+        category:@"NowPlayingLyrics"
+        format:@"Published background lyric mirror revision %lu (%lu title characters, %lu secondary characters; %@).",
+               (unsigned long)self.nowPlayingLyricsRevision,
+               (unsigned long)desiredTitle.length,
+               (unsigned long)desiredArtist.length,
+               reason.length > 0 ? reason : @"refresh"];
+}
+
+- (void)restoreNowPlayingMetadataForReason:(NSString *)reason
+                        clearCachedCaption:(BOOL)clearCachedCaption {
+    if (clearCachedCaption) {
+        self.nowPlayingCaptionLine = @"";
+        self.nowPlayingNextCaptionLine = @"";
+        self.nowPlayingCaptionVideoID = @"";
+        self.nowPlayingCaptionVideoTitle = @"";
+    }
+
+    BOOL restored = NO;
+    if (self.hasCapturedNowPlayingMetadata &&
+        self.nowPlayingLyricsMirrored) {
+        MPNowPlayingInfoCenter *center = MPNowPlayingInfoCenter.defaultCenter;
+        NSDictionary<NSString *, id> *existing = center.nowPlayingInfo;
+        if (existing.count > 0) {
+            NSMutableDictionary<NSString *, id> *updated = existing.mutableCopy;
+            id currentTitle = existing[MPMediaItemPropertyTitle];
+            id currentArtist = existing[MPMediaItemPropertyArtist];
+            if ([currentTitle isEqual:self.lastMirroredNowPlayingTitle]) {
+                restored |= CIRestoreNowPlayingValue(
+                    updated,
+                    MPMediaItemPropertyTitle,
+                    self.originalNowPlayingTitleValue ?: NSNull.null);
+            }
+            if ([currentArtist isEqual:self.lastMirroredNowPlayingArtist]) {
+                restored |= CIRestoreNowPlayingValue(
+                    updated,
+                    MPMediaItemPropertyArtist,
+                    self.originalNowPlayingArtistValue ?: NSNull.null);
+            }
+            if (restored) center.nowPlayingInfo = updated;
+        }
+    }
+
+    if (self.hasCapturedNowPlayingMetadata) {
+        [CILogStore.sharedStore recordLevel:CILogLevelDebug
+            category:@"NowPlayingLyrics"
+            format:@"%@ the original Now Playing text after %@.",
+                   restored ? @"Restored" : @"Released ownership of",
+                   reason.length > 0 ? reason : @"caption completion"];
+    }
+    self.originalNowPlayingTitleValue = nil;
+    self.originalNowPlayingArtistValue = nil;
+    self.lastMirroredNowPlayingTitle = @"";
+    self.lastMirroredNowPlayingArtist = @"";
+    self.hasCapturedNowPlayingMetadata = NO;
+    self.nowPlayingLyricsMirrored = NO;
 }
 
 - (void)attachPlayerController:(YTPlayerViewController *)controller {
@@ -195,6 +422,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     self.controllerLeaseGeneration++;
     [self resetClockState];
     [self stopTimerWithReason:@"playback stopped"];
+    [self clearNowPlayingCaptionWithReason:@"playback stopped"];
     [CIContinuedProcessingController.sharedController
         endWithReason:@"the active YouTube player stopped"
               success:YES];
@@ -300,6 +528,7 @@ static double CIQuantizedPlaybackRate(double rate) {
 
 - (void)applicationDidEnterBackground:(__unused NSNotification *)notification {
     self.applicationIsBackgrounded = YES;
+    [self applyNowPlayingLyricsForReason:@"application entered background"];
     CIContinuedProcessingController *continuedController =
         CIContinuedProcessingController.sharedController;
     // Set the controller's background phase before the first ActivityKit
@@ -364,6 +593,8 @@ static double CIQuantizedPlaybackRate(double rate) {
 
 - (void)applicationDidBecomeActive:(__unused NSNotification *)notification {
     self.applicationIsBackgrounded = NO;
+    [self restoreNowPlayingMetadataForReason:@"application became active"
+                          clearCachedCaption:NO];
     self.didSuppressAutomaticPiPForBackgroundTransition = NO;
     [self stopTimerWithReason:@"foreground callbacks resumed"];
     [self scheduleControllerLeaseRelease];
@@ -392,6 +623,7 @@ static double CIQuantizedPlaybackRate(double rate) {
         category:@"Activity"
         format:@"%@; requesting immediate Live Activity dismissal.", reason];
     [self stopTimerWithReason:nil];
+    [self clearNowPlayingCaptionWithReason:reason];
     self.playerController = nil;
     self.backgroundControllerLease = nil;
     self.pictureInPicturePreparedController = nil;
@@ -827,6 +1059,7 @@ static double CIQuantizedPlaybackRate(double rate) {
         updated[MPMediaItemPropertyPlaybackDuration] = @(duration);
     }
     center.nowPlayingInfo = updated;
+    [self applyNowPlayingLyricsForReason:@"playback clock synchronization"];
     self.lastNowPlayingSynchronizationUptime = uptime;
     self.hasPublishedNowPlayingRate = YES;
     self.lastPublishedNowPlayingRate = playbackRate;

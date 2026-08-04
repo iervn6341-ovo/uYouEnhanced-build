@@ -8,6 +8,7 @@
 #import <YouTubeHeader/YTSettingsSectionItemManager.h>
 #import <YouTubeHeader/YTSettingsViewController.h>
 #import "CICaptionCoordinator.h"
+#import "CIBackgroundPlaybackMonitor.h"
 #import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
 #import "CILanguagePriorityViewController.h"
@@ -713,6 +714,9 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             if (enabled) {
                 CISynchronizeContinuedTaskFromCurrentVideo();
             } else {
+                [CIBackgroundPlaybackMonitor.sharedMonitor
+                    clearNowPlayingCaptionWithReason:
+                        @"Caption Island was disabled"];
                 [CIContinuedProcessingController.sharedController
                     endWithReason:@"Caption Island was disabled"
                           success:YES];
@@ -800,6 +804,30 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             [settingsViewController pushViewController:picker];
             return YES;
         }]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        switchItemWithTitle:CILocalized(
+            @"BACKGROUND_NOW_PLAYING_LYRICS",
+            @"Background Now Playing lyrics"
+        )
+        titleDescription:CILocalized(
+            @"BACKGROUND_NOW_PLAYING_LYRICS_DESCRIPTION",
+            @"Experimental: while YouTube is in the background, mirror the current lyric into the system Now Playing title and the next lyric into its secondary line. The original video metadata is restored in the foreground."
+        )
+        accessibilityIdentifier:@"CaptionIsland.BackgroundNowPlayingLyrics"
+        switchOn:CIPreferenceBool(
+            CIBackgroundNowPlayingLyricsEnabledKey,
+            NO
+        )
+        switchBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            BOOL enabled
+        ) {
+            CIStoreBool(CIBackgroundNowPlayingLyricsEnabledKey, enabled);
+            [CIBackgroundPlaybackMonitor.sharedMonitor
+                reloadNowPlayingLyricsPreference];
+            return YES;
+        } settingItemId:0]];
 
     if (CIContinuedBackgroundProcessingSupported()) {
         [items addObject:[%c(YTSettingsSectionItem)

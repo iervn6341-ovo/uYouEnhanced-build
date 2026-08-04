@@ -89,6 +89,8 @@
 "RETURN_HOME_MODE_DESCRIPTION" = "YouTube を離れるときに、自動ピクチャ・イン・ピクチャまたはバックグラウンド字幕を選択します。手動 PiP ボタンは引き続き使用できます。";
 "RETURN_HOME_MODE_YOUPIP" = "YouPiP（自動ピクチャ・イン・ピクチャ）";
 "RETURN_HOME_MODE_CAPTION_ISLAND" = "Caption Island（バックグラウンド字幕）";
+"BACKGROUND_NOW_PLAYING_LYRICS" = "バックグラウンドの再生中画面に歌詞を表示";
+"BACKGROUND_NOW_PLAYING_LYRICS_DESCRIPTION" = "実験機能：YouTube がバックグラウンドにある間、現在の歌詞をシステムの再生中タイトル、次の歌詞をその補助行に表示します。フォアグラウンドへ戻ると元の動画情報を復元します。";
 "CONTINUED_PROCESSING" = "iOS 26 継続バックグラウンド字幕";
 "CONTINUED_PROCESSING_DESCRIPTION" = "サーバー不要の実験モードです。iOS はキャンセル可能なバックグラウンドタスクの Live Activity も表示し、リソース不足時にはタスクを終了することがあります。";
 "CONTINUED_CUSTOM_ACTIVITY_PROBE" = "バックグラウンドで独自 Live Activity をテスト";

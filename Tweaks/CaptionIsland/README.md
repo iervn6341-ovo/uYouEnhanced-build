@@ -52,6 +52,12 @@ YouTube 在第二次前景／背景切換後，有時音訊仍播放但私有的
 duration 與 playback rate，不取代標題、封面或 Remote Command，因此鎖定畫面的時間
 可由系統持續推進，播放控制仍由 YouTube 處理。
 
+另有一個預設關閉的「背景『播放中』歌詞」實驗：只在 App 位於背景時，暫時將目前句
+寫入 Now Playing 標題、下一句寫入副標題，藉此測試鎖定畫面／AOD 的系統媒體資訊
+通道。它不依賴 ActivityKit 或 `LaunchPrefetch`，也不改封面、時間與播放控制。回到
+前景、換片、停止播放或關閉功能時會還原原值；若 YouTube 已先發布新版 metadata，
+則不會用舊快照覆蓋。這仍不代表 AOD 必定逐句重畫，最終刷新頻率由 iOS 決定。
+
 此機制需要 YouTube 的背景音訊仍在播放，讓 App 保有系統核准的背景執行時間。若
 使用者從多工畫面關閉 YouTube 時，`UISceneDidDisconnectNotification` 會略過排隊中
 的歌詞更新並立即要求 ActivityKit 移除所有 Caption Island Activity；
@@ -162,6 +168,7 @@ bridge 會在下一次送出前回讀 ActivityKit 實際儲存的 revision，記
 - 啟用或停用原生 Live Activity；
 - 選擇返回主畫面時使用 YouPiP 自動子母畫面，或使用 Caption Island 背景
   字幕模式；背景字幕模式只阻止自動 PiP，播放器內的手動 PiP 按鈕仍可使用；
+- 選擇是否啟用背景「播放中」歌詞實驗，以獨立測試鎖定畫面／AOD 的媒體資訊通道；
 - 在 iOS 26 啟用持續背景字幕；第一輪保持「測試背景自訂 Live Activity」關閉，先只
   驗證系統背景任務 UI，第二輪才開啟自訂 ActivityKit probe；
 - 選擇中文（繁體）、英文或日文人工字幕；

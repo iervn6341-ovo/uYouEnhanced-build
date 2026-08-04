@@ -89,6 +89,8 @@
 "RETURN_HOME_MODE_DESCRIPTION" = "Choose automatic Picture in Picture or background captions when leaving YouTube. The manual PiP button remains available.";
 "RETURN_HOME_MODE_YOUPIP" = "YouPiP (automatic Picture in Picture)";
 "RETURN_HOME_MODE_CAPTION_ISLAND" = "Caption Island (background captions)";
+"BACKGROUND_NOW_PLAYING_LYRICS" = "Background Now Playing lyrics";
+"BACKGROUND_NOW_PLAYING_LYRICS_DESCRIPTION" = "Experimental: while YouTube is in the background, mirror the current lyric into the system Now Playing title and the next lyric into its secondary line. The original video metadata is restored in the foreground.";
 "CONTINUED_PROCESSING" = "iOS 26 continued background captions";
 "CONTINUED_PROCESSING_DESCRIPTION" = "Experimental zero-server mode. iOS shows its own cancellable background-task Live Activity and may still end the task when resources are constrained.";
 "CONTINUED_CUSTOM_ACTIVITY_PROBE" = "Test custom Live Activity in background";

@@ -1,4 +1,5 @@
 #import "CIActivityPresenter.h"
+#import "CIBackgroundPlaybackMonitor.h"
 #import "CIContinuedProcessingController.h"
 #import "CILogStore.h"
 #import "CIConstants.h"
@@ -104,6 +105,13 @@ static NSString *CIActivitySourceLabel(
 
 - (void)beginVideoID:(NSString *)videoID title:(NSString *)title {
     if (!CIPreferenceBool(CIEnabledKey, YES) || videoID.length == 0) return;
+    if (![self.videoID isEqualToString:videoID]) {
+        [CIBackgroundPlaybackMonitor.sharedMonitor
+            updateNowPlayingCaptionLine:@""
+                               nextLine:@""
+                                videoID:videoID
+                             videoTitle:title ?: @""];
+    }
     self.videoID = videoID;
     self.title = title.length > 0 ? title : @"YouTube";
     if (![self canSubmitLocalActivityUpdate]) return;
@@ -120,6 +128,13 @@ static NSString *CIActivitySourceLabel(
 
 - (void)ensureVideoID:(NSString *)videoID title:(NSString *)title {
     if (!CIPreferenceBool(CIEnabledKey, YES) || videoID.length == 0) return;
+    if (![self.videoID isEqualToString:videoID]) {
+        [CIBackgroundPlaybackMonitor.sharedMonitor
+            updateNowPlayingCaptionLine:@""
+                               nextLine:@""
+                                videoID:videoID
+                             videoTitle:title ?: @""];
+    }
     self.videoID = videoID;
     self.title = title.length > 0 ? title : @"YouTube";
     if (![self canSubmitLocalActivityUpdate]) return;
@@ -178,6 +193,11 @@ static NSString *CIActivitySourceLabel(
     [CIContinuedProcessingController.sharedController
         updateCaptionLine:text
                  nextLine:nextText ?: @""];
+    [CIBackgroundPlaybackMonitor.sharedMonitor
+        updateNowPlayingCaptionLine:text
+                           nextLine:nextText ?: @""
+                            videoID:self.videoID
+                         videoTitle:self.title];
     if (![self canSubmitLocalActivityUpdate]) return;
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(
@@ -195,6 +215,11 @@ static NSString *CIActivitySourceLabel(
     [CIContinuedProcessingController.sharedController
         updateCaptionLine:@"♪"
                  nextLine:@""];
+    [CIBackgroundPlaybackMonitor.sharedMonitor
+        updateNowPlayingCaptionLine:@""
+                           nextLine:@""
+                            videoID:self.videoID
+                         videoTitle:self.title];
     if (![self canSubmitLocalActivityUpdate]) return;
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"showGapWithTitle:");
@@ -203,6 +228,8 @@ static NSString *CIActivitySourceLabel(
 }
 
 - (void)end {
+    [CIBackgroundPlaybackMonitor.sharedMonitor
+        clearNowPlayingCaptionWithReason:@"caption activity ended"];
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"endImmediately:");
     if ([bridge respondsToSelector:selector]) {
@@ -214,6 +241,8 @@ static NSString *CIActivitySourceLabel(
 }
 
 - (void)endForProcessTermination {
+    [CIBackgroundPlaybackMonitor.sharedMonitor
+        clearNowPlayingCaptionWithReason:@"YouTube is terminating"];
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"endAllImmediatelyForTermination");
     if ([bridge respondsToSelector:selector]) {

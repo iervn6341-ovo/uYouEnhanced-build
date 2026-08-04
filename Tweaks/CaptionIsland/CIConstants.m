@@ -13,6 +13,8 @@ NSString *const CIDisableForShortsKey = @"CaptionIsland.DisableForShorts";
 NSString *const CIMaximumVideoDurationMinutesKey =
     @"CaptionIsland.MaximumVideoDurationMinutes";
 NSString *const CIReturnHomeModeKey = @"CaptionIsland.ReturnHomeMode";
+NSString *const CIBackgroundNowPlayingLyricsEnabledKey =
+    @"CaptionIsland.BackgroundNowPlayingLyricsEnabled";
 NSString *const CIContinuedBackgroundProcessingEnabledKey =
     @"CaptionIsland.ContinuedBackgroundProcessingEnabled";
 NSString *const CIContinuedCustomActivityProbeEnabledKey =

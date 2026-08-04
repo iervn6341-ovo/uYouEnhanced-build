@@ -28,6 +28,21 @@ NS_ASSUME_NONNULL_BEGIN
             playerController:(YTPlayerViewController *)controller;
 - (BOOL)playbackAdvancedWithinInterval:(NSTimeInterval)interval;
 
+/// Caches the current caption in every app state and mirrors it into YouTube's
+/// existing Now Playing metadata only while the app is backgrounded and the
+/// experiment is enabled. Calls are marshalled to the main thread internally.
+- (void)updateNowPlayingCaptionLine:(NSString *)line
+                           nextLine:(NSString *)nextLine
+                            videoID:(NSString *)videoID
+                         videoTitle:(NSString *)videoTitle;
+
+/// Re-evaluates the preference immediately. Disabling the experiment restores
+/// only the metadata fields that Caption Island still owns.
+- (void)reloadNowPlayingLyricsPreference;
+
+/// Clears cached caption text and restores YouTube's original visible metadata.
+- (void)clearNowPlayingCaptionWithReason:(NSString *)reason;
+
 @end
 
 NS_ASSUME_NONNULL_END
