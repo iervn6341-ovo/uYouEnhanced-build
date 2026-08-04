@@ -114,18 +114,42 @@ Tweak 無法保證。
 
 ### LaunchPrefetch assertion 保留實驗
 
-設定頁提供一個預設關閉的高風險 probe。它不建立或偽造 assertion，而是在目前
-YouTube process 內攔截 `-[RBSAssertion invalidate]`，只有 assertion 同時符合以下
-條件時才保留：explanation 來自 `app_launch_measurement` 的 page-in recording、attribute
-是 `pagein-prefetching:LaunchPrefetch`，且 target 是目前 bundle ID 或 pid。最多保留
-4 個；停用開關、App 終止或最後一個 scene 關閉時，會透過原始實作正常失效。
+設定頁提供一個預設關閉的高風險 probe。**這個機制尚未被任何一次實機測試驗證過**——
+下面描述的是它的設計與判讀方式，不是已確立的結果。
 
-開啟後必須完整結束再啟動 YouTube，讓 Apple client 取得一張新的 assertion。成功
-攔截時，Caption Island log 會出現 `LaunchPrefetch` 分類與
-`Intercepted client invalidation`；接著應在 `Eligibility` 快照看到
-`pagein-prefetching:LaunchPrefetch`。若攔截紀錄存在但 assertion 隨後仍消失，代表
-RunningBoard server 主動撤銷，client-side hook 無法阻止；若 assertion 還在但
-`liveactivitiesd` 依舊拒絕，則可直接否決「只要保留 LaunchPrefetch 就足夠」的假說。
+它不建立或偽造 assertion；主要攔截 `alm_release_pageins_recording_assertion`，讓
+Apple 的 app-launch measurement library 繼續持有原本的物件。
+`-[RBSAssertion invalidate]` 是第二層 fallback，只有 assertion 同時符合以下條件才保留：
+explanation 來自 `app_launch_measurement` 的 page-in recording、attribute 是
+`pagein-prefetching:LaunchPrefetch`，且 target 是目前 bundle ID 或 pid（包括 iOS 26
+使用的純數字 PID 表示）。fallback 最多保留 4 個；停用開關、App 終止或最後一個 scene
+關閉時，會透過原始實作正常失效。
+
+**hook 只在實驗開啟時才安裝。** 關閉狀態下不裝任何 hook——否則程序內每一次
+`RBSAssertion` 失效（音訊、PiP、背景任務、extension）都要經過本檔案並取一次鎖，
+這不是一個預設關閉的 probe 該付的成本。開關在執行期打開時會立即補裝，因為實測顯示
+assertion 是在**第一次由背景回到前景**時消失，而不是啟動時，所以中途安裝仍來得及攔到；
+但若釋放其實發生在啟動期，就必須完整結束再重開 YouTube 才攔得到。
+
+安裝 `-[RBSAssertion invalidate]` 之前會先用 `method_copyReturnType` 與
+`method_getNumberOfArguments` 確認它真的是 `void (id, SEL)`，不符就拒絕安裝並記錄實際
+的 type encoding。這不是對私有 API 漂移的過度防範：`method_setImplementation` 會改掉
+程序內**所有** `RBSAssertion` 的該方法，若真實方法有回傳值而替換函式沒有寫回傳暫存器，
+每一個與本實驗無關的呼叫端都會讀到殘留的垃圾值。相對地，`alm_release_pageins_recording_assertion`
+是 C 符號、執行期沒有型別資訊，`void (void)` 只能從名稱推斷而無法驗證；它的影響範圍
+小得多（呼叫端只在 Apple 那個函式庫內），但若未來 iOS 給它參數或回傳值，問題會從那裡開始。
+
+判讀方式：啟動 Log 應出現 `LaunchPrefetch hooks installed=yes`，並可從
+`directReleaseHook` 與 `rbsFallback` 兩個欄位看出實際裝上哪一條。之後應出現
+`Intercepted app_launch_measurement release directly`；若直接符號不存在，才會看到
+fallback 的 `Intercepted client invalidation`。接著應在 `Eligibility` 快照看到
+`pagein-prefetching:LaunchPrefetch`。三種結果各自的意義：
+
+- 有攔截紀錄但 assertion 隨後仍消失 → RunningBoard server 主動撤銷，client-side hook
+  無法阻止，這條路可以整個否決。
+- assertion 保住但 `liveactivitiesd` 依舊拒絕 → 直接否決「只要保留 LaunchPrefetch
+  就足夠」的假說。
+- assertion 保住且不再被拒 → 成立。
 
 判讀 log 時有一個陷阱：**「沒有出現拒絕」不等於「有資格」**。拒絕只在實際發起
 更新時才會產生，而字幕僅在 cue 邊界更新，因此兩次換句之間的空白期不能當作有資格

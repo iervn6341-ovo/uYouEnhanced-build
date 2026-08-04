@@ -5,19 +5,29 @@
 #import <dlfcn.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#import <substrate.h>
 #import <float.h>
+#import <stdlib.h>
 #import <unistd.h>
 
 static const NSUInteger CIDiagnosticsMaximumDescriptionLength = 900;
 static const NSUInteger CIRetainedLaunchPrefetchAssertionLimit = 4;
 
 typedef void (*CIRBSAssertionInvalidateImplementation)(id, SEL);
+typedef void (*CIAppLaunchMeasurementReleaseImplementation)(void);
 
 static CIRBSAssertionInvalidateImplementation
     CIOriginalRBSAssertionInvalidate;
+static CIAppLaunchMeasurementReleaseImplementation
+    CIOriginalAppLaunchMeasurementRelease;
 static NSMutableArray *CIRetainedLaunchPrefetchAssertions;
 static BOOL CILaunchPrefetchRetentionProbeInstalled;
 static BOOL CILaunchPrefetchRetentionProbeEnabled;
+static BOOL CIDirectLaunchPrefetchReleaseHookInstalled;
+static BOOL CIRBSAssertionRetentionFallbackInstalled;
+static BOOL CILaunchPrefetchReleaseWasSuppressed;
+static BOOL CILaunchPrefetchRetentionProbeReleasing;
+static NSUInteger CILaunchPrefetchSuppressedReleaseCount;
 
 static void CILoadRunningBoardServices(void) {
     static dispatch_once_t onceToken;
@@ -83,27 +93,88 @@ static BOOL CITextContainsCaseInsensitive(
                       options:NSCaseInsensitiveSearch].location != NSNotFound;
 }
 
+static BOOL CITextContainsCurrentPIDToken(NSString *text) {
+    if (text.length == 0) return NO;
+    NSString *pidText = [NSString stringWithFormat:@"%d", getpid()];
+    NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
+    NSRange searchRange = NSMakeRange(0, text.length);
+    while (searchRange.length > 0) {
+        NSRange match = [text rangeOfString:pidText
+                                   options:0
+                                     range:searchRange];
+        if (match.location == NSNotFound) return NO;
+        BOOL validPrefix = match.location == 0 ||
+            ![digits characterIsMember:[text characterAtIndex:
+                match.location - 1]];
+        NSUInteger end = NSMaxRange(match);
+        BOOL validSuffix = end == text.length ||
+            ![digits characterIsMember:[text characterAtIndex:end]];
+        if (validPrefix && validSuffix) return YES;
+        NSUInteger next = match.location + 1;
+        searchRange = NSMakeRange(next, text.length - next);
+    }
+    return NO;
+}
+
+static BOOL CITargetRepresentsCurrentProcess(
+    id target,
+    NSString *descriptorText
+) {
+    NSArray<NSString *> *pidKeys = @[
+        @"pid",
+        @"processIdentifier",
+        @"targetPid",
+    ];
+    for (NSString *key in pidKeys) {
+        id value = CIAssertionValue(target, key);
+        if ([value respondsToSelector:@selector(intValue)] &&
+            [value intValue] == getpid()) {
+            return YES;
+        }
+    }
+
+    NSString *targetText = [target description];
+    NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
+    if (bundleIdentifier.length > 0 &&
+        (CITextContainsCaseInsensitive(targetText, bundleIdentifier) ||
+         CITextContainsCaseInsensitive(
+             descriptorText,
+             bundleIdentifier))) {
+        return YES;
+    }
+
+    // On iOS 26 the target returned by RBSAssertion can describe itself as a
+    // bare decimal PID (for example "20063"), rather than the app<pid>
+    // representation printed by runningboardd. Treat a bounded decimal token
+    // as a PID, but only after the caller has already matched the exact Apple
+    // LaunchPrefetch explanation and attributes.
+    return CITextContainsCurrentPIDToken(targetText) ||
+        CITextContainsCurrentPIDToken(descriptorText);
+}
+
 /// Matches only Apple's page-in recording assertion for this exact process.
 /// Matching all three fields matters because `RBSAssertion` is also used for
 /// unrelated UIKit, audio and other-process assertions in the same address
 /// space; retaining any of those would make the experiment unsafe and muddy
 /// its result.
 static BOOL CIIsCurrentProcessLaunchPrefetchAssertion(id assertion) {
+    id descriptor = CIAssertionValue(assertion, @"descriptor");
+    NSString *descriptorText = [descriptor description];
     NSString *explanation = [CIAssertionValue(
         assertion,
         @"explanation"
     ) description];
+    NSString *combinedExplanation = [NSString stringWithFormat:
+        @"%@ %@", explanation ?: @"", descriptorText ?: @""];
     if (!CITextContainsCaseInsensitive(
-            explanation,
+            combinedExplanation,
             @"app_launch_measurement") ||
         !CITextContainsCaseInsensitive(
-            explanation,
+            combinedExplanation,
             @"pageins recording enabled")) {
         return NO;
     }
 
-    id descriptor = CIAssertionValue(assertion, @"descriptor");
-    NSString *descriptorText = [descriptor description];
     NSString *attributesText = [CIAssertionValue(
         assertion,
         @"attributes"
@@ -121,13 +192,7 @@ static BOOL CIIsCurrentProcessLaunchPrefetchAssertion(id assertion) {
 
     id target = CIAssertionValue(assertion, @"target");
     if (!target) target = CIAssertionValue(descriptor, @"target");
-    NSString *targetText = [target description];
-    NSString *bundleIdentifier = NSBundle.mainBundle.bundleIdentifier;
-    BOOL bundleMatches = bundleIdentifier.length > 0 &&
-        CITextContainsCaseInsensitive(targetText, bundleIdentifier);
-    NSString *pidToken = [NSString stringWithFormat:@":%d", getpid()];
-    BOOL pidMatches = [targetText containsString:pidToken];
-    return bundleMatches || pidMatches;
+    return CITargetRepresentsCurrentProcess(target, descriptorText);
 }
 
 static BOOL CIAssertionIsValid(id assertion) {
@@ -162,10 +227,23 @@ static void CILaunchPrefetchAssertionInvalidate(id assertion, SEL selector) {
         CIOriginalRBSAssertionInvalidate;
     if (!original) return;
 
+    // Every RBSAssertion invalidation in the process arrives here once the
+    // hooks are live, so get the common case out of the way before taking any
+    // lock. Reading the flag unsynchronized can only lose an assertion
+    // invalidated in the same instant the switch is flipped, which is a far
+    // better trade than serialising unrelated audio and PiP teardown.
+    if (!CILaunchPrefetchRetentionProbeEnabled) {
+        original(assertion, selector);
+        return;
+    }
+
     BOOL shouldRetain = NO;
+    BOOL rejectedCandidate = NO;
     NSUInteger retainedCount = 0;
+    NSString *rejectedTarget = nil;
     @synchronized (CIRetainedLaunchPrefetchAssertions) {
         if (CILaunchPrefetchRetentionProbeEnabled &&
+            !CILaunchPrefetchRetentionProbeReleasing &&
             CIIsCurrentProcessLaunchPrefetchAssertion(assertion)) {
             if ([CIRetainedLaunchPrefetchAssertions
                     containsObject:assertion]) {
@@ -183,10 +261,35 @@ static void CILaunchPrefetchAssertionInvalidate(id assertion, SEL selector) {
                     CIRetainedLaunchPrefetchAssertions.count;
                 shouldRetain = YES;
             }
+        } else if (CILaunchPrefetchRetentionProbeEnabled &&
+                   !CILaunchPrefetchRetentionProbeReleasing) {
+            id descriptor = CIAssertionValue(assertion, @"descriptor");
+            NSString *descriptorText = [descriptor description];
+            if (CITextContainsCaseInsensitive(
+                    descriptorText,
+                    @"LaunchPrefetch") ||
+                CITextContainsCaseInsensitive(
+                    descriptorText,
+                    @"pageins recording enabled")) {
+                rejectedCandidate = YES;
+                id target = CIAssertionValue(assertion, @"target");
+                if (!target) {
+                    target = CIAssertionValue(descriptor, @"target");
+                }
+                rejectedTarget = [[target description] copy] ?: @"<nil>";
+            }
         }
     }
 
     if (!shouldRetain) {
+        if (rejectedCandidate) {
+            [CILogStore.sharedStore
+                recordLevel:CILogLevelWarning
+                   category:@"LaunchPrefetch"
+                     format:@"Observed a LaunchPrefetch invalidation candidate, but the RBS safety matcher rejected it (target=%@, currentPID=%d).",
+                            rejectedTarget,
+                            getpid()];
+        }
         original(assertion, selector);
         return;
     }
@@ -207,55 +310,200 @@ static void CILaunchPrefetchAssertionInvalidate(id assertion, SEL selector) {
     );
 }
 
+static void CIAppLaunchMeasurementReleaseReplacement(void) {
+    CIAppLaunchMeasurementReleaseImplementation original =
+        CIOriginalAppLaunchMeasurementRelease;
+    BOOL shouldSuppress = NO;
+    NSUInteger suppressedCount = 0;
+    @synchronized (CIRetainedLaunchPrefetchAssertions) {
+        shouldSuppress = CILaunchPrefetchRetentionProbeEnabled &&
+            !CILaunchPrefetchRetentionProbeReleasing;
+        if (shouldSuppress) {
+            CILaunchPrefetchReleaseWasSuppressed = YES;
+            CILaunchPrefetchSuppressedReleaseCount++;
+            suppressedCount = CILaunchPrefetchSuppressedReleaseCount;
+        }
+    }
+
+    if (!shouldSuppress) {
+        if (original) original();
+        return;
+    }
+
+    [CILogStore.sharedStore
+        recordLevel:CILogLevelInfo
+           category:@"LaunchPrefetch"
+             format:@"Intercepted app_launch_measurement release directly; its LaunchPrefetch assertion remains owned (suppressed calls=%lu).",
+                    (unsigned long)suppressedCount];
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+        dispatch_get_main_queue(),
+        ^{
+            CILogProcessBackgroundEligibility(
+                @"Direct LaunchPrefetch release interception"
+            );
+        }
+    );
+}
+
 void CIReleaseRetainedLaunchPrefetchAssertions(NSString *reason) {
     NSArray *assertions = nil;
+    BOOL releaseDirectOwnership = NO;
     @synchronized (CIRetainedLaunchPrefetchAssertions) {
+        CILaunchPrefetchRetentionProbeReleasing = YES;
+        releaseDirectOwnership =
+            CILaunchPrefetchReleaseWasSuppressed &&
+            CIOriginalAppLaunchMeasurementRelease != NULL;
+        CILaunchPrefetchReleaseWasSuppressed = NO;
         assertions = CIRetainedLaunchPrefetchAssertions.copy;
         [CIRetainedLaunchPrefetchAssertions removeAllObjects];
     }
-    if (assertions.count == 0) return;
-    CIReleaseLaunchPrefetchAssertions(assertions, reason);
+    if (releaseDirectOwnership) {
+        CIOriginalAppLaunchMeasurementRelease();
+        [CILogStore.sharedStore
+            recordLevel:CILogLevelInfo
+               category:@"LaunchPrefetch"
+                 format:@"Released the directly retained app_launch_measurement assertion: %@.",
+                        reason.length > 0 ? reason : @"requested"];
+    }
+    if (assertions.count > 0) {
+        CIReleaseLaunchPrefetchAssertions(assertions, reason);
+    }
+    @synchronized (CIRetainedLaunchPrefetchAssertions) {
+        CILaunchPrefetchRetentionProbeReleasing = NO;
+    }
 }
 
-void CIInstallLaunchPrefetchRetentionProbe(void) {
+/// Confirms `-[RBSAssertion invalidate]` really is `void (id, SEL)` before
+/// replacing it.
+///
+/// This check is not paranoia about a private API drifting; it is about what
+/// happens if the assumption is already wrong. `method_setImplementation`
+/// redirects the method for **every** `RBSAssertion` in the process, and
+/// YouTube holds them for audio, PiP, background tasks and extensions. A
+/// replacement that returns nothing where the real method returns a value never
+/// writes the return register, so every unrelated caller in the process reads
+/// whatever happened to be left there. Refusing to install is the only safe
+/// response, and the offending encoding is worth logging so the next iOS
+/// release can be handled deliberately.
+static BOOL CIAssertionInvalidateHasExpectedSignature(Method method) {
+    if (!method) return NO;
+    BOOL returnsVoid = NO;
+    char *returnType = method_copyReturnType(method);
+    if (returnType) {
+        returnsVoid = returnType[0] == _C_VOID && returnType[1] == '\0';
+        free(returnType);
+    }
+    // self and _cmd only: an extra parameter would mean the caller passes a
+    // value this replacement silently drops.
+    return returnsVoid && method_getNumberOfArguments(method) == 2;
+}
+
+/// Installs the interception points. Separate from the launch-time entry point
+/// so the hooks can also be installed the moment the experiment is switched on
+/// mid-session: the observed release happens at the first background-to-
+/// foreground return rather than during launch, so arming later is still in
+/// time to catch it.
+static void CIInstallLaunchPrefetchHooksIfNeeded(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        CILaunchPrefetchRetentionProbeEnabled = CIPreferenceBool(
-            CILaunchPrefetchRetentionProbeEnabledKey,
-            NO
-        );
-        CIRetainedLaunchPrefetchAssertions = [NSMutableArray array];
         CILoadRunningBoardServices();
+
+        void *measurementHandle = dlopen(
+            "/usr/lib/libapp_launch_measurement.dylib",
+            RTLD_LAZY
+        );
+        void *releaseSymbol = measurementHandle
+            ? dlsym(
+                measurementHandle,
+                "alm_release_pageins_recording_assertion"
+            )
+            : NULL;
+        if (releaseSymbol) {
+            // Unlike the Objective-C method below, a C symbol carries no type
+            // information, so `void (void)` cannot be verified — it is inferred
+            // from the name. The blast radius is much smaller: this symbol has
+            // one caller inside Apple's launch measurement library, not the
+            // whole process. Still, if a future iOS gives it a parameter or a
+            // return value, this is where the resulting misbehaviour starts.
+            void *originalRelease = NULL;
+            MSHookFunction(
+                releaseSymbol,
+                (void *)CIAppLaunchMeasurementReleaseReplacement,
+                &originalRelease
+            );
+            CIOriginalAppLaunchMeasurementRelease =
+                (CIAppLaunchMeasurementReleaseImplementation)
+                    originalRelease;
+            CIDirectLaunchPrefetchReleaseHookInstalled =
+                originalRelease != NULL;
+        }
 
         Class assertionClass = NSClassFromString(@"RBSAssertion");
         Method method = class_getInstanceMethod(
             assertionClass,
             NSSelectorFromString(@"invalidate")
         );
-        if (!method) {
+        if (method && !CIAssertionInvalidateHasExpectedSignature(method)) {
+            const char *encoding = method_getTypeEncoding(method);
+            [CILogStore.sharedStore
+                recordLevel:CILogLevelError
+                   category:@"LaunchPrefetch"
+                     format:@"Refusing to hook -[RBSAssertion invalidate]: its signature is \"%s\", not void (id, SEL). Replacing it would corrupt every unrelated assertion call in this process.",
+                            encoding ?: "unknown"];
+        } else if (method) {
+            IMP previous = method_setImplementation(
+                method,
+                (IMP)CILaunchPrefetchAssertionInvalidate
+            );
+            CIOriginalRBSAssertionInvalidate =
+                (CIRBSAssertionInvalidateImplementation)previous;
+            CIRBSAssertionRetentionFallbackInstalled = previous != NULL;
+        }
+        CILaunchPrefetchRetentionProbeInstalled =
+            CIDirectLaunchPrefetchReleaseHookInstalled ||
+            CIRBSAssertionRetentionFallbackInstalled;
+        if (!CILaunchPrefetchRetentionProbeInstalled) {
             [CILogStore.sharedStore
                 recordLevel:CILogLevelWarning
                    category:@"LaunchPrefetch"
-                    message:@"The LaunchPrefetch retention probe is unavailable because RBSAssertion.invalidate was not found on this iOS version."];
-            return;
+                    message:@"The LaunchPrefetch retention probe is unavailable: neither the direct app_launch_measurement release symbol nor RBSAssertion.invalidate could be hooked on this iOS version."];
         }
-
-        IMP previous = method_setImplementation(
-            method,
-            (IMP)CILaunchPrefetchAssertionInvalidate
-        );
-        CIOriginalRBSAssertionInvalidate =
-            (CIRBSAssertionInvalidateImplementation)previous;
-        CILaunchPrefetchRetentionProbeInstalled = previous != NULL;
         [CILogStore.sharedStore
-            recordLevel:CILaunchPrefetchRetentionProbeEnabled
-                ? CILogLevelInfo : CILogLevelDebug
+            recordLevel:CILogLevelInfo
                category:@"LaunchPrefetch"
-                 format:@"LaunchPrefetch retention probe installed=%@ enabled=%@.",
+                 format:@"LaunchPrefetch hooks installed=%@ directReleaseHook=%@ rbsFallback=%@.",
                         CILaunchPrefetchRetentionProbeInstalled
                             ? @"yes" : @"no",
-                        CILaunchPrefetchRetentionProbeEnabled
+                        CIDirectLaunchPrefetchReleaseHookInstalled
+                            ? @"yes" : @"no",
+                        CIRBSAssertionRetentionFallbackInstalled
                             ? @"yes" : @"no"];
+    });
+}
+
+void CIInstallLaunchPrefetchRetentionProbe(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        CIRetainedLaunchPrefetchAssertions = [NSMutableArray array];
+        CILaunchPrefetchRetentionProbeEnabled = CIPreferenceBool(
+            CILaunchPrefetchRetentionProbeEnabledKey,
+            NO
+        );
+        if (!CILaunchPrefetchRetentionProbeEnabled) {
+            // Nothing is hooked while the experiment is off. Installing
+            // regardless would route every RBSAssertion invalidation in the
+            // process — audio, PiP, background tasks, extensions — through this
+            // file and take a lock on each one, which is not a cost a
+            // default-off probe should impose. The hooks go in if and when the
+            // switch is turned on.
+            [CILogStore.sharedStore
+                recordLevel:CILogLevelDebug
+                   category:@"LaunchPrefetch"
+                    message:@"LaunchPrefetch retention probe is off; no hooks were installed."];
+            return;
+        }
+        CIInstallLaunchPrefetchHooksIfNeeded();
     });
 }
 
@@ -265,6 +513,9 @@ void CIReloadLaunchPrefetchRetentionProbe(void) {
         CILaunchPrefetchRetentionProbeEnabledKey,
         NO
     );
+    // Install before arming, so the flag is never on while the interception
+    // points are still missing.
+    if (enabled) CIInstallLaunchPrefetchHooksIfNeeded();
     @synchronized (CIRetainedLaunchPrefetchAssertions) {
         CILaunchPrefetchRetentionProbeEnabled = enabled;
     }
@@ -280,8 +531,8 @@ void CIReloadLaunchPrefetchRetentionProbe(void) {
             ? CILogLevelInfo : CILogLevelWarning
            category:@"LaunchPrefetch"
             message:CILaunchPrefetchRetentionProbeInstalled
-                ? @"LaunchPrefetch retention is armed. Fully terminate and reopen YouTube so app_launch_measurement can acquire a fresh assertion."
-                : @"LaunchPrefetch retention was enabled, but the RBSAssertion interception point is unavailable on this iOS version."];
+                ? @"LaunchPrefetch retention is armed. For the launch-time release path, fully terminate and reopen YouTube; the hooks are already live for a release that happens later in this session."
+                : @"LaunchPrefetch retention was enabled, but no usable interception point exists on this iOS version."];
 }
 
 /// Reads one property off an RBS state object via KVC.
