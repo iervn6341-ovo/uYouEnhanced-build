@@ -9,6 +9,11 @@
                                          artist:(NSString *)artist
                                   videoDuration:(NSTimeInterval)videoDuration
                                           error:(NSError **)error;
+- (CILRCLIBResult *)bestResultFromSearchData:(NSData *)data
+                                       title:(NSString *)title
+                                      artist:(NSString *)artist
+                               videoDuration:(NSTimeInterval)videoDuration
+                                       error:(NSError **)error;
 - (CILRCLIBResult *)lyricsResultFromExactData:(NSData *)data
                                          title:(NSString *)title
                                         artist:(NSString *)artist
@@ -157,6 +162,29 @@ int main(void) {
             @"SawanoHiroyuki[nZk]:Jean-Ken Johnny & TAKUMA『PROVANT』 Music Video",
             @"PROVANT", @"SawanoHiroyuki[nZk]:Jean-Ken Johnny & TAKUMA",
             @"artist identity brackets must survive quoted-title parsing");
+        // A dash is only split by CISplitSongMetadata; CISongTitleFromVideoTitle
+        // deliberately leaves "Artist - Song" intact, so these two cannot use
+        // CIAssertSongMetadata.
+        CISplitSongMetadata(
+            @"Rokudenashi - The Shape of Rain【Official Music Video】",
+            @"Fallback Uploader", &splitTitle, &splitArtist);
+        CIAssert([splitTitle isEqualToString:@"The Shape of Rain"] &&
+            [splitArtist isEqualToString:@"Rokudenashi"],
+            @"a dash upload should drop its video block and keep the artist");
+        CISplitSongMetadata(
+            @"Street Fighter 6 Ingrid's Theme - Cosmic Scale Pretty",
+            @"Fallback Uploader", &splitTitle, &splitArtist);
+        CIAssert([splitTitle isEqualToString:@"Cosmic Scale Pretty"] &&
+            [splitArtist isEqualToString:@"Street Fighter 6 Ingrid's Theme"],
+            @"a game and scene prefix parses as the artist side, so the scorer must tolerate it");
+        // Documents a reading the parser gets wrong and cannot fix locally:
+        // nothing in "風になる / Nachoneko" marks which side is the song. The
+        // lookup compensates by searching the other side when this one finds
+        // nothing, so the expectation here is the wrong-but-deliberate reading.
+        CIAssertSongMetadata(
+            @"風になる / Nachoneko",
+            @"Nachoneko", @"風になる",
+            @"a title-first slash upload is parsed artist-first and relies on the reversed retry");
         CIAssertSongMetadata(
             @"Tetoris / Kasane Teto SV",
             @"Tetoris", @"",
@@ -333,6 +361,66 @@ int main(void) {
                 error:&error];
         CIAssert(ambiguousTitleOnly == nil && error.code == 404,
             @"title-only lookup should abstain when different singers have equally plausible versions");
+
+        // Upload titles built around a separator frequently put something other
+        // than a performer on the left: a game and scene name, a franchise, a
+        // program. The strict pass cannot match such a value against any
+        // database credit, so the permissive pass has to decide on title and
+        // duration alone or these uploads never resolve.
+        error = nil;
+        NSArray *bogusArtistCandidates = @[
+            CIRecord(50, @"Cosmic Scale Pretty", @"Ingrid", 214.0,
+                @"Correct track\nSecond line",
+                @"[00:01.00]Correct track\n[03:30.00]Second line"),
+        ];
+        CILRCLIBResult *bogusArtistResult = [provider bestResultFromSearchData:
+            CIJSONData(bogusArtistCandidates) title:@"Cosmic Scale Pretty"
+            artist:@"Street Fighter 6 Ingrid's Theme" videoDuration:214.0
+            error:&error];
+        CIAssert(bogusArtistResult.recordID == 50 &&
+            bogusArtistResult.syncedCues.count == 2 && error == nil,
+            @"a scene or franchise label must not suppress a title and duration match");
+
+        // A short title normally requires artist agreement, which an uploader
+        // channel can never provide. This is where the permissive pass is
+        // load-bearing: the strict pass rejects the record outright.
+        NSArray *shortTitleCandidates = @[
+            CIRecord(51, @"愛唄", @"GReeeeN", 297.0,
+                @"First line\nSecond line", nil),
+        ];
+        error = nil;
+        CIAssert([provider lyricsResultFromSearchData:
+            CIJSONData(shortTitleCandidates) title:@"愛唄"
+            artist:@"Uploader Channel" videoDuration:297.0
+            error:&error] == nil,
+            @"the strict pass should still require artist agreement for a short title");
+        error = nil;
+        CILRCLIBResult *shortTitleResult = [provider bestResultFromSearchData:
+            CIJSONData(shortTitleCandidates)
+            title:@"愛唄" artist:@"Uploader Channel" videoDuration:297.0
+            error:&error];
+        CIAssert(shortTitleResult.recordID == 51 && error == nil,
+            @"a short title with an unusable artist guess should fall back to duration");
+
+        error = nil;
+        CILRCLIBResult *corroboratedStillWins = [provider bestResultFromSearchData:
+            CIJSONData(artistConstrainedCandidates)
+            title:@"Never Looking Back"
+            artist:@"Uma Musume Pretty Derby"
+            videoDuration:248.0
+            error:&error];
+        CIAssert(corroboratedStillWins.recordID == 92 && error == nil,
+            @"a corroborated artist must still beat a wrong artist with a closer duration");
+
+        error = nil;
+        CILRCLIBResult *stillAbstains = [provider bestResultFromSearchData:
+            CIJSONData(artistConstrainedCandidates)
+            title:@"Never Looking Back"
+            artist:@"Unrelated Uploader"
+            videoDuration:248.0
+            error:&error];
+        CIAssert(stillAbstains == nil && error.code == 404,
+            @"widening the search must not start guessing between indistinguishable performances");
 
         error = nil;
         NSArray *TVAndFullCandidates = @[

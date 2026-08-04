@@ -42,6 +42,14 @@ static NSUInteger CILRCLIBPersistentCacheGeneration = 1;
 // stays invisible until every stale entry ages out.
 //   2: search by track_name only; artist demoted to a ranking signal.
 static const NSUInteger CILRCLIBCacheSchemaVersion = 2;
+// Cached misses are only valid for the query behaviour that produced them, but
+// cached hits stay valid forever. Bumping this generation therefore discards
+// every stored miss while keeping successful lookups — and, unlike a schema
+// bump, leaves user-exported .plist files importable.
+//   2: every automatic lookup searches by track_name; /api/get is no longer
+//      used with an artist guessed from the upload title; a title built around
+//      a separator retries the reversed reading of its two sides.
+static const NSUInteger CILRCLIBCacheQueryGeneration = 2;
 // Duration gap below which two candidates count as the same edition, so a
 // synced timeline wins over plain lyrics that are only marginally closer.
 static const NSTimeInterval CILRCLIBDurationTieTolerance = 2.5;
@@ -52,6 +60,20 @@ static const NSTimeInterval CILRCLIBDurationTieTolerance = 2.5;
 // inferred from an upload title is frequently wrong.
 static const NSUInteger CILRCLIBAmbiguousTitleLength = 5;
 static const double CILRCLIBMinimumArtistScoreForShortTitle = 0.42;
+
+// A separator-built upload title gives no reliable clue which side is the song.
+// "AiNA THE END / On The Way" is artist-first, "風になる / Nachoneko" is
+// title-first, and "Street Fighter 6 Ingrid's Theme - Cosmic Scale Pretty" has
+// no artist at all. CISplitSongMetadata has to commit to one reading, so when
+// that reading finds nothing the other side is worth one more search — bounded
+// to plausible track names so an obvious channel string is not retried.
+static BOOL CILRCLIBReversedQueryIsWorthwhile(NSString *title,
+                                              NSString *artist) {
+    if (artist.length == 0 || artist.length > 80) return NO;
+    NSString *normalizedArtist = CINormalizedText(artist);
+    if (normalizedArtist.length == 0) return NO;
+    return ![normalizedArtist isEqualToString:CINormalizedText(title)];
+}
 
 static NSError *CILRCLIBError(NSInteger code, NSString *description) {
     return [NSError errorWithDomain:CILRCLIBErrorDomain code:code userInfo:@{
@@ -769,6 +791,17 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             return nil;
         }
         if ([entry[@"kind"] isEqual:CILRCLIBCacheKindMiss]) {
+            // A miss recorded by older query logic says nothing about what the
+            // current logic would find, so drop it and let the lookup run.
+            NSUInteger generation =
+                [entry[@"queryGeneration"]
+                    respondsToSelector:@selector(unsignedIntegerValue)]
+                    ? [entry[@"queryGeneration"] unsignedIntegerValue] : 0;
+            if (generation != CILRCLIBCacheQueryGeneration) {
+                [self.persistentCacheEntries removeObjectForKey:key];
+                [self writePersistentCacheLocked];
+                return nil;
+            }
             if (negativeHit) *negativeHit = YES;
             return nil;
         }
@@ -811,6 +844,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             @"kind": CILRCLIBCacheKindMiss,
             @"storedAt": @(now),
             @"expiresAt": @(now + CILRCLIBNegativeCacheLifetime),
+            @"queryGeneration": @(CILRCLIBCacheQueryGeneration),
         };
         [self writePersistentCacheLocked];
     }
@@ -920,6 +954,11 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         componentsWithURL:CILRCLIBSearchEndpointURL()
         resolvingAgainstBaseURL:NO];
     if (broad) {
+        // Not on the automatic path any more. LRCLIB's q= mode matches track,
+        // artist and album as free text, so an upload title padded with a
+        // franchise or channel name returns a wide, loosely-ranked list that
+        // CILRCLIBMaximumCandidates can truncate before the right row is ever
+        // scored. Retained for manual lookups and covered by the smoke test.
         NSString *query = artist.length > 0
             ? [NSString stringWithFormat:@"%@ %@", artist, title] : title;
         components.queryItems = @[
@@ -940,6 +979,11 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     return components.URL;
 }
 
+// No longer used by any automatic lookup: /api/get matches track, artist and
+// duration as one AND, which only works when the artist is LRCLIB's canonical
+// credit rather than a guess from an upload title. Kept — with its tests — for
+// the one case that could justify it later: a channel whose identity is
+// trustworthy by construction, such as Topic or VEVO.
 - (NSURL *)getURLForTitle:(NSString *)title
                    artist:(NSString *)artist
                  duration:(NSTimeInterval)duration {
@@ -1162,7 +1206,12 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     [candidates sortUsingComparator:comparator];
     CILRCLIBCandidate *closest = candidates.firstObject;
 
-    if (artist.length == 0 && candidates.count > 1) {
+    // An artist that no candidate corroborates carries no discriminating power,
+    // so this has to behave exactly as if none had been supplied. Gating the
+    // check on an empty string instead let a mis-inferred artist — an uploader
+    // channel, a franchise label — silently pick whichever same-titled
+    // performance happened to rank first.
+    if (!artistCorroborated && candidates.count > 1) {
         for (NSUInteger index = 1; index < candidates.count; index++) {
             CILRCLIBCandidate *other = candidates[index];
             if (CILRCLIBFieldSimilarity(
@@ -1182,8 +1231,12 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
                 ) >= 0.60) {
                 continue;
             }
-            if (fabs(closest.metadataScore -
-                     other.metadataScore) > 0.03) {
+            // Compare on the title alone, matching the floor used above. An
+            // uncorroborated artist was already judged unreliable, so letting
+            // its similarity spread two candidates apart here would resurrect
+            // the same bad signal the floor just discarded and call a genuine
+            // ambiguity "resolved".
+            if (fabs(closest.titleScore - other.titleScore) > 0.03) {
                 continue;
             }
             if (videoDuration > 0 &&
@@ -1253,6 +1306,41 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     return [self resultFromCandidate:candidate error:error];
 }
 
+// Two passes over one payload, so widening the search costs no extra request.
+//
+// The first pass keeps the artist as a ranking signal, which is what correctly
+// separates same-title songs by different performers. The second drops it
+// entirely, because an artist inferred from an upload title is frequently not a
+// performer at all — "Street Fighter 6 Ingrid's Theme", a franchise label, or a
+// channel name — and in the first pass such a value can only ever suppress the
+// right track. Judging on title plus duration alone is exactly the fallback
+// order requested: the ambiguity check still runs in the second pass, so two
+// genuinely indistinguishable performances continue to abstain rather than
+// guess.
+- (CILRCLIBResult *)bestResultFromSearchData:(NSData *)data
+                                       title:(NSString *)title
+                                      artist:(NSString *)artist
+                               videoDuration:(NSTimeInterval)videoDuration
+                                       error:(NSError **)error {
+    NSError *strictError = nil;
+    CILRCLIBResult *strict = [self lyricsResultFromSearchData:data
+        title:title artist:artist videoDuration:videoDuration
+        error:&strictError];
+    if (strict || artist.length == 0) {
+        if (error) *error = strictError;
+        return strict;
+    }
+    NSError *permissiveError = nil;
+    CILRCLIBResult *permissive = [self lyricsResultFromSearchData:data
+        title:title artist:@"" videoDuration:videoDuration
+        error:&permissiveError];
+    if (error) *error = permissive ? nil : (permissiveError ?: strictError);
+    return permissive;
+}
+
+// Paired with getURLForTitle:artist:duration: and likewise off the automatic
+// path; it stays so that reinstating the exact endpoint does not also mean
+// rewriting its safety checks.
 - (CILRCLIBResult *)lyricsResultFromExactData:(NSData *)data
                                          title:(NSString *)title
                                         artist:(NSString *)artist
@@ -1270,17 +1358,26 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
     return [self resultFromCandidate:candidate error:error];
 }
 
+// Attempt 1 searches the parsed track name; attempt 2 searches the other side
+// of a separator-built title. Both go through /api/search, never /api/get: the
+// metadata endpoint matches track, artist and duration as one AND, so a single
+// wrong guess in an artist inferred from an upload title turns the whole lookup
+// into a 404. Searching by track name keeps the artist as a ranking signal
+// instead, which is the only role a guess can safely play.
 - (void)performLookupForTitle:(NSString *)title
                        artist:(NSString *)artist
                      duration:(NSTimeInterval)duration
-                        exact:(BOOL)exact
+                      attempt:(NSUInteger)attempt
                         token:(NSUInteger)token
                      cacheKey:(NSString *)cacheKey
                    completion:(CILRCLIBCompletion)completion {
     if (![self isCurrentToken:token]) return;
-    NSURL *URL = exact
-        ? [self getURLForTitle:title artist:artist duration:duration]
-        : [self searchURLForTitle:title artist:@"" broad:YES];
+    BOOL reversed = attempt > 1;
+    NSString *queryTitle = reversed ? artist : title;
+    NSString *queryArtist = reversed ? title : artist;
+    BOOL canRetryReversed = !reversed &&
+        CILRCLIBReversedQueryIsWorthwhile(title, artist);
+    NSURL *URL = [self searchURLForTitle:queryTitle artist:@"" broad:NO];
     if (!URL) {
         [self completeToken:token result:nil
             error:CILRCLIBError(-2, @"Unable to construct the LRCLIB URL.")
@@ -1344,30 +1441,46 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         if ((status >= 200 && status < 300) || status == 404) {
             [self clearCooldownForEndpoint:serviceIdentity];
         }
+        // Nothing found for this reading of the title. Only record the miss once
+        // every reading has been tried, otherwise the negative cache would
+        // freeze the first guess in place for twelve hours.
+        void (^completeExhausted)(NSError *) = ^(NSError *reason) {
+            if (canRetryReversed) {
+                [self startLookupForTitle:title artist:artist duration:duration
+                    attempt:2 token:token cacheKey:cacheKey
+                    completion:completion];
+                return;
+            }
+            if (reason.code == 404 &&
+                [reason.domain isEqualToString:CILRCLIBErrorDomain]) {
+                [self storeNegativeResultForCacheKey:cacheKey];
+            }
+            [self completeToken:token result:nil error:reason
+                completion:completion];
+        };
+
         NSError *responseError = [self responseErrorForResponse:response data:data];
         if (responseError) {
             if (responseError.code == 404) {
-                [self storeNegativeResultForCacheKey:cacheKey];
+                completeExhausted(responseError);
+            } else {
+                [self completeToken:token result:nil error:responseError
+                    completion:completion];
             }
-            [self completeToken:token result:nil error:responseError completion:completion];
             return;
         }
         NSError *parseError = nil;
-        CILRCLIBResult *result = exact
-            ? [self lyricsResultFromExactData:data title:title artist:artist
-                videoDuration:duration error:&parseError]
-            : [self lyricsResultFromSearchData:data title:title artist:@""
-                videoDuration:duration error:&parseError];
+        CILRCLIBResult *result = [self bestResultFromSearchData:data
+            title:queryTitle artist:queryArtist videoDuration:duration
+            error:&parseError];
         if (result) {
             [self storeResult:result forCacheKey:cacheKey];
-        } else if ([parseError.domain isEqualToString:CILRCLIBErrorDomain] &&
-                   parseError.code == 404) {
-            [self storeNegativeResultForCacheKey:cacheKey];
+            [self completeToken:token result:result error:nil
+                completion:completion];
+            return;
         }
-        [self completeToken:token result:result
-            error:parseError ?: (result ? nil :
-                CILRCLIBError(-5, @"Unable to parse LRCLIB response."))
-            completion:completion];
+        completeExhausted(parseError ?:
+            CILRCLIBError(-5, @"Unable to parse LRCLIB response."));
     };
     BOOL shouldStart = NO;
     BOOL rateLimited = NO;
@@ -1411,7 +1524,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
                 completion:completion];
         } else if ([self isCurrentToken:token] && remainingDelay > 0) {
             [self startLookupForTitle:title artist:artist duration:duration
-                exact:exact token:token cacheKey:cacheKey
+                attempt:attempt token:token cacheKey:cacheKey
                 completion:completion];
         }
         return;
@@ -1421,7 +1534,7 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 - (void)startLookupForTitle:(NSString *)title
                      artist:(NSString *)artist
                    duration:(NSTimeInterval)duration
-                      exact:(BOOL)exact
+                    attempt:(NSUInteger)attempt
                       token:(NSUInteger)token
                    cacheKey:(NSString *)cacheKey
                  completion:(CILRCLIBCompletion)completion {
@@ -1450,12 +1563,12 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
         if (!shouldStart) return;
         if (remainingDelay > 0) {
             [self startLookupForTitle:title artist:artist duration:duration
-                exact:exact token:token cacheKey:cacheKey
+                attempt:attempt token:token cacheKey:cacheKey
                 completion:completion];
             return;
         }
         [self performLookupForTitle:title artist:artist duration:duration
-            exact:exact token:token cacheKey:cacheKey
+            attempt:attempt token:token cacheKey:cacheKey
             completion:completion];
     });
 }
@@ -1479,10 +1592,13 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             completion:completion];
         return;
     }
-    BOOL exact = cleanArtist.length > 0;
+    // The key still records whether an artist was available, so entries written
+    // by earlier builds stay addressable and the user's exported lyrics keep
+    // resolving; only the endpoint this flag used to select has changed.
+    BOOL hasArtist = cleanArtist.length > 0;
     NSString *serviceIdentity = CILRCLIBBaseURL();
     NSString *cacheKey = [self cacheKeyForTitle:cleanTitle
-        artist:cleanArtist duration:duration exact:exact
+        artist:cleanArtist duration:duration exact:hasArtist
         endpointIdentity:serviceIdentity];
     BOOL negativeHit = NO;
     CILRCLIBResult *cached =
@@ -1509,12 +1625,12 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
             completion:completion];
         return;
     }
-    // A trustworthy artist allows LRCLIB's metadata endpoint to perform one
-    // duration-aware exact lookup. Without one, perform one keyword search and
-    // let the local scorer reject ambiguous singers; never expand a playback
-    // lookup into multiple automatic requests.
+    // At most two searches per lookup: the parsed track name, then — only when
+    // the first reading found nothing — the other side of a separator-built
+    // title. Both are rate limited like any other request, so a playback lookup
+    // still cannot fan out into a burst.
     [self startLookupForTitle:cleanTitle artist:cleanArtist duration:duration
-        exact:exact token:token cacheKey:cacheKey completion:completion];
+        attempt:1 token:token cacheKey:cacheKey completion:completion];
 }
 
 @end
