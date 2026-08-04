@@ -15,6 +15,7 @@
 #import "CILRCLIBCacheViewController.h"
 #import "CILRCLIBProvider.h"
 #import "CILogViewController.h"
+#import "CIProcessDiagnostics.h"
 #import "CITextUtilities.h"
 #import "CIToastPresenter.h"
 #import "CIVideoOverrides.h"
@@ -834,6 +835,33 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             CIStoreBool(CIBackgroundNowPlayingLyricsEnabledKey, enabled);
             [CIBackgroundPlaybackMonitor.sharedMonitor
                 reloadNowPlayingLyricsPreference];
+            return YES;
+        } settingItemId:0]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        switchItemWithTitle:CILocalized(
+            @"LAUNCH_PREFETCH_RETENTION_PROBE",
+            @"Retain LaunchPrefetch assertion"
+        )
+        titleDescription:CILocalized(
+            @"LAUNCH_PREFETCH_RETENTION_PROBE_DESCRIPTION",
+            @"High-risk experiment: intercept Apple's client-side invalidation of this process's LaunchPrefetch assertion. Enable it, then fully terminate and reopen YouTube. Disable it to release retained assertions."
+        )
+        accessibilityIdentifier:
+            @"CaptionIsland.LaunchPrefetchRetentionProbe"
+        switchOn:CIPreferenceBool(
+            CILaunchPrefetchRetentionProbeEnabledKey,
+            NO
+        )
+        switchBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            BOOL enabled
+        ) {
+            CIStoreBool(
+                CILaunchPrefetchRetentionProbeEnabledKey,
+                enabled
+            );
+            CIReloadLaunchPrefetchRetentionProbe();
             return YES;
         } settingItemId:0]];
 

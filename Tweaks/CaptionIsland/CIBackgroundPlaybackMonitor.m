@@ -631,6 +631,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     [CIContinuedProcessingController.sharedController
         endWithReason:reason
               success:YES];
+    CIReleaseRetainedLaunchPrefetchAssertions(reason);
     [CIActivityPresenter.sharedPresenter endForProcessTermination];
 }
 

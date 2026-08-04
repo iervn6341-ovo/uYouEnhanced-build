@@ -91,6 +91,8 @@
 "RETURN_HOME_MODE_CAPTION_ISLAND" = "Caption Island（背景字幕）";
 "BACKGROUND_NOW_PLAYING_LYRICS" = "背景「播放中」歌詞";
 "BACKGROUND_NOW_PLAYING_LYRICS_DESCRIPTION" = "實驗功能：YouTube 在背景時，將目前歌詞映射到系統「播放中」標題，下一句映射到副標題；回到前景時會還原原本的影片資訊。";
+"LAUNCH_PREFETCH_RETENTION_PROBE" = "保留 LaunchPrefetch assertion";
+"LAUNCH_PREFETCH_RETENTION_PROBE_DESCRIPTION" = "高風險實驗：攔截 Apple client 對目前行程 LaunchPrefetch assertion 的失效呼叫。開啟後請完整結束並重新啟動 YouTube；關閉時會釋放已保留的 assertion。";
 "CONTINUED_PROCESSING" = "iOS 26 持續背景字幕";
 "CONTINUED_PROCESSING_DESCRIPTION" = "不需伺服器的實驗模式。iOS 會另外顯示可取消的背景任務 Live Activity；系統資源不足時仍可能提前結束。";
 "CONTINUED_CUSTOM_ACTIVITY_PROBE" = "測試背景自訂 Live Activity";

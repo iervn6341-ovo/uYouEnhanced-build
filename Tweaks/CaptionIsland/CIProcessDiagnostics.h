@@ -17,4 +17,21 @@ NS_ASSUME_NONNULL_BEGIN
 /// `UIApplication` state must be read there.
 FOUNDATION_EXPORT void CILogProcessBackgroundEligibility(NSString *reason);
 
+/// Installs a process-local experiment that can retain the LaunchPrefetch
+/// assertion created by Apple's app-launch measurement library. Installation
+/// is inert unless `CILaunchPrefetchRetentionProbeEnabledKey` is enabled.
+/// Call this as early as possible during tweak initialization so the probe is
+/// present before the launch-measurement client invalidates its assertion.
+FOUNDATION_EXPORT void CIInstallLaunchPrefetchRetentionProbe(void);
+
+/// Re-reads the experiment preference. Turning the experiment off immediately
+/// invalidates every assertion the probe retained through the original RBS
+/// implementation.
+FOUNDATION_EXPORT void CIReloadLaunchPrefetchRetentionProbe(void);
+
+/// Releases retained assertions for a terminal process lifecycle event.
+FOUNDATION_EXPORT void CIReleaseRetainedLaunchPrefetchAssertions(
+    NSString *reason
+);
+
 NS_ASSUME_NONNULL_END

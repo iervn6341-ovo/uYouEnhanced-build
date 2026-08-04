@@ -25,6 +25,8 @@ FOUNDATION_EXPORT NSString *const CIReturnHomeModeKey;
 FOUNDATION_EXPORT NSString *const
     CIBackgroundNowPlayingLyricsEnabledKey;
 FOUNDATION_EXPORT NSString *const
+    CILaunchPrefetchRetentionProbeEnabledKey;
+FOUNDATION_EXPORT NSString *const
     CIContinuedBackgroundProcessingEnabledKey;
 FOUNDATION_EXPORT NSString *const
     CIContinuedCustomActivityProbeEnabledKey;

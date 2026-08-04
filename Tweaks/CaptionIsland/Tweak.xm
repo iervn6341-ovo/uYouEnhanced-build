@@ -18,6 +18,7 @@
 #import "CIConstants.h"
 #import "CILogStore.h"
 #import "CIPlaybackState.h"
+#import "CIProcessDiagnostics.h"
 #import "CIToastPresenter.h"
 #import "CIYouTubeInspector.h"
 #import "CIVideoEligibility.h"
@@ -2353,6 +2354,9 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
 %end
 
 %ctor {
+    // Install before YouTube completes its launch measurement. The hook is
+    // inert unless its explicit experimental preference is enabled.
+    CIInstallLaunchPrefetchRetentionProbe();
     Class playerClass = NSClassFromString(@"YTPlayerViewController");
     if (!playerClass) return;
     (void)CIBackgroundPlaybackMonitor.sharedMonitor;

@@ -369,8 +369,9 @@ int main(void) {
         CIAssert(durationDecides.recordID == 91 && error == nil,
             @"title-only lookup should take the clearly closer duration rather than abstain");
 
-        // Abstention is now reserved for a real tie: same title, different
-        // performers, identical durations, neither carrying a timeline.
+        // Several performers holding one title is not ambiguity: covers carry
+        // the same words, so a known video length must still produce lyrics
+        // even when the durations are identical.
         NSArray *tiedCandidates = @[
             CIRecord(97, @"Never Looking Back", @"Kobayashi Rin", 250.0,
                 @"Version one\nSecond line", nil),
@@ -378,26 +379,38 @@ int main(void) {
                 @"Version two\nSecond line", nil),
         ];
         error = nil;
-        CILRCLIBResult *trueTie = [provider lyricsResultFromSearchData:
-            CIJSONData(tiedCandidates) title:@"Never Looking Back"
-            artist:@"" videoDuration:250.0 error:&error];
-        CIAssert(trueTie == nil && error.code == 404,
-            @"two indistinguishable performances at the same duration should still abstain");
+        CILRCLIBResult *sameDurationDifferentSingers =
+            [provider lyricsResultFromSearchData:
+                CIJSONData(tiedCandidates) title:@"Never Looking Back"
+                artist:@"" videoDuration:250.0 error:&error];
+        CIAssert(sameDurationDifferentSingers != nil && error == nil,
+            @"a known video length must resolve same-title records rather than abstain");
 
-        // A timeline is the feature's whole point, so it breaks a duration tie
-        // instead of being treated as a coin flip.
+        // A timeline is the feature's whole point, so it decides among records
+        // the duration cannot separate.
         error = nil;
-        CILRCLIBResult *syncedBreaksTie = [provider lyricsResultFromSearchData:
-            CIJSONData(@[
-                tiedCandidates[0],
-                CIRecord(99, @"Never Looking Back", @"Wilkinson Trio", 250.0,
-                    @"Version two\nSecond line",
-                    @"[00:01.00]Version two\n[04:00.00]Second line"),
-            ])
-            title:@"Never Looking Back" artist:@"" videoDuration:250.0
-            error:&error];
-        CIAssert(syncedBreaksTie.recordID == 99 && error == nil,
-            @"a synced timeline should resolve a duration tie between performers");
+        CILRCLIBResult *syncedWinsAtSameDuration =
+            [provider lyricsResultFromSearchData:
+                CIJSONData(@[
+                    tiedCandidates[0],
+                    CIRecord(99, @"Never Looking Back", @"Wilkinson Trio", 250.0,
+                        @"Version two\nSecond line",
+                        @"[00:01.00]Version two\n[04:00.00]Second line"),
+                ])
+                title:@"Never Looking Back" artist:@"" videoDuration:250.0
+                error:&error];
+        CIAssert(syncedWinsAtSameDuration.recordID == 99 && error == nil,
+            @"a synced timeline should win when the duration cannot separate two records");
+
+        // Without a video length there is nothing to judge by, and a
+        // same-title-different-song mismatch would go undetected.
+        error = nil;
+        CILRCLIBResult *noDurationAbstains =
+            [provider lyricsResultFromSearchData:
+                CIJSONData(tiedCandidates) title:@"Never Looking Back"
+                artist:@"" videoDuration:0 error:&error];
+        CIAssert(noDurationAbstains == nil && error.code == 404,
+            @"with no video length, same-title records by different artists should abstain");
 
         // Upload titles built around a separator frequently put something other
         // than a performer on the left: a game and scene name, a franchise, a
@@ -449,15 +462,18 @@ int main(void) {
         CIAssert(corroboratedStillWins.recordID == 92 && error == nil,
             @"a corroborated artist must still beat a wrong artist with a closer duration");
 
+        // Widening the search must not invent a duration to judge by: with no
+        // video length the permissive pass has to abstain just as the strict
+        // pass does.
         error = nil;
         CILRCLIBResult *stillAbstains = [provider bestResultFromSearchData:
             CIJSONData(tiedCandidates)
             title:@"Never Looking Back"
             artist:@"Unrelated Uploader"
-            videoDuration:250.0
+            videoDuration:0
             error:&error];
         CIAssert(stillAbstains == nil && error.code == 404,
-            @"widening the search must not start guessing between indistinguishable performances");
+            @"widening the search must still abstain when nothing can separate two records");
 
         error = nil;
         NSArray *TVAndFullCandidates = @[

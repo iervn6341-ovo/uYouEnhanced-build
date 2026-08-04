@@ -1383,12 +1383,21 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     [candidates sortUsingComparator:comparator];
     CILRCLIBCandidate *closest = candidates.firstObject;
 
-    // An artist that no candidate corroborates carries no discriminating power,
-    // so this has to behave exactly as if none had been supplied. Gating the
-    // check on an empty string instead let a mis-inferred artist — an uploader
-    // channel, a franchise label — silently pick whichever same-titled
-    // performance happened to rank first.
-    if (!artistCorroborated && candidates.count > 1) {
+    // Abstain only when there is no duration to judge by.
+    //
+    // Several performers holding the same title is not itself a reason to give
+    // up: covers and re-uploads of one song carry the same words, so picking
+    // "the wrong performer" usually still shows the right lyrics. Treating a
+    // differing artist as ambiguity meant abstaining on exactly the songs most
+    // likely to be watched — "風になる" resolves to a dozen uploads — while
+    // protecting against a problem that mostly does not exist.
+    //
+    // The case that genuinely differs is two *different songs* sharing a title,
+    // and those are separated by length, which the comparator already orders on.
+    // So whenever the video length is known, let it decide. Without a length
+    // there is nothing to choose on, and a same-title-different-song mismatch
+    // would go undetected, so keep abstaining there.
+    if (!artistCorroborated && videoDuration <= 0 && candidates.count > 1) {
         for (NSUInteger index = 1; index < candidates.count; index++) {
             CILRCLIBCandidate *other = candidates[index];
             if (CILRCLIBFieldSimilarity(
@@ -1411,23 +1420,8 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
             // Compare on the title alone, matching the floor used above. An
             // uncorroborated artist was already judged unreliable, so letting
             // its similarity spread two candidates apart here would resurrect
-            // the same bad signal the floor just discarded and call a genuine
-            // ambiguity "resolved".
+            // the same bad signal the floor just discarded.
             if (fabs(closest.titleScore - other.titleScore) > 0.03) {
-                continue;
-            }
-            // Let the duration decide whenever it can. A popular song carries
-            // many covers and re-uploads in LRCLIB, so requiring near-total
-            // agreement before choosing meant abstaining on exactly the songs
-            // most likely to be watched — "風になる" resolves to a dozen
-            // performers. Only a candidate this close is genuinely
-            // indistinguishable; anything further out loses to the better
-            // duration match. A wrong pick is recoverable through the per-video
-            // override, whereas abstaining gives the user nothing to correct.
-            if (videoDuration > 0 &&
-                other.durationDifference >
-                    closest.durationDifference +
-                        CILRCLIBDurationTieTolerance) {
                 continue;
             }
             // A synced timeline is a meaningful difference in its own right: it
@@ -1437,10 +1431,6 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
                 (other.syncedCues.count > 0)) {
                 continue;
             }
-            // With no reliable artist, two near-identical titles from
-            // different singers at comparable durations are genuinely
-            // ambiguous. Prefer a YouTube fallback or a per-video override
-            // instead of silently selecting the wrong performance.
             return nil;
         }
     }
