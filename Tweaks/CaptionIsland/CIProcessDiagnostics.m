@@ -7,7 +7,9 @@
 #import <objc/runtime.h>
 #import <substrate.h>
 #import <float.h>
+#import <mach-o/dyld.h>
 #import <stdlib.h>
+#import <string.h>
 #import <unistd.h>
 
 static const NSUInteger CIDiagnosticsMaximumDescriptionLength = 900;
@@ -386,17 +388,85 @@ void CIReleaseRetainedLaunchPrefetchAssertions(NSString *reason) {
 /// whatever happened to be left there. Refusing to install is the only safe
 /// response, and the offending encoding is worth logging so the next iOS
 /// release can be handled deliberately.
+/// Steps past ObjC method-encoding type qualifiers.
+///
+/// `-[RBSAssertion invalidate]` is declared `oneway void`, which encodes as
+/// "Vv16@0:8": the leading `V` is a qualifier, not part of the return type.
+/// `oneway` exists for distributed-object messaging and has no effect on the
+/// local calling convention, so a plain `void (id, SEL)` replacement is
+/// ABI-compatible — but comparing the raw encoding against `v` rejects it.
+static const char *CISkipTypeQualifiers(const char *encoding) {
+    if (!encoding) return NULL;
+    // r const, n in, N inout, o out, O bycopy, R byref, V oneway.
+    while (*encoding && strchr("rnNoORV", *encoding)) encoding++;
+    return encoding;
+}
+
 static BOOL CIAssertionInvalidateHasExpectedSignature(Method method) {
     if (!method) return NO;
     BOOL returnsVoid = NO;
     char *returnType = method_copyReturnType(method);
     if (returnType) {
-        returnsVoid = returnType[0] == _C_VOID && returnType[1] == '\0';
+        const char *bare = CISkipTypeQualifiers(returnType);
+        returnsVoid = bare && bare[0] == _C_VOID && bare[1] == '\0';
         free(returnType);
     }
     // self and _cmd only: an extra parameter would mean the caller passes a
     // value this replacement silently drops.
     return returnsVoid && method_getNumberOfArguments(method) == 2;
+}
+
+static const char *const CIAppLaunchMeasurementReleaseSymbolName =
+    "alm_release_pageins_recording_assertion";
+
+/// Locates the page-in recording release function anywhere in the process.
+///
+/// The previous hardcoded `/usr/lib/libapp_launch_measurement.dylib` produced
+/// `directReleaseHook=no` on iOS 26, and a wrong path is indistinguishable from
+/// a missing symbol in the log. Searching every loaded image first removes the
+/// guesswork; the explicit paths remain only as a fallback for the case where
+/// the symbol exists but its image is not yet loaded.
+static void *CIFindAppLaunchMeasurementRelease(NSString **resolvedImage) {
+    void *symbol = dlsym(RTLD_DEFAULT,
+                         CIAppLaunchMeasurementReleaseSymbolName);
+    if (symbol) {
+        Dl_info info;
+        if (resolvedImage && dladdr(symbol, &info) && info.dli_fname) {
+            *resolvedImage = @(info.dli_fname);
+        }
+        return symbol;
+    }
+    for (NSString *path in @[
+        @"/usr/lib/libapp_launch_measurement.dylib",
+        @"/usr/lib/system/libsystem_launch_measurement.dylib",
+        // Single line: an implicitly concatenated literal inside an array
+        // literal trips -Wobjc-string-concatenation, and this target is -Werror.
+        @"/System/Library/PrivateFrameworks/AppLaunchMeasurement.framework/AppLaunchMeasurement",
+    ]) {
+        void *handle = dlopen(path.fileSystemRepresentation, RTLD_LAZY);
+        if (!handle) continue;
+        symbol = dlsym(handle, CIAppLaunchMeasurementReleaseSymbolName);
+        if (symbol) {
+            if (resolvedImage) *resolvedImage = path;
+            return symbol;
+        }
+    }
+    return NULL;
+}
+
+/// Lists loaded images whose name hints at launch measurement, so a failed
+/// lookup still reports where to look next instead of just saying "no".
+static NSString *CIDescribeMeasurementImages(void) {
+    NSMutableArray<NSString *> *matches = [NSMutableArray array];
+    uint32_t count = _dyld_image_count();
+    for (uint32_t index = 0; index < count; index++) {
+        const char *name = _dyld_get_image_name(index);
+        if (name && strcasestr(name, "measurement")) {
+            [matches addObject:[@(name) lastPathComponent]];
+        }
+    }
+    return matches.count > 0
+        ? [matches componentsJoinedByString:@", "] : @"none";
 }
 
 /// Installs the interception points. Separate from the launch-time entry point
@@ -409,16 +479,17 @@ static void CIInstallLaunchPrefetchHooksIfNeeded(void) {
     dispatch_once(&onceToken, ^{
         CILoadRunningBoardServices();
 
-        void *measurementHandle = dlopen(
-            "/usr/lib/libapp_launch_measurement.dylib",
-            RTLD_LAZY
-        );
-        void *releaseSymbol = measurementHandle
-            ? dlsym(
-                measurementHandle,
-                "alm_release_pageins_recording_assertion"
-            )
-            : NULL;
+        NSString *resolvedImage = nil;
+        void *releaseSymbol =
+            CIFindAppLaunchMeasurementRelease(&resolvedImage);
+        if (!releaseSymbol) {
+            [CILogStore.sharedStore
+                recordLevel:CILogLevelWarning
+                   category:@"LaunchPrefetch"
+                     format:@"Could not resolve %s in any loaded image. Images hinting at launch measurement: %@.",
+                            CIAppLaunchMeasurementReleaseSymbolName,
+                            CIDescribeMeasurementImages()];
+        }
         if (releaseSymbol) {
             // Unlike the Objective-C method below, a C symbol carries no type
             // information, so `void (void)` cannot be verified — it is inferred
@@ -472,11 +543,12 @@ static void CIInstallLaunchPrefetchHooksIfNeeded(void) {
         [CILogStore.sharedStore
             recordLevel:CILogLevelInfo
                category:@"LaunchPrefetch"
-                 format:@"LaunchPrefetch hooks installed=%@ directReleaseHook=%@ rbsFallback=%@.",
+                 format:@"LaunchPrefetch hooks installed=%@ directReleaseHook=%@ (image %@) rbsFallback=%@.",
                         CILaunchPrefetchRetentionProbeInstalled
                             ? @"yes" : @"no",
                         CIDirectLaunchPrefetchReleaseHookInstalled
                             ? @"yes" : @"no",
+                        resolvedImage.lastPathComponent ?: @"unresolved",
                         CIRBSAssertionRetentionFallbackInstalled
                             ? @"yes" : @"no"];
     });

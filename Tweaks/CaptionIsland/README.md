@@ -135,9 +135,21 @@ assertion 是在**第一次由背景回到前景**時消失，而不是啟動時
 `method_getNumberOfArguments` 確認它真的是 `void (id, SEL)`，不符就拒絕安裝並記錄實際
 的 type encoding。這不是對私有 API 漂移的過度防範：`method_setImplementation` 會改掉
 程序內**所有** `RBSAssertion` 的該方法，若真實方法有回傳值而替換函式沒有寫回傳暫存器，
-每一個與本實驗無關的呼叫端都會讀到殘留的垃圾值。相對地，`alm_release_pageins_recording_assertion`
-是 C 符號、執行期沒有型別資訊，`void (void)` 只能從名稱推斷而無法驗證；它的影響範圍
-小得多（呼叫端只在 Apple 那個函式庫內），但若未來 iOS 給它參數或回傳值，問題會從那裡開始。
+每一個與本實驗無關的呼叫端都會讀到殘留的垃圾值。
+
+比對前必須先跳過型別修飾詞。iOS 26 實測該方法的 encoding 是 `Vv16@0:8`——宣告為
+`oneway void`，`method_copyReturnType` 因此回傳 `"Vv"` 而不是 `"v"`。`oneway` 只影響
+distributed object 的遠端訊息傳遞，本地呼叫慣例與 `void` 相同，所以替換是 ABI 安全的；
+但沒有跳過 `V` 的比對會把它誤判成不相容而拒絕安裝（第一版就是這樣誤報的）。可能出現的
+修飾詞為 `r n N o O R V`。
+
+`alm_release_pageins_recording_assertion` 是 C 符號、執行期沒有型別資訊，`void (void)`
+只能從名稱推斷而無法驗證；它的影響範圍小得多（呼叫端只在 Apple 那個函式庫內），但若
+未來 iOS 給它參數或回傳值，問題會從那裡開始。該符號改以 `dlsym(RTLD_DEFAULT, …)` 在全
+程序範圍搜尋，並用 `dladdr` 回報實際所在的 image；先前硬寫死
+`/usr/lib/libapp_launch_measurement.dylib` 在 iOS 26 上得到 `directReleaseHook=no`，而
+路徑寫錯與符號不存在在 log 中完全無法區分。若仍找不到，會列出名稱含 `measurement` 的
+已載入 image 供下一步追查。
 
 判讀方式：啟動 Log 應出現 `LaunchPrefetch hooks installed=yes`，並可從
 `directReleaseHook` 與 `rbsFallback` 兩個欄位看出實際裝上哪一條。之後應出現
