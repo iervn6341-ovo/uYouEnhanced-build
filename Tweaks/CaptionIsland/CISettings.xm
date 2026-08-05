@@ -880,7 +880,6 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
         switchOn:CIPreferenceBool(CIDisableForShortsKey, YES)
         switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
             CIStoreBool(CIDisableForShortsKey, enabled);
-            CISynchronizeContinuedTaskFromCurrentVideo();
             return YES;
         } settingItemId:0]];
 
@@ -911,8 +910,7 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
                             CIMaximumVideoDurationMinutesKey,
                             choice.integerValue
                         );
-                        CISynchronizeContinuedTaskFromCurrentVideo();
-                        [settingsViewController reloadData];
+                                    [settingsViewController reloadData];
                         return YES;
                     }]];
             }
