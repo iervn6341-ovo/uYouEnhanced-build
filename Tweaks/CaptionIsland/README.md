@@ -18,6 +18,25 @@ ActivityKit Live Activity，把目前字幕顯示在支援機型的系統 Dynami
 LRCLIB 同步／純文字歌詞。字幕軌若晚於影片 metadata 抵達，Coordinator 也會依目前
 優先順序重新判斷，不會讓先完成的低優先來源永久蓋過後來抵達的高優先來源。
 
+### 來源標籤
+
+字幕右上角的標籤說明這一句的**時間是從哪裡來的**，定義在 `CICaptionSourceLabel`：
+
+| 標籤 | 來源 | 時間來自 | 時間可靠度 |
+| --- | --- | --- | --- |
+| `LRCLIB` | `syncedLyrics` | LRCLIB 資料庫的 LRC 時間碼 | 最高 |
+| `LRCLIB·ALIGN` | `plainLyrics` + 對齊 | 歌詞文字用 LRCLIB 的，**時間借用 YouTube 現有 CC／ASR 的斷句** | 高（時間是真實量測的） |
+| `LRCLIB·EST` | `plainLyrics` + 估算 | 找不到任何可借的時間軸，**把歌詞平均分攤到影片長度** | 低，通常會逐漸偏移 |
+| `CC` | YouTube 人工字幕 | YouTube 上稿的時間 | 高 |
+| `ASR` | YouTube 自動語音辨識 | YouTube 辨識的時間 | 中 |
+
+`EST` 是唯一「時間是猜的」的模式：它只在歌詞庫沒有時間碼、而且該影片也沒有任何可用
+字幕軌時才出現。看到它就代表對不準是預期行為，不是 bug——可用目前影片的專屬設定調整
+字幕提前秒數，或改用其他來源。
+
+三種 LRCLIB 標籤一律顯示，`CC` 與 `ASR` 只有在開啟「顯示來源標記」時才顯示，因此
+LRCLIB 的標籤在畫面上出現得比較頻繁。
+
 含 `tlang` 的字幕 URL 會被拒絕，因此不會把 YouTube 自動翻譯誤認成人工字幕。
 支援的字幕 payload 包含 YouTube JSON3、WebVTT、timedtext XML／SRV3，以及
 LRCLIB 標準 LRC 時間碼。
@@ -52,12 +71,6 @@ YouTube 在第二次前景／背景切換後，有時音訊仍播放但私有的
 duration 與 playback rate，不取代標題、封面或 Remote Command，因此鎖定畫面的時間
 可由系統持續推進，播放控制仍由 YouTube 處理。
 
-另有一個預設關閉的「背景『播放中』歌詞」實驗：只在 App 位於背景時，暫時將目前句
-寫入 Now Playing 標題、下一句寫入副標題，藉此測試鎖定畫面／AOD 的系統媒體資訊
-通道。它不依賴 ActivityKit 或 `LaunchPrefetch`，也不改封面、時間與播放控制。回到
-前景、換片、停止播放或關閉功能時會還原原值；若 YouTube 已先發布新版 metadata，
-則不會用舊快照覆蓋。這仍不代表 AOD 必定逐句重畫，最終刷新頻率由 iOS 決定。
-
 此機制需要 YouTube 的背景音訊仍在播放，讓 App 保有系統核准的背景執行時間。若
 使用者從多工畫面關閉 YouTube 時，`UISceneDidDisconnectNotification` 會略過排隊中
 的歌詞更新並立即要求 ActivityKit 移除所有 Caption Island Activity；
@@ -77,6 +90,13 @@ expanded Dynamic Island 會依目前句與下一句的實際高度擴張，並�
 `ViewThatFits`：一般內容顯示影片標題，長歌詞優先隱藏標題，極長歌詞再縮小字級與
 行數，避免最底部被系統上限裁切。leading／trailing／bottom region 都保留額外安全
 邊距，避免字幕 icon 貼近圓角或 TrueDepth 區域。
+
+版面預算以 `layoutWidth()` 計算，**全形字元算兩個單位**。這些門檻原本是照拉丁文字調的，
+直接用 `String.count` 會把日文、中文、韓文歌詞低估將近一半：實測案例
+「何も残らない 残りはしない」只有 13 個字元，被判定為「還放得下影片標題」，但它實際換行
+成兩列，把標題整個推到島外裁掉。改為加權後同一句是 25 單位、與下一句合計 56 單位，超過
+48 的門檻而正確進入「隱藏標題」那一階，這是原本就設計好的降級路徑。拉丁文字的加權值與
+字元數相同，因此行為不變。
 
 ## 背景更新為何會停止
 
@@ -98,7 +118,7 @@ process 層級判斷。
 
 | assertion | 來源 | 消失時機 |
 | --- | --- | --- |
-| `pagein-prefetching:LaunchPrefetch` | iOS 啟動期 page-in 量測 | App **第一次從背景回到前景**的瞬間（3/3 樣本吻合），並非計時器 |
+| `pagein-prefetching:LaunchPrefetch` | iOS 啟動期 page-in 量測 | App **第一次從背景回到前景**的瞬間（3/3 樣本吻合），並非計時器。**釋放由程序內的 client 發起，可被攔截**——見下方保留實驗 |
 | `sessionkitd:DeliverEvent` | Live Activity 事件投遞 | 數秒內自行消失；也可能是更新成功的副產物而非原因 |
 | `mediaremote:Command` | 使用者實際操作鎖定畫面／控制中心的傳輸控制 | 停手後數秒 |
 | `pictureinpicture:PIPVisible` | PiP 啟動 | 僅在啟動瞬間出現，無法持續持有 |
@@ -107,15 +127,113 @@ process 層級判斷。
 無法用正常 App API 重新取得。因此背景可用時間長短取決於系統當下的授予狀況，本
 Tweak 無法保證。
 
-實務上最可靠的用法是：**開啟 App → 播放影片 → 直接鎖屏 → 中途不要回到 App**。
-只要沒有回過前景，`LaunchPrefetch` 就可能長時間保留（最新樣本約 4 分 51 秒，期間
-跨越多部影片）。一旦回到 App 一次，該次 App session 即失去此資格，之後不論換第
-幾部影片或是否使用 PiP 都無法恢復；需要強制關閉 YouTube 再重新開啟才會重置。
+未啟用保留實驗時，實務上最可靠的用法是：**開啟 App → 播放影片 → 直接鎖屏 → 中途
+不要回到 App**。只要沒有回過前景，`LaunchPrefetch` 就可能長時間保留（最新樣本約
+4 分 51 秒，期間跨越多部影片）。一旦回到 App 一次，該次 App session 即失去此資格，
+之後不論換第幾部影片或是否使用 PiP 都無法恢復；需要強制關閉 YouTube 再重新開啟才
+會重置。
+
+啟用保留實驗後這個限制可以被解除——已實測成立，見下節。
 
 ### LaunchPrefetch assertion 保留實驗
 
-設定頁提供一個預設關閉的高風險 probe。**這個機制尚未被任何一次實機測試驗證過**——
-下面描述的是它的設計與判讀方式，不是已確立的結果。
+設定頁提供一個預設關閉的高風險 probe。**2026-08-05 實測成立**：hook 攔到了釋放，
+assertion 保住，且 `liveactivitiesd` 不再拒絕。
+
+```text
+02:54:23  取得 LaunchPrefetch（fresh launch, pid 20583）
+02:54:26  Entered background cycle 1                        LaunchPrefetch 在
+02:54:51  Intercepted client invalidation … retained count=2 ← hook 攔到
+02:54:51  Returned to the foreground                        LaunchPrefetch 仍在 ★
+02:54:57  Entered background cycle 2                        仍在
+02:55:14  Returned to the foreground（第二次）                仍在
+02:55:17  Entered background cycle 3                        仍在
+02:55:27  Background sample at 63.6s                        仍在
+```
+
+`02:54:51` 回前景那一行是關鍵：在此之前的每一份 log，LaunchPrefetch 都在第一次回前景
+的瞬間消失，cycle 2 隨即在 1～3 秒內被拒。這次跨越兩次回前景、三個背景週期、63 秒都
+還在，且全程沒有出現 `A caption revision was refused`——該行與其他 `Eligibility` 行
+同分類同篩選條件，所以它的缺席是真的沒發生，而非被過濾。
+
+由此也確定了先前懸而未決的問題：**釋放由程序內的 client 發起，不是 RunningBoard
+server 撤銷**，因此程序內 hook 攔得住。實際攔到的是 `-[RBSAssertion invalidate]` 這條
+fallback；解鎖點是修掉 `oneway void`（`Vv16@0:8`）的簽章誤判，在那之前 fallback 根本
+沒有裝上。
+
+尚未驗證：**長時間**（目前樣本僅 63 秒，RunningBoard 可能有更長的容忍上限）與
+**螢幕關閉的實際情境**（目前測的是回主畫面）。
+
+### 保留 assertion 的代價
+
+**曝險上限是一個 App session，不是無限期。** 這張 assertion 的 target 是本程序自己的
+pid，而 RunningBoard 的 assertion 綁在 client 連線上——程序結束、連線斷開，
+`runningboardd` 就會回收。從多工畫面滑掉會終止程序，所以 assertion 必然消失，不需要
+任何程式介入。`sceneDidDisconnect:` 與 `applicationWillTerminate:` 兩個 handler 仍會
+主動釋放，用於「scene 斷開但程序還活著」的情況。
+
+也**不能提前釋放**：實測三個樣本（pid 20063、20426、20583）顯示 `app_launch_measurement`
+在每個程序生命週期只取得一次，所以放掉就沒有第二次機會，只能重開 App。原本考慮「播放
+停止就釋放」以縮小曝險，但那會讓後續影片完全失去背景字幕能力。
+
+真正的成本不在 assertion，而在**它解鎖的行為**：每 2～5 秒一次 ActivityKit 更新，
+就是一趟 IPC 加上另一個程序（`chrono.WidgetRenderer-Activities`）重繪 widget。這是功能
+本身的代價。
+
+另一個成本則是可以消除的，也已經處理：如果程序因為持有這張 assertion 而無法進入暫停，
+那道「暫停會凍結 dispatch timer」的天然保護就消失了。因此
+
+- 播放被確認暫停超過 `CIBackgroundPausedTimerStopDelay`（15 秒）後會停止背景時鐘。
+  先前只有播放器被釋放才會停，所以一部停在結尾的影片會讓 0.75 秒計時器一直觸發——
+  在程序會被暫停的年代看不出來，現在會是實際耗電。恢復播放時 rate callback 會重啟它。
+- `Eligibility` 快照改為只在「詳細記錄」開啟時才取樣。每一次快照都要 dlopen
+  RunningBoardServices、以 KVC 走訪、再對一大段 description 跑 regex，這在使用者整場
+  聆聽期間每 2.5 秒重複一次太重；而這份資料只在調查拒絕時才會被讀，那時本來就得開記錄。
+
+做完這兩項之後，即使程序真的無法暫停，代價也只剩記憶體常駐，沒有持續的 CPU 工作。
+
+#### 保留機制流程
+
+```mermaid
+flowchart TD
+    A["App 啟動<br/><small>系統取得 LaunchPrefetch</small>"]
+    B["進入背景<br/><small>清單不只 MediaPlayback，放行</small>"]
+    C["回到前景<br/><small>client 送出 invalidate</small>"]
+    D["hook 攔截並保留<br/><small>比對三欄位，不呼叫原始實作</small>"]
+    E["assertion 留住<br/><small>之後每次背景都放行</small>"]
+    A --> B --> C --> D --> E
+    E -. 下一次背景 .-> B
+    style D fill:#EEEDFE,stroke:#534AB7
+    style E fill:#E1F5EE,stroke:#0F6E56
+```
+
+#### 回到前景時的兩條路徑
+
+分歧點只有一個：`-[RBSAssertion invalidate]` 有沒有被攔下來。
+
+```mermaid
+flowchart TD
+    S["回到前景<br/><small>第一次由背景返回</small>"]
+    S --> L1 & R1
+    subgraph L["未攔截（先前）"]
+        L1["invalidate 執行<br/><small>LaunchPrefetch 消失</small>"]
+        L2["只剩 MediaPlayback<br/><small>＋ underlying</small>"]
+        L3["liveactivitiesd 拒絕<br/><small>字幕停止更新</small>"]
+        L1 --> L2 --> L3
+    end
+    subgraph R["已攔截（現在）"]
+        R1["invalidate 被攔截<br/><small>LaunchPrefetch 留住</small>"]
+        R2["仍含 LaunchPrefetch<br/><small>＋ MediaPlayback</small>"]
+        R3["liveactivitiesd 放行<br/><small>字幕持續更新</small>"]
+        R1 --> R2 --> R3
+    end
+    style L1 fill:#FAECE7,stroke:#993C1D
+    style L2 fill:#FAECE7,stroke:#993C1D
+    style L3 fill:#FAECE7,stroke:#993C1D
+    style R1 fill:#E1F5EE,stroke:#0F6E56
+    style R2 fill:#E1F5EE,stroke:#0F6E56
+    style R3 fill:#E1F5EE,stroke:#0F6E56
+```
 
 它不建立或偽造 assertion；主要攔截 `alm_release_pageins_recording_assertion`，讓
 Apple 的 app-launch measurement library 繼續持有原本的物件。
@@ -180,23 +298,16 @@ fallback 的 `Intercepted client invalidation`。接著應在 `Eligibility` 快�
 - ShazamKit 作為標題搜尋的備援：需要 `com.apple.developer.shazamkit` entitlement
   （必須綁定自有 App ID），且需麥克風權限——戴耳機時無法辨識播放中的音樂。
 
-### iOS 26 continued-processing 實驗
+### Apple 的正式立場
 
-先前 `BGContinuedProcessingTaskRequest` 的失敗樣本使用了錯誤的註冊模型：Info.plist
-雖正確允許 `<prefix>.*`，程式卻把 wildcard 字串本身註冊成 handler，再以 concrete
-UUID identifier 提交 request。WWDC25 與 Apple DTS 指定的流程是：wildcard 只放在
-Info.plist；每一代都以**同一個完整 concrete identifier**依序 register 與 submit。
+開發者論壇 thread 776031，Apple Frameworks Engineer 回覆：背景更新 Live Activity
+**只支援透過推播通知**。要以受支援的方式突破，必須改用 APNs Live Activity push；而推播
+憑證必須綁定自有 Team ID 與 App ID，因此需要先以自己擁有的 bundle ID 重新簽署整個 App
+與所有 `.appex`。
 
-修正版預設執行「system-task-only」第一階段：系統授予 task 後，以
-`updateTitle:subtitle:` 更新 iOS 自己建立的可取消 Live Activity，暫停 Caption Island
-自訂 ActivityKit 寫入。設定中的第二個 probe 開關可在下一階段允許兩者同時更新，以
-判斷 continued-processing assertion 是否也讓 `liveactivitiesd` 接受自訂 revision。
-已授予的 task 會跨前景／背景切換沿用，不再因回到前景而自動完成並重建。
-
-Apple 對此的正式立場（開發者論壇 thread 776031，Apple Frameworks Engineer 回覆）
-是：背景更新 Live Activity **只支援透過推播通知**。要真正突破，必須改用 APNs
-Live Activity push；而推播憑證必須綁定自有 Team ID 與 App ID，因此需要先以自己
-擁有的 bundle ID 重新簽署整個 App 與所有 `.appex`。
+先前基於 `BGContinuedProcessingTaskRequest` 的實驗（iOS 26 持續背景字幕）以及把歌詞寫入
+Now Playing 標題的實驗都已移除：前者的註冊在實測中從未被系統授權，後者會覆寫 YouTube 的
+媒體資訊且效果不明。LaunchPrefetch 保留機制已實測成立，兩者都不再需要。
 
 ### 診斷工具
 
@@ -220,11 +331,8 @@ bridge 會在下一次送出前回讀 ActivityKit 實際儲存的 revision，記
 - 啟用或停用原生 Live Activity；
 - 選擇返回主畫面時使用 YouPiP 自動子母畫面，或使用 Caption Island 背景
   字幕模式；背景字幕模式只阻止自動 PiP，播放器內的手動 PiP 按鈕仍可使用；
-- 選擇是否啟用背景「播放中」歌詞實驗，以獨立測試鎖定畫面／AOD 的媒體資訊通道；
 - 選擇是否保留 LaunchPrefetch assertion；這是私有 API 高風險 probe，開啟後必須完整
   結束再啟動 YouTube，測完應關閉；
-- 在 iOS 26 啟用持續背景字幕；第一輪保持「測試背景自訂 Live Activity」關閉，先只
-  驗證系統背景任務 UI，第二輪才開啟自訂 ActivityKit probe；
 - 選擇中文（繁體）、英文或日文人工字幕；
 - 選擇 LRCLIB 優先或 YouTube 內建字幕優先；
 - 啟用或停用 LRCLIB 查詢；
@@ -418,6 +526,15 @@ YouTube 的私有 class／selector 可能隨版本改動；更新 YouTube 後，
 
 ### 已完成
 
+- **LaunchPrefetch 保留機制實測成立**，背景字幕不再因為回過前景而失效。
+- **移除兩個已無用的實驗**：「iOS 26 持續背景字幕」（含自訂 Live Activity probe）與
+  「背景『播放中』歌詞」。前者的 `BGContinuedProcessingTaskRequest` 註冊在實測中從未
+  被系統授權，後者會覆寫 YouTube 的 Now Playing 標題且效果不明。設定項、
+  `CIContinuedProcessingController`、Now Playing 歌詞鏡射程式碼與相關字串全部刪除。
+- **暫停後停止背景時鐘**：先前只有播放器被釋放才會停，停在結尾的影片會讓 0.75 秒
+  計時器持續觸發。
+- **`Eligibility` 取樣改由「詳細記錄」開關控制**：那是診斷工具，不該在一般使用時每
+  2.5 秒 dlopen + KVC + regex 一次。
 - 歌詞快取的匯出／匯入，以及設定頁的已快取首數、查無歌詞筆數與占用空間顯示
   （原本只有一個沒有任何數量資訊的「清除快取」按鈕）。快取上限同時由 32 筆提高到
   512 筆——32 首歌太少，不值得做遷移。

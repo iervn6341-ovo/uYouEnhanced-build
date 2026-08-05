@@ -119,16 +119,16 @@ struct CaptionIslandLiveActivity: Widget {
                         .lineLimit(1)
                         .padding(.vertical, 2)
                 }
-                .contentMargins(.leading, 16)
-                .contentMargins(.top, 18)
+                .contentMargins(.leading, 22)
+                .contentMargins(.top, 20)
                 DynamicIslandExpandedRegion(.trailing) {
                     if !context.state.source.isEmpty {
                         sourceBadge(context.state.source)
                             .padding(.vertical, 2)
                     }
                 }
-                .contentMargins(.trailing, 14)
-                .contentMargins(.top, 18)
+                .contentMargins(.trailing, 20)
+                .contentMargins(.top, 20)
                 DynamicIslandExpandedRegion(.bottom) {
                     ViewThatFits(in: .vertical) {
                         if !hasDenseExpandedLyrics(context) {
@@ -161,8 +161,8 @@ struct CaptionIslandLiveActivity: Widget {
                         accessibilityText(context)
                     )
                 }
-                .contentMargins([.leading, .trailing], 14)
-                .contentMargins(.bottom, 12)
+                .contentMargins([.leading, .trailing], 18)
+                .contentMargins(.bottom, 16)
             } compactLeading: {
                 if context.state.source.isEmpty {
                     Image(systemName: "captions.bubble.fill")
@@ -273,23 +273,51 @@ struct CaptionIslandLiveActivity: Widget {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
+    /// True for scalars that occupy a full-width advance: CJK ideographs, kana,
+    /// Hangul and the fullwidth forms.
+    private func isWideScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF,
+             0x3400...0x4DBF, 0x4E00...0x9FFF, 0xA000...0xA4CF,
+             0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE6F,
+             0xFF00...0xFF60, 0xFFE0...0xFFE6,
+             0x20000...0x2FFFD, 0x30000...0x3FFFD:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// How much horizontal room a line needs, in narrow-character units.
+    ///
+    /// The layout budgets below were tuned against Latin text, where one
+    /// character is one unit. A CJK glyph takes roughly two, so counting raw
+    /// characters underestimates Japanese, Chinese and Korean lyrics by about
+    /// half — which is how a line short enough to "keep the video title" wrapped
+    /// to two rows and pushed that title past the island's bottom edge.
+    private func layoutWidth(_ text: String) -> Int {
+        text.unicodeScalars.reduce(into: 0) { total, scalar in
+            total += isWideScalar(scalar) ? 2 : 1
+        }
+    }
+
     private func hasDenseExpandedLyrics(
         _ context: ActivityViewContext<CICaptionActivityAttributes>
     ) -> Bool {
-        let currentCount = displayedLine(context).count
-        let nextCount = displayedNextLine(context).count
-        return currentCount > 28 ||
-            nextCount > 32 ||
-            currentCount + nextCount > 48
+        let currentWidth = layoutWidth(displayedLine(context))
+        let nextWidth = layoutWidth(displayedNextLine(context))
+        return currentWidth > 28 ||
+            nextWidth > 32 ||
+            currentWidth + nextWidth > 48
     }
 
     private func expandedMinimumHeight(
         _ context: ActivityViewContext<CICaptionActivityAttributes>
     ) -> CGFloat {
-        let totalCharacters =
-            displayedLine(context).count + displayedNextLine(context).count
-        if totalCharacters > 72 { return 132 }
-        if totalCharacters > 36 { return 112 }
+        let totalWidth = layoutWidth(displayedLine(context)) +
+            layoutWidth(displayedNextLine(context))
+        if totalWidth > 72 { return 132 }
+        if totalWidth > 36 { return 112 }
         return displayedNextLine(context).isEmpty ? 88 : 100
     }
 

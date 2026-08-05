@@ -1,6 +1,5 @@
 #import "CIActivityPresenter.h"
 #import "CIBackgroundPlaybackMonitor.h"
-#import "CIContinuedProcessingController.h"
 #import "CILogStore.h"
 #import "CIConstants.h"
 #import "CIProcessDiagnostics.h"
@@ -24,9 +23,6 @@ static NSString *CIActivitySourceLabel(
 @interface CIActivityPresenter ()
 @property (nonatomic, copy) NSString *videoID;
 @property (nonatomic, copy) NSString *title;
-@property (atomic) BOOL didLogSuppressedBackgroundUpdate;
-- (BOOL)canSubmitLocalActivityUpdate;
-- (void)continuedProcessingRuntimeDidChange:(NSNotification *)notification;
 @end
 
 @implementation CIActivityPresenter
@@ -46,10 +42,6 @@ static NSString *CIActivitySourceLabel(
         [NSNotificationCenter.defaultCenter addObserver:self
             selector:@selector(activityBridgeDidLog:)
             name:CIActivityBridgeLogNotification object:nil];
-        [NSNotificationCenter.defaultCenter addObserver:self
-            selector:@selector(continuedProcessingRuntimeDidChange:)
-            name:CIContinuedProcessingRuntimeDidChangeNotification
-            object:nil];
     }
     return self;
 }
@@ -58,63 +50,14 @@ static NSString *CIActivitySourceLabel(
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
-- (BOOL)canSubmitLocalActivityUpdate {
-    CIContinuedProcessingController *controller =
-        CIContinuedProcessingController.sharedController;
-    if (controller.localActivityUpdatesPermitted) {
-        self.didLogSuppressedBackgroundUpdate = NO;
-        return YES;
-    }
-    if (!self.didLogSuppressedBackgroundUpdate) {
-        self.didLogSuppressedBackgroundUpdate = YES;
-        NSString *message = nil;
-        if (controller.taskPending) {
-            message = @"Deferred local Live Activity updates while the submitted iOS 26 continued caption request awaits its launch handler; updates resume only after the system grants runtime.";
-        } else if (controller.taskActive &&
-                   !CIPreferenceBool(
-                       CIContinuedCustomActivityProbeEnabledKey,
-                       NO
-                   )) {
-            message = @"System-task-only experiment is active: the granted iOS 26 task continues updating its own title and subtitle, while custom Caption Island ActivityKit writes remain intentionally disabled.";
-        } else {
-            message = @"Deferred local Live Activity updates because the background process has only media-playback eligibility; this avoids repeated liveactivitiesd rejections.";
-        }
-        [CILogStore.sharedStore
-            recordLevel:CILogLevelWarning
-               category:@"Activity"
-                message:message];
-    }
-    return NO;
-}
-
-- (void)continuedProcessingRuntimeDidChange:
-    (__unused NSNotification *)notification {
-    CIContinuedProcessingController *controller =
-        CIContinuedProcessingController.sharedController;
-    if (!controller.taskActive ||
-        !controller.localActivityUpdatesPermitted ||
-        self.videoID.length == 0) return;
-    self.didLogSuppressedBackgroundUpdate = NO;
-    [self refreshPresentationForReason:
-        @"continued processing runtime granted"];
-}
-
 - (Class)bridgeClass {
     return NSClassFromString(@"CIActivityBridge");
 }
 
 - (void)beginVideoID:(NSString *)videoID title:(NSString *)title {
     if (!CIPreferenceBool(CIEnabledKey, YES) || videoID.length == 0) return;
-    if (![self.videoID isEqualToString:videoID]) {
-        [CIBackgroundPlaybackMonitor.sharedMonitor
-            updateNowPlayingCaptionLine:@""
-                               nextLine:@""
-                                videoID:videoID
-                             videoTitle:title ?: @""];
-    }
     self.videoID = videoID;
     self.title = title.length > 0 ? title : @"YouTube";
-    if (![self canSubmitLocalActivityUpdate]) return;
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"startWithVideoID:title:");
     if (![bridge respondsToSelector:selector]) {
@@ -128,16 +71,8 @@ static NSString *CIActivitySourceLabel(
 
 - (void)ensureVideoID:(NSString *)videoID title:(NSString *)title {
     if (!CIPreferenceBool(CIEnabledKey, YES) || videoID.length == 0) return;
-    if (![self.videoID isEqualToString:videoID]) {
-        [CIBackgroundPlaybackMonitor.sharedMonitor
-            updateNowPlayingCaptionLine:@""
-                               nextLine:@""
-                                videoID:videoID
-                             videoTitle:title ?: @""];
-    }
     self.videoID = videoID;
     self.title = title.length > 0 ? title : @"YouTube";
-    if (![self canSubmitLocalActivityUpdate]) return;
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"ensureWithVideoID:title:");
     if (![bridge respondsToSelector:selector]) {
@@ -151,7 +86,6 @@ static NSString *CIActivitySourceLabel(
 - (void)refreshPresentationForReason:(NSString *)reason {
     if (!CIPreferenceBool(CIEnabledKey, YES) ||
         self.videoID.length == 0) return;
-    if (![self canSubmitLocalActivityUpdate]) return;
     Class bridge = [self bridgeClass];
     SEL selector =
         NSSelectorFromString(@"refreshForPresentationWithReason:");
@@ -190,15 +124,6 @@ static NSString *CIActivitySourceLabel(
         [self hide];
         return;
     }
-    [CIContinuedProcessingController.sharedController
-        updateCaptionLine:text
-                 nextLine:nextText ?: @""];
-    [CIBackgroundPlaybackMonitor.sharedMonitor
-        updateNowPlayingCaptionLine:text
-                           nextLine:nextText ?: @""
-                            videoID:self.videoID
-                         videoTitle:self.title];
-    if (![self canSubmitLocalActivityUpdate]) return;
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(
         @"updateWithText:source:cueStart:cueEnd:position:playing:nextText:nextCueStart:nextCueEnd:");
@@ -212,15 +137,6 @@ static NSString *CIActivitySourceLabel(
 }
 
 - (void)hide {
-    [CIContinuedProcessingController.sharedController
-        updateCaptionLine:@"♪"
-                 nextLine:@""];
-    [CIBackgroundPlaybackMonitor.sharedMonitor
-        updateNowPlayingCaptionLine:@""
-                           nextLine:@""
-                            videoID:self.videoID
-                         videoTitle:self.title];
-    if (![self canSubmitLocalActivityUpdate]) return;
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"showGapWithTitle:");
     if (self.videoID.length == 0 || ![bridge respondsToSelector:selector]) return;
@@ -228,8 +144,6 @@ static NSString *CIActivitySourceLabel(
 }
 
 - (void)end {
-    [CIBackgroundPlaybackMonitor.sharedMonitor
-        clearNowPlayingCaptionWithReason:@"caption activity ended"];
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"endImmediately:");
     if ([bridge respondsToSelector:selector]) {
@@ -237,12 +151,9 @@ static NSString *CIActivitySourceLabel(
     }
     self.videoID = @"";
     self.title = @"";
-    self.didLogSuppressedBackgroundUpdate = NO;
 }
 
 - (void)endForProcessTermination {
-    [CIBackgroundPlaybackMonitor.sharedMonitor
-        clearNowPlayingCaptionWithReason:@"YouTube is terminating"];
     Class bridge = [self bridgeClass];
     SEL selector = NSSelectorFromString(@"endAllImmediatelyForTermination");
     if ([bridge respondsToSelector:selector]) {
@@ -252,7 +163,6 @@ static NSString *CIActivitySourceLabel(
     }
     self.videoID = @"";
     self.title = @"";
-    self.didLogSuppressedBackgroundUpdate = NO;
 }
 
 - (void)activityBridgeDidLog:(NSNotification *)notification {

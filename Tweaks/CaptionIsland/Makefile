@@ -12,7 +12,6 @@ CaptionIsland_FILES = \
 	Tweak.xm \
 	CISettings.xm \
 	CIBackgroundPlaybackMonitor.m \
-	CIContinuedProcessingController.m \
 	CIPlaybackState.m \
 	CIConstants.m \
 	CILanguagePriorityViewController.m \

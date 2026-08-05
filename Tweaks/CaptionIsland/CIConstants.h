@@ -23,13 +23,7 @@ FOUNDATION_EXPORT NSString *const CIDisableForShortsKey;
 FOUNDATION_EXPORT NSString *const CIMaximumVideoDurationMinutesKey;
 FOUNDATION_EXPORT NSString *const CIReturnHomeModeKey;
 FOUNDATION_EXPORT NSString *const
-    CIBackgroundNowPlayingLyricsEnabledKey;
-FOUNDATION_EXPORT NSString *const
     CILaunchPrefetchRetentionProbeEnabledKey;
-FOUNDATION_EXPORT NSString *const
-    CIContinuedBackgroundProcessingEnabledKey;
-FOUNDATION_EXPORT NSString *const
-    CIContinuedCustomActivityProbeEnabledKey;
 FOUNDATION_EXPORT NSNotificationName const
     CIYouPiPAutomaticPiPSuppressedNotification;
 

@@ -14,7 +14,6 @@
 #import <math.h>
 #import "CIBackgroundPlaybackMonitor.h"
 #import "CICaptionCoordinator.h"
-#import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
 #import "CILogStore.h"
 #import "CIPlaybackState.h"
@@ -137,8 +136,6 @@ static void CIUpdateSuppression(YTPlayerViewController *controller) {
     if (!previous || previous.boolValue != suppressed) {
         objc_setAssociatedObject(controller, CISuppressedStateKey, @(suppressed), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [CICaptionCoordinator.sharedCoordinator setPlaybackSuppressed:suppressed];
-        [CIContinuedProcessingController.sharedController
-            setPlaybackSuppressed:suppressed];
     }
 }
 
@@ -147,17 +144,6 @@ static NSString *CIPlayerVideoID(YTPlayerViewController *controller) {
     NSString *videoID = controller.currentVideoID;
     if (videoID.length == 0) videoID = controller.contentVideoID;
     return videoID ?: @"";
-}
-
-static void CISynchronizeContinuedTaskForContext(
-    CIVideoContext *context
-) {
-    if (!context.videoID.length) return;
-    [CIContinuedProcessingController.sharedController
-        beginForVideoID:context.videoID
-                  title:context.title ?: @""
-               duration:context.duration
-                 shorts:context.isShorts];
 }
 
 static YTLocalPlaybackController *
@@ -995,7 +981,6 @@ static void CIReevaluateShortsPlayer(
         ![context.videoID isEqualToString:
             CIPlayerVideoID(controller)]) return;
     context.shorts = YES;
-    CISynchronizeContinuedTaskForContext(context);
     [CICaptionCoordinator.sharedCoordinator
         activateContext:context];
 }
@@ -1056,8 +1041,7 @@ static void CIRefreshDurationPolicyIfNeeded(
         CIContextForPlayer(nil, controller);
     if (context.duration > 0 &&
         [context.videoID isEqualToString:videoID]) {
-        CISynchronizeContinuedTaskForContext(context);
-        [CICaptionCoordinator.sharedCoordinator
+            [CICaptionCoordinator.sharedCoordinator
             activateContext:context];
     }
 }
@@ -1474,7 +1458,6 @@ static void CIRefreshCaptionContext(YTPlayerOverlayManager *overlayManager) {
     CIVideoContext *updated = CIContextForPlayer(nil, controller);
     if (updated.videoID.length > 0 &&
         [updated.videoID isEqualToString:controller.currentVideoID]) {
-        CISynchronizeContinuedTaskForContext(updated);
         [CICaptionCoordinator.sharedCoordinator activateContext:updated];
     }
 }
@@ -1494,8 +1477,7 @@ static void CIScheduleCaptionRefresh(YTPlayerViewController *controller,
         CIVideoContext *updated =
             CIContextForPlayer(nil, strongController);
         if ([updated.videoID isEqualToString:videoID]) {
-            CISynchronizeContinuedTaskForContext(updated);
-            [CICaptionCoordinator.sharedCoordinator activateContext:updated];
+                [CICaptionCoordinator.sharedCoordinator activateContext:updated];
         }
         CIScheduleCaptionRefresh(strongController, videoID, attempt + 1);
     });
@@ -1524,7 +1506,6 @@ static void CIResolveActivatedPlayback(YTPlayerViewController *controller,
         [coordinator stop];
         return;
     }
-    CISynchronizeContinuedTaskForContext(context);
     [coordinator activateContext:context];
     if (context.duration > 0) {
         objc_setAssociatedObject(
@@ -1792,11 +1773,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
         CIActivePlayerController;
     [CICaptionCoordinator.sharedCoordinator
         updatePlaybackTime:playerController.currentVideoMediaTime
-                   playing:playing];
-    [CIContinuedProcessingController.sharedController
-        updatePlaybackTime:playerController.currentVideoMediaTime
-                  duration:
-                      playerController.currentVideoTotalMediaTime
                    playing:playing];
     %orig;
 }
@@ -2282,8 +2258,6 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     // host is foregrounded. Keep this activity reusable across the queue.
     NSUInteger finishGeneration = ++CIPlaybackLifecycleGeneration;
     [CICaptionCoordinator.sharedCoordinator playbackDidFinish];
-    [CIContinuedProcessingController.sharedController
-        finishVideoWillTransition:willTransition];
     if (willTransition) return;
 
     // A genuinely finished session is cleaned up after a grace period. Any

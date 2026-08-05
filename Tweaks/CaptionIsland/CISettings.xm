@@ -9,7 +9,6 @@
 #import <YouTubeHeader/YTSettingsViewController.h>
 #import "CICaptionCoordinator.h"
 #import "CIBackgroundPlaybackMonitor.h"
-#import "CIContinuedProcessingController.h"
 #import "CIConstants.h"
 #import "CILanguagePriorityViewController.h"
 #import "CILRCLIBCacheViewController.h"
@@ -32,18 +31,6 @@ static void CIStoreBool(NSString *key, BOOL value) {
 static void CIStoreInteger(NSString *key, NSInteger value) {
     [NSUserDefaults.standardUserDefaults setInteger:value forKey:key];
     [CICaptionCoordinator.sharedCoordinator reloadPreferences];
-}
-
-static void CISynchronizeContinuedTaskFromCurrentVideo(void) {
-    [CICaptionCoordinator.sharedCoordinator
-        currentVideoContextWithCompletion:^(CIVideoContext *context) {
-            if (!context.videoID.length) return;
-            [CIContinuedProcessingController.sharedController
-                beginForVideoID:context.videoID
-                          title:context.title ?: @""
-                       duration:context.duration
-                         shorts:context.isShorts];
-        }];
 }
 
 static NSString *CIDurationLimitTitle(NSInteger minutes) {
@@ -720,16 +707,6 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
         switchOn:CIPreferenceBool(CIEnabledKey, YES)
         switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
             CIStoreBool(CIEnabledKey, enabled);
-            if (enabled) {
-                CISynchronizeContinuedTaskFromCurrentVideo();
-            } else {
-                [CIBackgroundPlaybackMonitor.sharedMonitor
-                    clearNowPlayingCaptionWithReason:
-                        @"Caption Island was disabled"];
-                [CIContinuedProcessingController.sharedController
-                    endWithReason:@"Caption Island was disabled"
-                          success:YES];
-            }
             return YES;
         } settingItemId:0]];
 
@@ -816,30 +793,6 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
 
     [items addObject:[%c(YTSettingsSectionItem)
         switchItemWithTitle:CILocalized(
-            @"BACKGROUND_NOW_PLAYING_LYRICS",
-            @"Background Now Playing lyrics"
-        )
-        titleDescription:CILocalized(
-            @"BACKGROUND_NOW_PLAYING_LYRICS_DESCRIPTION",
-            @"Experimental: while YouTube is in the background, mirror the current lyric into the system Now Playing title and the next lyric into its secondary line. The original video metadata is restored in the foreground."
-        )
-        accessibilityIdentifier:@"CaptionIsland.BackgroundNowPlayingLyrics"
-        switchOn:CIPreferenceBool(
-            CIBackgroundNowPlayingLyricsEnabledKey,
-            NO
-        )
-        switchBlock:^BOOL(
-            __unused YTSettingsCell *cell,
-            BOOL enabled
-        ) {
-            CIStoreBool(CIBackgroundNowPlayingLyricsEnabledKey, enabled);
-            [CIBackgroundPlaybackMonitor.sharedMonitor
-                reloadNowPlayingLyricsPreference];
-            return YES;
-        } settingItemId:0]];
-
-    [items addObject:[%c(YTSettingsSectionItem)
-        switchItemWithTitle:CILocalized(
             @"LAUNCH_PREFETCH_RETENTION_PROBE",
             @"Retain LaunchPrefetch assertion"
         )
@@ -864,76 +817,6 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             CIReloadLaunchPrefetchRetentionProbe();
             return YES;
         } settingItemId:0]];
-
-    if (CIContinuedBackgroundProcessingSupported()) {
-        [items addObject:[%c(YTSettingsSectionItem)
-            switchItemWithTitle:CILocalized(
-                @"CONTINUED_PROCESSING",
-                @"iOS 26 continued background captions"
-            )
-            titleDescription:CILocalized(
-                @"CONTINUED_PROCESSING_DESCRIPTION",
-                @"Experimental zero-server mode. iOS shows its own cancellable background-task Live Activity and may still end the task when resources are constrained."
-            )
-            accessibilityIdentifier:@"CaptionIsland.ContinuedProcessing"
-            switchOn:CIPreferenceBool(
-                CIContinuedBackgroundProcessingEnabledKey,
-                NO
-            )
-            switchBlock:^BOOL(
-                __unused YTSettingsCell *cell,
-                BOOL enabled
-            ) {
-                CIStoreBool(
-                    CIContinuedBackgroundProcessingEnabledKey,
-                    enabled
-                );
-                if (enabled) {
-                    // Enabling the option is an explicit foreground action,
-                    // which is the correct time to submit an iOS 26 continued
-                    // processing request for the active video.
-                    CISynchronizeContinuedTaskFromCurrentVideo();
-                } else {
-                    [CIContinuedProcessingController.sharedController
-                        endWithReason:
-                            @"the iOS 26 continued background caption option was disabled"
-                              success:YES];
-                }
-                [settingsViewController reloadData];
-                return YES;
-            } settingItemId:0]];
-
-        if (CIPreferenceBool(
-                CIContinuedBackgroundProcessingEnabledKey,
-                NO
-            )) {
-            [items addObject:[%c(YTSettingsSectionItem)
-                switchItemWithTitle:CILocalized(
-                    @"CONTINUED_CUSTOM_ACTIVITY_PROBE",
-                    @"Test custom Live Activity in background"
-                )
-                titleDescription:CILocalized(
-                    @"CONTINUED_CUSTOM_ACTIVITY_PROBE_DESCRIPTION",
-                    @"Keep this off for the first test so only the system background-task Live Activity changes lyrics. Turn it on later to test whether the same runtime also authorizes Caption Island updates."
-                )
-                accessibilityIdentifier:
-                    @"CaptionIsland.ContinuedCustomActivityProbe"
-                switchOn:CIPreferenceBool(
-                    CIContinuedCustomActivityProbeEnabledKey,
-                    NO
-                )
-                switchBlock:^BOOL(
-                    __unused YTSettingsCell *cell,
-                    BOOL enabled
-                ) {
-                    CIStoreBool(
-                        CIContinuedCustomActivityProbeEnabledKey,
-                        enabled
-                    );
-                    return YES;
-                } settingItemId:0]];
-        }
-    }
 
     NSString *sourcePriorityTitle =
         CILocalized(@"SOURCE_PRIORITY", @"Preferred caption source");
