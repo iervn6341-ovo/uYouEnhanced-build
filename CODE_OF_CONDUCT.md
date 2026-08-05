@@ -20,7 +20,7 @@ this following version of the uYouEnhanced Tweak is currently supported with fea
 
 | Developer(s) | Version | LTS Support | YT Version Supported | App Stability | uYou Functionality | uYouEnhanced Functionality |
 |  - | - | - | - | - | - | - |
-| MiRO92(uYou) & arichornlover(uYouEnhanced) | [latest](https://github.com/arichornlover/uYouEnhanced/releases/latest) | ✅ | ✅ | Stable | Fully functional | Change App Icon doesn't do anything |
+| MiRO92(uYou) & arichornlover(uYouEnhanced) | [latest](https://github.com/arichornlover/uYouEnhanced/releases/latest) | ✅ | ✅ | Stable | Fully functional | Fully functional |
 
 
 ## uYouEnhanced Branches Info

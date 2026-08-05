@@ -30,9 +30,6 @@
 [submodule "Tweaks/YouGroupSettings"]
     path = Tweaks/YouGroupSettings
     url = https://github.com/PoomSmart/YouGroupSettings.git
-[submodule "Tweaks/YouLoop"]
-    path = Tweaks/YouLoop
-    url = https://github.com/bhackel/YouLoop.git
 [submodule "Tweaks/YouMute"]
     path = Tweaks/YouMute
     url = https://github.com/PoomSmart/YouMute.git

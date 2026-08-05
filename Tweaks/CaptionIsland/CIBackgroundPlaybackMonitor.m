@@ -61,6 +61,7 @@ static double CIQuantizedPlaybackRate(double rate) {
 @property (nonatomic) BOOL didWarnAboutMissingNowPlayingInfo;
 @property (nonatomic) BOOL didLogNativeBackgroundClock;
 @property (nonatomic) BOOL didLogExtrapolatedBackgroundClock;
+@property (nonatomic) BOOL didLogPausedRateSources;
 @property (nonatomic) BOOL hasNativePlaybackTime;
 @property (nonatomic) NSTimeInterval lastNativePlaybackTime;
 @property (nonatomic) NSTimeInterval lastNativePlaybackUptime;
@@ -291,6 +292,7 @@ static double CIQuantizedPlaybackRate(double rate) {
         self.controllerLeaseGeneration++;
     }
     self.didLogNativeBackgroundClock = NO;
+    self.didLogPausedRateSources = NO;
     self.hasNativePlaybackTime = NO;
     [self resetClockState];
     [self startTimerIfNeeded];
@@ -623,16 +625,30 @@ static double CIQuantizedPlaybackRate(double rate) {
         self.hasObservedPlaybackRate &&
         self.observedPlaybackRateUptime > 0 &&
         uptime - self.observedPlaybackRateUptime <= 5.0;
+    // Our own Now Playing write is not evidence about playback.
+    //
+    // synchronizeNowPlayingAtTime: publishes the rate this method just computed,
+    // and the next tick reads that same field back. Accepting it as independent
+    // confirmation created a self-sustaining loop: a stale "1.0" got written,
+    // read back as "the system says playback continues", and used to justify
+    // extrapolating the clock — so pausing from the Lock Screen, Control Centre
+    // or Notification Centre advanced one more caption line, then bounced between
+    // that line and the previous one as the rate source flipped.
+    double nowPlayingRate = nowPlayingRateValue
+        ? CIQuantizedPlaybackRate(nowPlayingRateValue.doubleValue) : 0;
+    BOOL nowPlayingRateIsOurs = nowPlayingRateValue != nil &&
+        self.hasPublishedNowPlayingRate &&
+        fabs(nowPlayingRate - self.lastPublishedNowPlayingRate) < 0.08;
+    BOOL hasIndependentNowPlayingRate =
+        nowPlayingRateValue != nil && !nowPlayingRateIsOurs;
+    // A rate observed once, minutes ago, said nothing about now. Requiring a
+    // recent observation or an independent Now Playing value means a pause that
+    // no source has confirmed leaves the clock alone instead of guessing.
     BOOL hasReliablePlaybackRate =
-        hasRecentObservedPlaybackRate ||
-        nowPlayingRateValue != nil ||
-        self.hasObservedPlaybackRate;
+        hasRecentObservedPlaybackRate || hasIndependentNowPlayingRate;
     double playbackRate = hasRecentObservedPlaybackRate
         ? self.observedPlaybackRate
-        : (nowPlayingRateValue
-            ? CIQuantizedPlaybackRate(nowPlayingRateValue.doubleValue)
-            : (self.hasObservedPlaybackRate
-                ? self.observedPlaybackRate : 0));
+        : (hasIndependentNowPlayingRate ? nowPlayingRate : 0);
     BOOL rawClockAdvanced = self.hasPlaybackTime &&
         rawPlaybackTime >
             self.lastPlaybackTime + CIBackgroundMinimumTimeChange;
@@ -643,6 +659,14 @@ static double CIQuantizedPlaybackRate(double rate) {
     NSTimeInterval playbackTime = shouldExtrapolateClock
         ? self.lastPlaybackTime + callbackGap * playbackRate
         : rawPlaybackTime;
+    // Never rewind the caption while the raw clock is standing still. Once
+    // extrapolation has moved past the frozen raw value, falling back to that
+    // raw value would jump the display back a line; a genuine seek is
+    // distinguishable because it makes the raw clock change rather than freeze.
+    if (!shouldExtrapolateClock && self.hasPlaybackTime && !rawClockAdvanced &&
+        playbackTime < self.lastPlaybackTime) {
+        playbackTime = self.lastPlaybackTime;
+    }
     if (self.lastHeartbeatUptime == 0 ||
         uptime - self.lastHeartbeatUptime >= CIBackgroundHeartbeatInterval) {
         self.lastHeartbeatUptime = uptime;
@@ -679,6 +703,20 @@ static double CIQuantizedPlaybackRate(double rate) {
         // A frozen private media-time getter does not prove playback paused.
         // Only publish a paused state when either YouTube's rate callback or
         // the system Now Playing state explicitly reports a zero rate.
+        if (!self.didLogPausedRateSources) {
+            self.didLogPausedRateSources = YES;
+            [CILogStore.sharedStore recordLevel:CILogLevelInfo
+                category:@"Background"
+                format:@"Raw clock is standing still at %.1fs. observedRate=%.2f (recent=%@) nowPlayingRate=%@ (ours=%@) reliable=%@ extrapolating=no.",
+                       rawPlaybackTime,
+                       self.observedPlaybackRate,
+                       hasRecentObservedPlaybackRate ? @"yes" : @"no",
+                       nowPlayingRateValue
+                           ? [NSString stringWithFormat:@"%.2f", nowPlayingRate]
+                           : @"absent",
+                       nowPlayingRateIsOurs ? @"yes" : @"no",
+                       hasReliablePlaybackRate ? @"yes" : @"no"];
+        }
         if (hasReliablePlaybackRate && playbackRate <= 0 &&
             self.lastPlaybackProgressUptime > 0 &&
             uptime - self.lastPlaybackProgressUptime >= 3.0) {

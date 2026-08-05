@@ -22,8 +22,6 @@ FOUNDATION_EXPORT NSString *const CIDebugLoggingKey;
 FOUNDATION_EXPORT NSString *const CIDisableForShortsKey;
 FOUNDATION_EXPORT NSString *const CIMaximumVideoDurationMinutesKey;
 FOUNDATION_EXPORT NSString *const CIReturnHomeModeKey;
-FOUNDATION_EXPORT NSString *const
-    CILaunchPrefetchRetentionProbeEnabledKey;
 FOUNDATION_EXPORT NSNotificationName const
     CIYouPiPAutomaticPiPSuppressedNotification;
 

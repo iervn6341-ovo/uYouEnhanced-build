@@ -13,8 +13,6 @@ NSString *const CIDisableForShortsKey = @"CaptionIsland.DisableForShorts";
 NSString *const CIMaximumVideoDurationMinutesKey =
     @"CaptionIsland.MaximumVideoDurationMinutes";
 NSString *const CIReturnHomeModeKey = @"CaptionIsland.ReturnHomeMode";
-NSString *const CILaunchPrefetchRetentionProbeEnabledKey =
-    @"CaptionIsland.LaunchPrefetchRetentionProbeEnabled";
 NSNotificationName const CIYouPiPAutomaticPiPSuppressedNotification =
     @"CaptionIsland.YouPiPAutomaticPiPSuppressed";
 

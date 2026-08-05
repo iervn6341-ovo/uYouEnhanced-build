@@ -89,8 +89,6 @@
 "RETURN_HOME_MODE_DESCRIPTION" = "選擇離開 YouTube 時自動啟動子母畫面，或保留背景播放並準備字幕動態島。手動 PiP 按鈕仍可使用。";
 "RETURN_HOME_MODE_YOUPIP" = "YouPiP（自動子母畫面）";
 "RETURN_HOME_MODE_CAPTION_ISLAND" = "Caption Island（背景字幕）";
-"LAUNCH_PREFETCH_RETENTION_PROBE" = "保留 LaunchPrefetch assertion";
-"LAUNCH_PREFETCH_RETENTION_PROBE_DESCRIPTION" = "高風險實驗：攔截 Apple client 對目前行程 LaunchPrefetch assertion 的失效呼叫。開啟後請完整結束並重新啟動 YouTube；關閉時會釋放已保留的 assertion。";
 "LRCLIB_CACHE" = "已儲存的歌詞";
 "LRCLIB_CACHE_DESCRIPTION" = "歌詞會永久保存，重看同一支影片不會再查詢一次。可瀏覽、搜尋、刪除，也可匯出以搬移到其他裝置。";
 "LRCLIB_CACHE_COUNT" = "%lu 首";

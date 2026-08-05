@@ -17,16 +17,19 @@ NS_ASSUME_NONNULL_BEGIN
 /// `UIApplication` state must be read there.
 FOUNDATION_EXPORT void CILogProcessBackgroundEligibility(NSString *reason);
 
-/// Installs a process-local experiment that can retain the LaunchPrefetch
-/// assertion created by Apple's app-launch measurement library. Installation
-/// is inert unless `CILaunchPrefetchRetentionProbeEnabledKey` is enabled.
-/// Call this as early as possible during tweak initialization so the probe is
-/// present before the launch-measurement client invalidates its assertion.
+/// Retains the LaunchPrefetch assertion created by Apple's app-launch
+/// measurement library, so it survives the app's first return to the foreground.
+///
+/// This is core behaviour with no preference behind it: `liveactivitiesd` refuses
+/// every local Live Activity write once that assertion is gone, which means
+/// background captions would otherwise die for the rest of the app session the
+/// first time the user reopens YouTube. Call this as early as possible during
+/// tweak initialization so the hooks exist before the launch-measurement client
+/// invalidates its assertion.
 FOUNDATION_EXPORT void CIInstallLaunchPrefetchRetentionProbe(void);
 
-/// Re-reads the experiment preference. Turning the experiment off immediately
-/// invalidates every assertion the probe retained through the original RBS
-/// implementation.
+/// Re-arms retention. Idempotent, reads no preference, and can only ensure the
+/// interception points are live — it never tears them down.
 FOUNDATION_EXPORT void CIReloadLaunchPrefetchRetentionProbe(void);
 
 /// Releases retained assertions for a terminal process lifecycle event.

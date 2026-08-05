@@ -171,6 +171,7 @@ before-all::
 	fi;
 before-package::
 	@test -f "$(IPA)/Info.plist"
+	@bash Sources/prepare-alternate-icons.sh "$(IPA)" "Localizations/uYouPlus.bundle/AppIcons"
 	@plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"
 	@/usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$(IPA)/Info.plist" 2>/dev/null || :

@@ -159,7 +159,28 @@ static BOOL CITargetRepresentsCurrentProcess(
 /// unrelated UIKit, audio and other-process assertions in the same address
 /// space; retaining any of those would make the experiment unsafe and muddy
 /// its result.
+/// Cheap rejection before anything expensive runs.
+///
+/// Now that retention is always on, this matcher sees **every** `RBSAssertion`
+/// invalidation in the process — audio, PiP, background tasks, extensions — and
+/// the full check formats `[descriptor description]`, which is a long string. The
+/// `explanation` property is plain text, so when it is available a single
+/// substring test discards the overwhelming majority without formatting
+/// anything. An absent or non-string `explanation` falls through to the full
+/// check rather than rejecting, so this can only save work, never lose a match.
+static BOOL CIExplanationRejectsLaunchPrefetch(id assertion) {
+    id value = CIAssertionValue(assertion, @"explanation");
+    if (![value isKindOfClass:NSString.class]) return NO;
+    NSString *explanation = value;
+    if (explanation.length == 0) return NO;
+    return !CITextContainsCaseInsensitive(
+        explanation,
+        @"app_launch_measurement"
+    );
+}
+
 static BOOL CIIsCurrentProcessLaunchPrefetchAssertion(id assertion) {
+    if (CIExplanationRejectsLaunchPrefetch(assertion)) return NO;
     id descriptor = CIAssertionValue(assertion, @"descriptor");
     NSString *descriptorText = [descriptor description];
     NSString *explanation = [CIAssertionValue(
@@ -557,54 +578,26 @@ static void CIInstallLaunchPrefetchHooksIfNeeded(void) {
 void CIInstallLaunchPrefetchRetentionProbe(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // Retention is core behaviour, not an opt-in experiment: without it the
+        // Live Activity stops updating for the rest of the app session the first
+        // time the user returns to the foreground. There is no preference to
+        // consult, so a value stored while this was still a toggle cannot leave
+        // a user silently without background captions.
         CIRetainedLaunchPrefetchAssertions = [NSMutableArray array];
-        CILaunchPrefetchRetentionProbeEnabled = CIPreferenceBool(
-            CILaunchPrefetchRetentionProbeEnabledKey,
-            NO
-        );
-        if (!CILaunchPrefetchRetentionProbeEnabled) {
-            // Nothing is hooked while the experiment is off. Installing
-            // regardless would route every RBSAssertion invalidation in the
-            // process — audio, PiP, background tasks, extensions — through this
-            // file and take a lock on each one, which is not a cost a
-            // default-off probe should impose. The hooks go in if and when the
-            // switch is turned on.
-            [CILogStore.sharedStore
-                recordLevel:CILogLevelDebug
-                   category:@"LaunchPrefetch"
-                    message:@"LaunchPrefetch retention probe is off; no hooks were installed."];
-            return;
-        }
+        CILaunchPrefetchRetentionProbeEnabled = YES;
         CIInstallLaunchPrefetchHooksIfNeeded();
     });
 }
 
 void CIReloadLaunchPrefetchRetentionProbe(void) {
+    // Kept as the single entry point for re-arming, should retention ever need
+    // to become conditional again. It no longer reads any preference, so calling
+    // it can only ensure the hooks are live — never tear them down.
     CIInstallLaunchPrefetchRetentionProbe();
-    BOOL enabled = CIPreferenceBool(
-        CILaunchPrefetchRetentionProbeEnabledKey,
-        NO
-    );
-    // Install before arming, so the flag is never on while the interception
-    // points are still missing.
-    if (enabled) CIInstallLaunchPrefetchHooksIfNeeded();
+    CIInstallLaunchPrefetchHooksIfNeeded();
     @synchronized (CIRetainedLaunchPrefetchAssertions) {
-        CILaunchPrefetchRetentionProbeEnabled = enabled;
+        CILaunchPrefetchRetentionProbeEnabled = YES;
     }
-    if (!enabled) {
-        CIReleaseRetainedLaunchPrefetchAssertions(
-            @"the experiment was disabled"
-        );
-        return;
-    }
-
-    [CILogStore.sharedStore
-        recordLevel:CILaunchPrefetchRetentionProbeInstalled
-            ? CILogLevelInfo : CILogLevelWarning
-           category:@"LaunchPrefetch"
-            message:CILaunchPrefetchRetentionProbeInstalled
-                ? @"LaunchPrefetch retention is armed. For the launch-time release path, fully terminate and reopen YouTube; the hooks are already live for a release that happens later in this session."
-                : @"LaunchPrefetch retention was enabled, but no usable interception point exists on this iOS version."];
 }
 
 /// Reads one property off an RBS state object via KVC.

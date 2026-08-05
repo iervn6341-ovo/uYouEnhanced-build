@@ -89,8 +89,6 @@
 "RETURN_HOME_MODE_DESCRIPTION" = "YouTube を離れるときに、自動ピクチャ・イン・ピクチャまたはバックグラウンド字幕を選択します。手動 PiP ボタンは引き続き使用できます。";
 "RETURN_HOME_MODE_YOUPIP" = "YouPiP（自動ピクチャ・イン・ピクチャ）";
 "RETURN_HOME_MODE_CAPTION_ISLAND" = "Caption Island（バックグラウンド字幕）";
-"LAUNCH_PREFETCH_RETENTION_PROBE" = "LaunchPrefetch assertion を保持";
-"LAUNCH_PREFETCH_RETENTION_PROBE_DESCRIPTION" = "高リスクの実験機能：このプロセスの LaunchPrefetch assertion に対する Apple クライアント側の無効化を遮断します。有効にした後、YouTube を完全に終了して再起動してください。無効にすると保持した assertion を解放します。";
 "LRCLIB_CACHE" = "保存済みの歌詞";
 "LRCLIB_CACHE_DESCRIPTION" = "歌詞は無期限に保存されるため、同じ動画を開き直しても再検索しません。閲覧・検索・削除ができ、書き出して別のデバイスへ移せます。";
 "LRCLIB_CACHE_COUNT" = "%lu 曲";

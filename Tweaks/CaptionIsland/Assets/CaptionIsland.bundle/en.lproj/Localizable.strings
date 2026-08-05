@@ -89,8 +89,6 @@
 "RETURN_HOME_MODE_DESCRIPTION" = "Choose automatic Picture in Picture or background captions when leaving YouTube. The manual PiP button remains available.";
 "RETURN_HOME_MODE_YOUPIP" = "YouPiP (automatic Picture in Picture)";
 "RETURN_HOME_MODE_CAPTION_ISLAND" = "Caption Island (background captions)";
-"LAUNCH_PREFETCH_RETENTION_PROBE" = "Retain LaunchPrefetch assertion";
-"LAUNCH_PREFETCH_RETENTION_PROBE_DESCRIPTION" = "High-risk experiment: intercept Apple's client-side invalidation of this process's LaunchPrefetch assertion. Enable it, then fully terminate and reopen YouTube. Disable it to release retained assertions.";
 "LRCLIB_CACHE" = "Saved lyrics";
 "LRCLIB_CACHE_DESCRIPTION" = "Lyrics are saved permanently, so reopening a video never repeats the lookup. Browse or delete them, search by song, and export to move them to another device.";
 "LRCLIB_CACHE_COUNT" = "%lu songs";

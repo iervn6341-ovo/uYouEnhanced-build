@@ -118,27 +118,22 @@ process 層級判斷。
 
 | assertion | 來源 | 消失時機 |
 | --- | --- | --- |
-| `pagein-prefetching:LaunchPrefetch` | iOS 啟動期 page-in 量測 | App **第一次從背景回到前景**的瞬間（3/3 樣本吻合），並非計時器。**釋放由程序內的 client 發起，可被攔截**——見下方保留實驗 |
+| `pagein-prefetching:LaunchPrefetch` | iOS 啟動期 page-in 量測 | App **第一次從背景回到前景**的瞬間（3/3 樣本吻合），並非計時器。**釋放由程序內的 client 發起，已被攔截**——見下節 |
 | `sessionkitd:DeliverEvent` | Live Activity 事件投遞 | 數秒內自行消失；也可能是更新成功的副產物而非原因 |
 | `mediaremote:Command` | 使用者實際操作鎖定畫面／控制中心的傳輸控制 | 停手後數秒 |
 | `pictureinpicture:PIPVisible` | PiP 啟動 | 僅在啟動瞬間出現，無法持續持有 |
 
-這四項都是系統為了與字幕無關的理由授予的，沒有公開 API 可以申請或延長；消失後也
-無法用正常 App API 重新取得。因此背景可用時間長短取決於系統當下的授予狀況，本
-Tweak 無法保證。
+這四項都是系統為了與字幕無關的理由授予的，沒有公開 API 可以申請或延長。
 
-未啟用保留實驗時，實務上最可靠的用法是：**開啟 App → 播放影片 → 直接鎖屏 → 中途
-不要回到 App**。只要沒有回過前景，`LaunchPrefetch` 就可能長時間保留（最新樣本約
-4 分 51 秒，期間跨越多部影片）。一旦回到 App 一次，該次 App session 即失去此資格，
-之後不論換第幾部影片或是否使用 PiP 都無法恢復；需要強制關閉 YouTube 再重新開啟才
-會重置。
+`LaunchPrefetch` 原本的行為是：一旦回到 App 一次，該次 App session 即失去資格，之後不論
+換第幾部影片或是否使用 PiP 都無法恢復，必須強制關閉 YouTube 再重新開啟才會重置。**這個
+限制現在已由預設啟用的保留機制解除**，見下節。
 
-啟用保留實驗後這個限制可以被解除——已實測成立，見下節。
+### LaunchPrefetch assertion 保留
 
-### LaunchPrefetch assertion 保留實驗
-
-設定頁提供一個預設關閉的高風險 probe。**2026-08-05 實測成立**：hook 攔到了釋放，
-assertion 保住，且 `liveactivitiesd` 不再拒絕。
+**這是預設啟用的核心行為，沒有對應的設定開關。** 沒有它，使用者第一次回到 YouTube 之後
+背景字幕就會在該次 App session 內永久失效——那不是一個值得留給使用者自己決定的選項。
+2026-08-05 實測成立：hook 攔到了釋放，assertion 保住，且 `liveactivitiesd` 不再拒絕。
 
 ```text
 02:54:23  取得 LaunchPrefetch（fresh launch, pid 20583）
@@ -243,11 +238,13 @@ explanation 來自 `app_launch_measurement` 的 page-in recording、attribute �
 使用的純數字 PID 表示）。fallback 最多保留 4 個；停用開關、App 終止或最後一個 scene
 關閉時，會透過原始實作正常失效。
 
-**hook 只在實驗開啟時才安裝。** 關閉狀態下不裝任何 hook——否則程序內每一次
-`RBSAssertion` 失效（音訊、PiP、背景任務、extension）都要經過本檔案並取一次鎖，
-這不是一個預設關閉的 probe 該付的成本。開關在執行期打開時會立即補裝，因為實測顯示
-assertion 是在**第一次由背景回到前景**時消失，而不是啟動時，所以中途安裝仍來得及攔到；
-但若釋放其實發生在啟動期，就必須完整結束再重開 YouTube 才攔得到。
+**hook 每次啟動都會安裝**，因此程序內每一次 `RBSAssertion` 失效（音訊、PiP、背景任務、
+extension）都會經過比對函式。為此比對加了一道便宜的前置否決：先只看 `explanation` 這個
+純字串屬性有沒有 `app_launch_measurement`，不符就立刻返回，不去格式化
+`[descriptor description]`（那是整個比對裡最貴的一步）。`explanation` 不存在或不是字串時
+會落回完整比對而不是否決，所以這只會省工，不會漏掉該攔的 assertion。
+
+沒有偏好設定要讀，也就不會有「舊版把開關關掉的使用者，升級後靜默失去背景字幕」這種情況。
 
 安裝 `-[RBSAssertion invalidate]` 之前會先用 `method_copyReturnType` 與
 `method_getNumberOfArguments` 確認它真的是 `void (id, SEL)`，不符就拒絕安裝並記錄實際
@@ -331,8 +328,6 @@ bridge 會在下一次送出前回讀 ActivityKit 實際儲存的 revision，記
 - 啟用或停用原生 Live Activity；
 - 選擇返回主畫面時使用 YouPiP 自動子母畫面，或使用 Caption Island 背景
   字幕模式；背景字幕模式只阻止自動 PiP，播放器內的手動 PiP 按鈕仍可使用；
-- 選擇是否保留 LaunchPrefetch assertion；這是私有 API 高風險 probe，開啟後必須完整
-  結束再啟動 YouTube，測完應關閉；
 - 選擇中文（繁體）、英文或日文人工字幕；
 - 選擇 LRCLIB 優先或 YouTube 內建字幕優先；
 - 啟用或停用 LRCLIB 查詢；
@@ -527,6 +522,11 @@ YouTube 的私有 class／selector 可能隨版本改動；更新 YouTube 後，
 ### 已完成
 
 - **LaunchPrefetch 保留機制實測成立**，背景字幕不再因為回過前景而失效。
+- **LaunchPrefetch 保留升級為預設功能**：移除「保留 LaunchPrefetch assertion」設定開關與
+  其偏好鍵，機制本身完整保留。既然缺了它背景字幕就會在一次回前景後永久失效，那就不是
+  該交給使用者決定的選項；不讀偏好設定也避免了「舊版關掉開關的人升級後靜默失去功能」。
+  同時為現在每次啟動都安裝的 hook 加上便宜的前置否決，避免每個無關的 assertion 失效都
+  去格式化 `[descriptor description]`。
 - **移除兩個已無用的實驗**：「iOS 26 持續背景字幕」（含自訂 Live Activity probe）與
   「背景『播放中』歌詞」。前者的 `BGContinuedProcessingTaskRequest` 註冊在實測中從未
   被系統授權，後者會覆寫 YouTube 的 Now Playing 標題且效果不明。設定項、

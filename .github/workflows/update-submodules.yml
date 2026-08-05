@@ -34,8 +34,7 @@ jobs:
           git add .
           git submodule update --init --recursive --remote Tweaks/YouGroupSettings
           git add .
-          git submodule update --init --recursive --remote Tweaks/YouLoop
-          git add .
+          # YouLoop is tracked directly by this repository so local fixes are preserved.
           git submodule update --init --recursive --remote Tweaks/YouMute
           git add .
           git submodule update --init --recursive --remote Tweaks/YouPiP
