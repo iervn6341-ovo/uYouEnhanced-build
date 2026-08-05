@@ -84,6 +84,7 @@ static double CIQuantizedPlaybackRate(double rate) {
 - (void)synchronizeNowPlayingAtTime:(NSTimeInterval)playbackTime
                            duration:(NSTimeInterval)duration
                        playbackRate:(double)playbackRate
+                        rateIsKnown:(BOOL)rateIsKnown
                              uptime:(NSTimeInterval)uptime;
 - (void)scheduleControllerLeaseRelease;
 - (void)endActivityForLifecycleReason:(NSString *)reason;
@@ -445,6 +446,7 @@ static double CIQuantizedPlaybackRate(double rate) {
     [self synchronizeNowPlayingAtTime:playbackTime
                             duration:controller.currentVideoTotalMediaTime
                         playbackRate:estimatedRate
+                             rateIsKnown:NO
                               uptime:uptime];
     if (!self.didLogNativeBackgroundClock) {
         self.didLogNativeBackgroundClock = YES;
@@ -693,6 +695,42 @@ static double CIQuantizedPlaybackRate(double rate) {
             @"Background sample at %.1fs", playbackTime]);
     }
 
+    // A zero rate that YouTube published itself is direct proof of a pause, so
+    // it needs neither the grace period below nor a frozen clock.
+    //
+    // It has to be checked before any clock-movement branch: the audio buffer
+    // keeps draining for a moment after a Lock Screen, Control Centre or
+    // Notification Centre pause, and that residual movement used to route the
+    // tick down the "still playing" path — which published a bogus rate and
+    // left the caption scheduler running, so captions kept advancing a line at
+    // a time while the audio was already stopped.
+    if (hasIndependentNowPlayingRate && nowPlayingRate <= 0) {
+        if (!self.didLogPausedRateSources) {
+            self.didLogPausedRateSources = YES;
+            [CILogStore.sharedStore recordLevel:CILogLevelInfo
+                category:@"Background"
+                format:@"YouTube published a zero Now Playing rate at %.1fs; treating playback as paused and cancelling cue scheduling.",
+                       rawPlaybackTime];
+        }
+        self.hasPlaybackTime = YES;
+        self.lastPlaybackTime = rawPlaybackTime;
+        [CICaptionCoordinator.sharedCoordinator
+            updatePlaybackTime:rawPlaybackTime
+                       playing:NO];
+        [self synchronizeNowPlayingAtTime:rawPlaybackTime
+                                duration:controller.currentVideoTotalMediaTime
+                            playbackRate:0
+                             rateIsKnown:YES
+                                  uptime:uptime];
+        if (self.lastPlaybackProgressUptime > 0 &&
+            uptime - self.lastPlaybackProgressUptime >=
+                CIBackgroundPausedTimerStopDelay) {
+            [self stopTimerWithReason:
+                @"playback has been paused long enough that the background clock is idle work"];
+        }
+        return;
+    }
+
     BOOL clockAdvanced = self.hasPlaybackTime &&
         playbackTime > self.lastPlaybackTime + CIBackgroundMinimumTimeChange;
     NSTimeInterval mediaDelta = self.hasPlaybackTime
@@ -726,6 +764,7 @@ static double CIQuantizedPlaybackRate(double rate) {
             [self synchronizeNowPlayingAtTime:playbackTime
                                     duration:controller.currentVideoTotalMediaTime
                                 playbackRate:0
+                                 rateIsKnown:YES
                                       uptime:uptime];
             // Stop the clock once playback has been confidently paused for a
             // while. Previously only player teardown stopped it, so a video
@@ -757,9 +796,14 @@ static double CIQuantizedPlaybackRate(double rate) {
     if (clockAdvanced) {
         self.lastPlaybackAdvanceUptime = uptime;
     }
+    // estimatedRate drives our own caption timing, but only a rate YouTube
+    // reported through its own callback is fit to publish back to Now Playing.
     [self synchronizeNowPlayingAtTime:playbackTime
                             duration:controller.currentVideoTotalMediaTime
-                        playbackRate:estimatedRate
+                        playbackRate:hasRecentObservedPlaybackRate
+                                         ? self.observedPlaybackRate
+                                         : estimatedRate
+                             rateIsKnown:hasRecentObservedPlaybackRate
                               uptime:uptime];
 
     if (clockAdvanced && !self.didLogClockProgress) {
@@ -780,10 +824,20 @@ static double CIQuantizedPlaybackRate(double rate) {
 - (void)synchronizeNowPlayingAtTime:(NSTimeInterval)playbackTime
                            duration:(NSTimeInterval)duration
                        playbackRate:(double)playbackRate
+                        rateIsKnown:(BOOL)rateIsKnown
                              uptime:(NSTimeInterval)uptime {
     playbackRate = CIQuantizedPlaybackRate(playbackRate);
-    BOOL rateChanged = !self.hasPublishedNowPlayingRate ||
-        fabs(playbackRate - self.lastPublishedNowPlayingRate) >= 0.08;
+    // Only claim the rate field when the rate was actually reported to us.
+    //
+    // This used to publish a rate synthesised from clock deltas on every tick,
+    // which overwrote whatever YouTube had just published — including the 0 it
+    // publishes the moment a remote pause lands. The next tick then read that
+    // write back and treated it as independent proof that playback continued.
+    // Leaving the field alone keeps YouTube's own value, which is correct in
+    // both directions and is the only value either side can trust.
+    BOOL rateChanged = rateIsKnown &&
+        (!self.hasPublishedNowPlayingRate ||
+         fabs(playbackRate - self.lastPublishedNowPlayingRate) >= 0.08);
     if (!self.hasPublishedNowPlayingRate &&
         self.lastNowPlayingAttemptUptime > 0 &&
         uptime - self.lastNowPlayingAttemptUptime <
@@ -811,15 +865,19 @@ static double CIQuantizedPlaybackRate(double rate) {
 
     NSMutableDictionary<NSString *, id> *updated = existing.mutableCopy;
     updated[MPNowPlayingInfoPropertyElapsedPlaybackTime] = @(playbackTime);
-    updated[MPNowPlayingInfoPropertyPlaybackRate] = @(playbackRate);
-    updated[MPNowPlayingInfoPropertyDefaultPlaybackRate] = @1.0;
+    if (rateIsKnown) {
+        updated[MPNowPlayingInfoPropertyPlaybackRate] = @(playbackRate);
+        updated[MPNowPlayingInfoPropertyDefaultPlaybackRate] = @1.0;
+    }
     if (isfinite(duration) && duration > 0) {
         updated[MPMediaItemPropertyPlaybackDuration] = @(duration);
     }
     center.nowPlayingInfo = updated;
     self.lastNowPlayingSynchronizationUptime = uptime;
-    self.hasPublishedNowPlayingRate = YES;
-    self.lastPublishedNowPlayingRate = playbackRate;
+    if (rateIsKnown) {
+        self.hasPublishedNowPlayingRate = YES;
+        self.lastPublishedNowPlayingRate = playbackRate;
+    }
 
     if (!self.didLogNowPlayingSynchronization) {
         self.didLogNowPlayingSynchronization = YES;
