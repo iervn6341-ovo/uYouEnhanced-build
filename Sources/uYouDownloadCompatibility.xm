@@ -37,7 +37,8 @@ static BOOL UYEFileNeedsFFmpeg(id path) {
         [fileHandle closeFile];
         if (header.length < 4) return NO;
 
-        const unsigned char *bytes = header.bytes;
+        const unsigned char *bytes =
+            static_cast<const unsigned char *>(header.bytes);
         BOOL isMatroskaOrWebM = bytes[0] == 0x1A && bytes[1] == 0x45 && bytes[2] == 0xDF && bytes[3] == 0xA3;
         BOOL isOgg = bytes[0] == 'O' && bytes[1] == 'g' && bytes[2] == 'g' && bytes[3] == 'S';
         return isMatroskaOrWebM || isOgg;
