@@ -83,49 +83,11 @@ UYOU_PATH = Tweaks/uYou
 UYOU_DEB = $(UYOU_PATH)/com.miro.uyou_$(UYOU_VERSION)_iphoneos-arm.deb
 UYOU_DYLIB = $(UYOU_PATH)/Library/MobileSubstrate/DynamicLibraries/uYou.dylib
 UYOU_BUNDLE = $(UYOU_PATH)/Library/Application\ Support/uYouBundle.bundle
-YTWEAKS_IOS175_PATCH = $(THEOS_PROJECT_DIR)/Patches/YTweaks-iOS17.5.patch
-YOUPIP_CAPTION_ISLAND_PATCH = $(THEOS_PROJECT_DIR)/Patches/YouPiP-CaptionIslandHomeMode.patch
-
 internal-clean::
 	@rm -rf $(UYOU_PATH)/*
 	@rm -rf "$(_THEOS_LOCAL_DATA_DIR)/generated-extensions"
-	@if git -C Tweaks/YTweaks apply --reverse --check "$(YTWEAKS_IOS175_PATCH)" >/dev/null 2>&1; then \
-		git -C Tweaks/YTweaks apply --reverse "$(YTWEAKS_IOS175_PATCH)"; \
-	fi
-	@if git -C Tweaks/YouPiP apply --reverse --check "$(YOUPIP_CAPTION_ISLAND_PATCH)" >/dev/null 2>&1; then \
-		git -C Tweaks/YouPiP apply --reverse "$(YOUPIP_CAPTION_ISLAND_PATCH)"; \
-	fi
-
-# The two compatibility patches are build-time overlays. Restore the
-# submodules after a successful build so the parent repository remains clean
-# and can be committed without accidentally recording modified gitlinks.
-after-all::
-	@if git -C Tweaks/YTweaks apply --reverse --check "$(YTWEAKS_IOS175_PATCH)" >/dev/null 2>&1; then \
-		git -C Tweaks/YTweaks apply --reverse "$(YTWEAKS_IOS175_PATCH)"; \
-	fi
-	@if git -C Tweaks/YouPiP apply --reverse --check "$(YOUPIP_CAPTION_ISLAND_PATCH)" >/dev/null 2>&1; then \
-		git -C Tweaks/YouPiP apply --reverse "$(YOUPIP_CAPTION_ISLAND_PATCH)"; \
-	fi
 
 ifneq ($(JAILBROKEN),1)
-before-all::
-	@if git -C Tweaks/YTweaks apply --reverse --check "$(YTWEAKS_IOS175_PATCH)" >/dev/null 2>&1; then \
-		:; \
-	elif git -C Tweaks/YTweaks apply --check "$(YTWEAKS_IOS175_PATCH)" >/dev/null 2>&1; then \
-		git -C Tweaks/YTweaks apply "$(YTWEAKS_IOS175_PATCH)"; \
-	else \
-		$(PRINT_FORMAT_ERROR) "Unable to apply the iOS 17.5 YTweaks patch"; \
-		exit 1; \
-	fi
-before-all::
-	@if git -C Tweaks/YouPiP apply --reverse --check "$(YOUPIP_CAPTION_ISLAND_PATCH)" >/dev/null 2>&1; then \
-		:; \
-	elif git -C Tweaks/YouPiP apply --check "$(YOUPIP_CAPTION_ISLAND_PATCH)" >/dev/null 2>&1; then \
-		git -C Tweaks/YouPiP apply "$(YOUPIP_CAPTION_ISLAND_PATCH)"; \
-	else \
-		$(PRINT_FORMAT_ERROR) "Unable to apply the Caption Island return-home mode patch to YouPiP"; \
-		exit 1; \
-	fi
 before-all::
 	@rm -rf "$(GENERATED_EXTENSIONS_DIR)"
 	@mkdir -p "$(GENERATED_EXTENSIONS_DIR)"

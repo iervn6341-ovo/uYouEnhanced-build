@@ -34,10 +34,6 @@
     path = Tweaks/YouMute
     url = https://github.com/PoomSmart/YouMute.git
     branch = main
-[submodule "Tweaks/YouPiP"]
-    path = Tweaks/YouPiP
-    url = https://github.com/PoomSmart/YouPiP.git
-    branch = main
 [submodule "Tweaks/YouQuality"]
     path = Tweaks/YouQuality
     url = https://github.com/PoomSmart/YouQuality.git
@@ -91,6 +87,3 @@
 [submodule "Tweaks/libundirect"]
 	path = Tweaks/libundirect
 	url = https://github.com/opa334/libundirect.git
-[submodule "Tweaks/YTweaks"]
-	path = Tweaks/YTweaks
-	url = https://github.com/fosterbarnes/YTweaks.git

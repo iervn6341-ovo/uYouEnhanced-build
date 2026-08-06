@@ -1,0 +1,49 @@
+// Quit app alert
+"WARNING" = "Peringatan";
+"APPLY_DESC" = "Tindakan ini akan menutup YouTube. Apakah Anda yakin ingin melanjutkan?";
+
+// Fullscreen Mode
+"FULLSCREEN_MODE" = "Paksa Arah Layar Penuh";
+"FULLSCREEN_MODE_DESC" = "Selalu masuk ke layar penuh dengan tombol/bar beranda di sisi kiri atau kanan.";
+
+"FULLSCREEN_OFF" = "Mati";
+"FULLSCREEN_LEFT" = "Kiri";
+"FULLSCREEN_RIGHT" = "Kanan";
+
+// A/B Testing Settings
+"ENABLE_IOS_FLOATING_MINIPLAYER" = "Nonaktifkan miniplayer mengambang";
+"ENABLE_IOS_FLOATING_MINIPLAYER_DESC" = "Mengembalikan miniplayer klasik dengan menonaktifkan flag A/B enableIosFloatingMiniplayer. Memerlukan restart aplikasi.";
+
+// Virtual Bezel
+"VIRTUAL_BEZEL" = "Bingkai layar penuh virtual";
+"VIRTUAL_BEZEL_DESC" = "Menambahkan zona sentuh aman yang tidak terlihat pada bilah hitam untuk mencegah ketukan dan lompatan yang tidak disengaja. Ditujukan untuk iPhone tanpa tombol beranda.";
+
+// Hide AI Summaries (Experimental)
+"HIDE_AI_SUMMARIES" = "Sembunyikan Ringkasan AI (Eksperimental)";
+"HIDE_AI_SUMMARIES_DESC" = "Menyembunyikan tombol ringkasan yang dihasilkan AI yang muncul di bawah video di feed. Fitur eksperimental.";
+
+// Fix Casting
+"FIX_CASTING" = "Perbaiki Pemutaran";
+"FIX_CASTING_DESC" = "Mencoba memperbaiki pemutaran dengan mengubah beberapa flag A/B. Hanya berfungsi pada v20.10.4 atau lebih rendah";
+
+// Preferences Management
+"PREFERENCES_MANAGEMENT" = "Manajemen preferensi";
+"IMPORT_PREFERENCES" = "Impor preferensi";
+"EXPORT_PREFERENCES" = "Ekspor preferensi";
+"RESTORE_DEFAULTS" = "Kembalikan pengaturan default";
+"IMPORT_CONFIRM" = "Ini akan mengganti preferensi saat ini. Lanjutkan?";
+"RESTORE_CONFIRM" = "Ini akan mengatur ulang semua pengaturan ke nilai default. Lanjutkan?";
+"IMPORT_SUCCESS" = "Preferensi berhasil diimpor";
+"EXPORT_SUCCESS" = "Preferensi berhasil diekspor";
+"IMPORT_FAILED" = "Gagal mengimpor preferensi";
+"CANCEL" = "Batal";
+"YES" = "Ya";
+
+// Night Mode
+"NIGHT_MODE" = "Mode Malam";
+"NIGHT_MODE_DESC" = "Meredupkan layar di bawah kecerahan minimum dengan melapisi filter gelap.";
+"NIGHT_MODE_OFF" = "Mati";
+"NIGHT_MODE_LOW" = "Rendah";
+"NIGHT_MODE_MEDIUM" = "Sedang";
+"NIGHT_MODE_HIGH" = "Tinggi";
+"NIGHT_MODE_MAXIMUM" = "Maks";

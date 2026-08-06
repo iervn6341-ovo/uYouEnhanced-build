@@ -23,7 +23,8 @@ jobs:
           git submodule add https://github.com/arichornloverALT/YTHoldForSpeed.git Tweaks/YTHoldForSpeed
           git submodule add https://github.com/arichornloverALT/YouGroupSettings.git Tweaks/YouGroupSettings
           git submodule add https://github.com/arichornloverALT/YouTimeStamp.git Tweaks/YouTimeStamp
-          # YouLoop is tracked directly by this repository so local fixes are preserved.
+          # YouLoop, YouPiP, and YTweaks are tracked directly by this repository
+          # so local fixes are preserved.
           git submodule add https://github.com/dayanch96/uYouLocalization.git Tweaks/uYouLocalization
           git submodule add https://github.com/PoomSmart/YTIcons Tweaks/YTIcons
           git submodule add https://github.com/protocolbuffers/protobuf.git Tweaks/protobuf
@@ -69,9 +70,8 @@ jobs:
           git add .
           git submodule update --init --recursive --remote Tweaks/YouMute
           git add .
-          # YouLoop is tracked directly by this repository so local fixes are preserved.
-          git submodule update --init --recursive --remote Tweaks/YouPiP
-          git add .
+          # YouLoop, YouPiP, and YTweaks are tracked directly by this repository
+          # so local fixes are preserved.
           git submodule update --init --recursive --remote Tweaks/YouQuality
           git add .
           git submodule update --init --recursive --remote Tweaks/YouGroupSettings
