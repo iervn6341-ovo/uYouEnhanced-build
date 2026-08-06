@@ -11,10 +11,6 @@
 + (int)executeAsync:(NSString *)command withCallback:(id)callback;
 @end
 
-@interface MobileFFmpegConfig : NSObject
-+ (NSString *)getLastCommandOutput;
-@end
-
 static NSString *const UYEForceAACThreadKey = @"UYEForceAACForUYouMerge";
 
 static id UYEObjectForSelector(id object, SEL selector) {
@@ -170,8 +166,10 @@ static NSString *UYEPatchUYouMergeCommand(NSString *command, BOOL forceAAC) {
                      executionId,
                      returnCode);
 
-    if (returnCode != 0 && [MobileFFmpegConfig respondsToSelector:@selector(getLastCommandOutput)]) {
-        NSString *commandOutput = [MobileFFmpegConfig getLastCommandOutput];
+    Class configClass = NSClassFromString(@"MobileFFmpegConfig");
+    if (returnCode != 0 && configClass) {
+        NSString *commandOutput = UYEObjectForSelector(configClass,
+                                                       NSSelectorFromString(@"getLastCommandOutput"));
         if (commandOutput.length > 4000) {
             commandOutput = [commandOutput substringFromIndex:commandOutput.length - 4000];
         }
