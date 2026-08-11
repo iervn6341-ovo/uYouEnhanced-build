@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <math.h>
-#import "../../CaptionIsland/CICaptionTiming.h"
+#import "../../CICaptionTiming.h"
 
 static void CIAssert(BOOL condition, NSString *message) {
     if (condition) return;

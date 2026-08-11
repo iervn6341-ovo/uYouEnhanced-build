@@ -369,3 +369,156 @@ void CISplitSongMetadata(NSString *videoTitle,
     if (songTitle) *songTitle = title;
     if (artist) *artist = author;
 }
+
+const NSUInteger CISongQueryMaximumCandidates = 4;
+
+@interface CISongQuery ()
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *artist;
+@property (nonatomic, copy) NSString *origin;
+@end
+
+@implementation CISongQuery
++ (instancetype)queryWithTitle:(NSString *)title
+                        artist:(NSString *)artist
+                        origin:(NSString *)origin {
+    CISongQuery *query = [self new];
+    query.title = CICleanCaptionText(title ?: @"");
+    query.artist = CICleanCaptionText(artist ?: @"");
+    query.origin = origin.length > 0 ? origin : @"unspecified";
+    return query;
+}
+@end
+
+// A dash side often carries the song name followed by notes about the upload:
+// "世末歌者「那怕只 一瞬的 奇蹟。」 [ Chinese Style ] tk推薦 益笙菌". A CJK
+// bracket or a square bracket at that position never begins a track name, so
+// everything from there on is commentary and the leading run is what LRCLIB
+// should be asked about.
+//
+// This deliberately truncates an identity such as SawanoHiroyuki[nZk] to its
+// first half. That only ever happens on an extra candidate — the committed
+// reading is generated separately and untouched — and searching a truncated
+// artist as a track name produces a miss, not a wrong match, because candidate
+// scoring still requires the returned track name to resemble the query.
+static NSString *CILeadingTitleFragment(NSString *value) {
+    NSString *result = CICleanCaptionText(value);
+    if (result.length == 0) return @"";
+    NSRange opening = [result rangeOfCharacterFromSet:
+        [NSCharacterSet characterSetWithCharactersInString:@"「『【［《[｛"]];
+    if (opening.location != NSNotFound && opening.location > 0) {
+        result = [result substringToIndex:opening.location];
+    }
+    result = CIRemoveVideoDecorations(result);
+    NSCharacterSet *edges = [NSCharacterSet characterSetWithCharactersInString:
+        @" \t-|｜/／–—:：、,，"];
+    return [CICleanCaptionText(result)
+        stringByTrimmingCharactersInSet:edges];
+}
+
+// The two sides of the first dash that genuinely separates two halves of a
+// title, or an empty array when there is no such dash.
+//
+// An ASCII hyphen has to be surrounded by whitespace to count, so "Re-Bell",
+// "K-POP" and "lo-fi" stay intact. An en or em dash is not used inside words,
+// so it counts unspaced, but never between digits — "2019—2020" is a range.
+static NSArray<NSString *> *CIDashSeparatedSides(NSString *value) {
+    NSString *searchValue = CICleanCaptionText(value);
+    if (searchValue.length == 0) return @[];
+    NSRegularExpression *separator = [NSRegularExpression
+        regularExpressionWithPattern:
+            @"\\s+[-–—]\\s+|(?<=[^\\s\\d])[–—](?=[^\\s\\d])"
+                               options:0
+                                 error:nil];
+    NSTextCheckingResult *match =
+        [separator firstMatchInString:searchValue
+                             options:0
+                               range:NSMakeRange(0, searchValue.length)];
+    if (!match) return @[];
+    NSString *left =
+        CILeadingTitleFragment([searchValue substringToIndex:match.range.location]);
+    NSString *right =
+        CILeadingTitleFragment([searchValue substringFromIndex:NSMaxRange(match.range)]);
+    if (left.length == 0 || right.length == 0) return @[];
+    return @[left, right];
+}
+
+// Every 「」 or 『』 run in the title, in the order they appear.
+//
+// 《》 is deliberately not included. It is the Chinese convention for naming a
+// work, but on a music upload that work is as often the anime, film or album the
+// song belongs to as the song itself, and nothing in the title distinguishes the
+// two reliably enough to spend a request on.
+static NSArray<NSString *> *CIBracketedFragments(NSString *value) {
+    if (value.length == 0) return @[];
+    NSRegularExpression *brackets = [NSRegularExpression
+        regularExpressionWithPattern:@"「([^」\\r\\n]+)」|『([^』\\r\\n]+)』"
+                               options:0
+                                 error:nil];
+    NSMutableArray<NSString *> *fragments = [NSMutableArray array];
+    for (NSTextCheckingResult *match in
+         [brackets matchesInString:value options:0
+                            range:NSMakeRange(0, value.length)]) {
+        NSRange range = [match rangeAtIndex:1];
+        if (range.location == NSNotFound) range = [match rangeAtIndex:2];
+        if (range.location == NSNotFound || range.length == 0) continue;
+        NSString *fragment =
+            CICleanCaptionText([value substringWithRange:range]);
+        if (fragment.length > 0) [fragments addObject:fragment];
+    }
+    return fragments;
+}
+
+NSArray<CISongQuery *> *CISongQueryCandidates(NSString *videoTitle,
+                                              NSString *videoAuthor) {
+    NSString *original = CICleanCaptionText(videoTitle ?: @"");
+    NSMutableArray<CISongQuery *> *queries = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+
+    void (^add)(NSString *, NSString *, NSString *) =
+    ^(NSString *title, NSString *artist, NSString *origin) {
+        if (queries.count >= CISongQueryMaximumCandidates) return;
+        NSString *cleanTitle = CICleanCaptionText(title ?: @"");
+        // A run this long is a sentence or a channel blurb, not a track name,
+        // and searching it only spends a rate-limited request.
+        if (cleanTitle.length == 0 || cleanTitle.length > 200) return;
+        NSString *identity = CINormalizedText(cleanTitle);
+        if (identity.length == 0 || [seen containsObject:identity]) return;
+        [seen addObject:identity];
+        [queries addObject:[CISongQuery queryWithTitle:cleanTitle
+                                               artist:artist
+                                               origin:origin]];
+    };
+
+    // The committed reading always leads, so a title that already resolves
+    // keeps resolving on the first request with no extra traffic.
+    NSString *parsedTitle = @"";
+    NSString *parsedArtist = @"";
+    CISplitSongMetadata(original, videoAuthor, &parsedTitle, &parsedArtist);
+    add(parsedTitle, parsedArtist, @"parsed");
+
+    // Both sides of a dash, because the title never says which side is the
+    // song. "封茗囧菌x雙笙 - 世末歌者" is artist-first and "風になる - Nachoneko"
+    // is title-first, so offer both readings and let the track length decide.
+    // The right side leads: "Artist - Song" is the more common shape, and each
+    // side is handed the other as its artist, which is a genuine ranking signal
+    // whenever the reading happens to be the correct one.
+    NSArray<NSString *> *sides = CIDashSeparatedSides(original);
+    if (sides.count == 2) {
+        add(sides[1], sides[0], @"dash-right");
+        add(sides[0], sides[1], @"dash-left");
+    }
+
+    // Anything the title placed in a work-naming bracket. The quoted reading is
+    // usually already the committed one, but when several brackets exist only
+    // the best-scoring one was chosen, and the others are still worth a search.
+    for (NSString *fragment in CIBracketedFragments(original)) {
+        add(fragment, @"", @"bracket");
+    }
+
+    // Never hand back an empty list: the caller has no other way to search.
+    if (queries.count == 0) {
+        add(CISongTitleFromVideoTitle(original), @"", @"fallback");
+    }
+    return queries.copy;
+}

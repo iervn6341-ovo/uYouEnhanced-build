@@ -81,11 +81,11 @@ jobs:
       - name: Test Caption Island
         run: |
           cd ${{ github.workspace }}/main
-          swift test --package-path Tweaks/CaptionIslandTests
+          swift test --package-path Tweaks/CaptionIsland/Tests
           smoke_dir="$(mktemp -d)"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -framework Foundation \
-            Tweaks/CaptionIslandTests/ObjC/YouTubeInspectorSmoke.m \
+            Tweaks/CaptionIsland/Tests/ObjC/YouTubeInspectorSmoke.m \
             Tweaks/CaptionIsland/CIYouTubeInspector.m \
             Tweaks/CaptionIsland/CIModels.m \
             Tweaks/CaptionIsland/CITextUtilities.m \
@@ -93,36 +93,38 @@ jobs:
           "$smoke_dir/YouTubeInspectorSmoke"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -framework Foundation \
-            Tweaks/CaptionIslandTests/ObjC/LRCLIBProviderSmoke.m \
+            Tweaks/CaptionIsland/Tests/ObjC/LRCLIBProviderSmoke.m \
             Tweaks/CaptionIsland/CILRCLIBProvider.m \
             Tweaks/CaptionIsland/CICaptionParser.m \
             Tweaks/CaptionIsland/CIModels.m \
             Tweaks/CaptionIsland/CITextUtilities.m \
+            Tweaks/CaptionIsland/CILogStore.m \
+            Tweaks/CaptionIsland/CIConstants.m \
             -o "$smoke_dir/LRCLIBProviderSmoke"
           "$smoke_dir/LRCLIBProviderSmoke"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -framework Foundation \
-            Tweaks/CaptionIslandTests/ObjC/VideoEligibilitySmoke.m \
+            Tweaks/CaptionIsland/Tests/ObjC/VideoEligibilitySmoke.m \
             Tweaks/CaptionIsland/CIVideoEligibility.m \
             -o "$smoke_dir/VideoEligibilitySmoke"
           "$smoke_dir/VideoEligibilitySmoke"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -framework Foundation \
-            Tweaks/CaptionIslandTests/ObjC/VideoOverridesSmoke.m \
+            Tweaks/CaptionIsland/Tests/ObjC/VideoOverridesSmoke.m \
             Tweaks/CaptionIsland/CIVideoOverrides.m \
             Tweaks/CaptionIsland/CITextUtilities.m \
             -o "$smoke_dir/VideoOverridesSmoke"
           "$smoke_dir/VideoOverridesSmoke"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -framework Foundation \
-            Tweaks/CaptionIslandTests/ObjC/ConfigurationSmoke.m \
+            Tweaks/CaptionIsland/Tests/ObjC/ConfigurationSmoke.m \
             Tweaks/CaptionIsland/CIConstants.m \
             Tweaks/CaptionIsland/CILogStore.m \
             -o "$smoke_dir/ConfigurationSmoke"
           "$smoke_dir/ConfigurationSmoke"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
             -framework Foundation \
-            Tweaks/CaptionIslandTests/ObjC/CaptionTimingSmoke.m \
+            Tweaks/CaptionIsland/Tests/ObjC/CaptionTimingSmoke.m \
             Tweaks/CaptionIsland/CICaptionTiming.m \
             -o "$smoke_dir/CaptionTimingSmoke"
           "$smoke_dir/CaptionTimingSmoke"

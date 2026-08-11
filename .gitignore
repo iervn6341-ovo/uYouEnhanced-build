@@ -5,7 +5,7 @@ tmp/
 Tweaks/uYou/*
 !Tweaks/uYou/.gitkeep
 Resources/
-!Tweaks/CaptionIslandWidget/Resources/
-!Tweaks/CaptionIslandWidget/Resources/Info.plist
+!Tweaks/CaptionIsland/Widget/Resources/
+!Tweaks/CaptionIsland/Widget/Resources/Info.plist
 *.ipa
 .vscode

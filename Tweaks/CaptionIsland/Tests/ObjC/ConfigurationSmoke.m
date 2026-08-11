@@ -1,5 +1,5 @@
 #import <Foundation/Foundation.h>
-#import "../../CaptionIsland/CIConstants.h"
+#import "../../CIConstants.h"
 
 static void CIAssert(BOOL condition, NSString *message) {
     if (condition) return;

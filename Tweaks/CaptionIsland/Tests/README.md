@@ -15,7 +15,7 @@ swift test
 或從 repository 根目錄執行：
 
 ```sh
-swift test --package-path uYouEnhanced-build/Tweaks/CaptionIslandTests
+swift test --package-path uYouEnhanced-build/Tweaks/CaptionIsland/Tests
 ```
 
 ## 已覆蓋格式

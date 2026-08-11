@@ -10,7 +10,7 @@ APPEX_NAME = CaptionIslandWidget
 
 CaptionIslandWidget_FILES = \
 	CaptionIslandWidget.swift \
-	../CaptionIsland/Shared/CICaptionActivityAttributes.swift
+	../Shared/CICaptionActivityAttributes.swift
 CaptionIslandWidget_FRAMEWORKS = Foundation SwiftUI WidgetKit ActivityKit
 CaptionIslandWidget_SWIFT_VERSION = 5
 CaptionIslandWidget_INSTALL = 0

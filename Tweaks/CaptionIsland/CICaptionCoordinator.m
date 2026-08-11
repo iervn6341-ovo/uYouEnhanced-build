@@ -112,11 +112,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 - (void)loadLRCLIBLyricsForContext:(CIVideoContext *)context
                         generation:(NSUInteger)generation
                           cacheKey:(NSString *)cacheKey;
-- (void)fetchLRCLIBTitle:(NSString *)title
-                  artist:(NSString *)artist
-                 context:(CIVideoContext *)context
-              generation:(NSUInteger)generation
-                cacheKey:(NSString *)cacheKey;
+- (void)fetchLRCLIBCandidates:(NSArray<CISongQuery *> *)candidates
+                      context:(CIVideoContext *)context
+                   generation:(NSUInteger)generation
+                     cacheKey:(NSString *)cacheKey;
 - (void)loadManualCCForContext:(CIVideoContext *)context
                     generation:(NSUInteger)generation
                       cacheKey:(NSString *)cacheKey
@@ -241,6 +240,29 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     }
     if (title) *title = effectiveTitle ?: @"";
     if (artist) *artist = effectiveArtist ?: @"";
+}
+
+// The readings of this video's title to offer LRCLIB, most likely first.
+//
+// A title the user typed into the override screen is a decision, not a guess, so
+// it is searched on its own — expanding it into alternative readings would spend
+// requests second-guessing an answer that was already given. Only an
+// automatically parsed title fans out.
+- (NSArray<CISongQuery *> *)LRCLIBQueryCandidatesForContext:
+    (CIVideoContext *)context {
+    CIVideoOverride *override =
+        CIVideoOverrideForVideoID(context.videoID);
+    if (override.searchTitle.length > 0) {
+        NSString *title = @"";
+        NSString *artist = @"";
+        [self effectiveLRCLIBMetadataForContext:context
+                                          title:&title
+                                         artist:&artist];
+        return @[[CISongQuery queryWithTitle:title
+                                     artist:artist
+                                     origin:@"override"]];
+    }
+    return CISongQueryCandidates(context.title, context.author);
 }
 
 - (NSArray<NSString *> *)captionLanguagePrioritiesForContext:
@@ -620,10 +642,9 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         if (generation != self.generation) return;
         CIVideoContext *latestContext = self.context ?: context;
         NSString *latestTitle = @"";
-        NSString *latestArtist = @"";
         [self effectiveLRCLIBMetadataForContext:latestContext
                                           title:&latestTitle
-                                         artist:&latestArtist];
+                                         artist:NULL];
         NSString *latestCacheKey =
             [self cacheKeyForContext:latestContext];
         if (latestTitle.length == 0) {
@@ -632,33 +653,36 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                                        cacheKey:latestCacheKey];
             return;
         }
-        if (latestArtist.length > 0) {
-            CIPipelineLog(CILogLevelInfo,
-                @"LRCLIB one-request lookup: exact artist \"%@\", title \"%@\" (video %.1fs)",
-                latestArtist, latestTitle, latestContext.duration);
-        } else {
-            CIPipelineLog(CILogLevelInfo,
-                @"LRCLIB one-request lookup: title \"%@\" with no reliable artist (video %.1fs)",
-                latestTitle, latestContext.duration);
+        NSArray<CISongQuery *> *candidates =
+            [self LRCLIBQueryCandidatesForContext:latestContext];
+        NSMutableArray<NSString *> *descriptions =
+            [NSMutableArray arrayWithCapacity:candidates.count];
+        for (CISongQuery *candidate in candidates) {
+            [descriptions addObject:candidate.artist.length > 0
+                ? [NSString stringWithFormat:@"%@:\"%@\"/\"%@\"",
+                    candidate.origin, candidate.title, candidate.artist]
+                : [NSString stringWithFormat:@"%@:\"%@\"",
+                    candidate.origin, candidate.title]];
         }
-        [self fetchLRCLIBTitle:latestTitle
-                        artist:latestArtist
-                       context:latestContext
-                    generation:generation
-                      cacheKey:latestCacheKey];
+        CIPipelineLog(CILogLevelInfo,
+            @"LRCLIB lookup over %lu reading(s) of the title (video %.1fs): %@",
+            (unsigned long)candidates.count, latestContext.duration,
+            [descriptions componentsJoinedByString:@", "]);
+        [self fetchLRCLIBCandidates:candidates
+                            context:latestContext
+                         generation:generation
+                           cacheKey:latestCacheKey];
     });
 }
 
-- (void)fetchLRCLIBTitle:(NSString *)title
-                  artist:(NSString *)artist
-                 context:(CIVideoContext *)context
-              generation:(NSUInteger)generation
-                cacheKey:(NSString *)cacheKey {
+- (void)fetchLRCLIBCandidates:(NSArray<CISongQuery *> *)candidates
+                      context:(CIVideoContext *)context
+                   generation:(NSUInteger)generation
+                     cacheKey:(NSString *)cacheKey {
     if (generation != self.generation) return;
     __weak typeof(self) weakSelf = self;
-    [self.lyricsProvider fetchLyricsForTitle:title
-                                      artist:artist
-                                    duration:context.duration
+    [self.lyricsProvider fetchLyricsForCandidates:candidates
+                                        duration:context.duration
                                   completion:^(CILRCLIBResult *result, NSError *error) {
         dispatch_async(weakSelf.workQueue, ^{
             typeof(self) self = weakSelf;

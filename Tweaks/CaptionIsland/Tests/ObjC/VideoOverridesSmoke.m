@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <math.h>
-#import "../../CaptionIsland/CIVideoOverrides.h"
+#import "../../CIVideoOverrides.h"
 
 static void CIAssert(BOOL condition, NSString *message) {
     if (condition) return;

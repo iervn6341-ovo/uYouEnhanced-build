@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "CIModels.h"
+#import "CITextUtilities.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -80,10 +81,23 @@ typedef void (^CILRCLIBCompletion)(CILRCLIBResult * _Nullable result,
 + (NSUInteger)importCacheFromURL:(NSURL *)URL
                            error:(NSError * _Nullable * _Nullable)error;
 
+/// Looks up one committed reading of a title. Use this only when the query is
+/// known rather than guessed — a user-supplied override, or a test.
 - (void)fetchLyricsForTitle:(NSString *)title
                      artist:(NSString *)artist
                    duration:(NSTimeInterval)duration
                  completion:(CILRCLIBCompletion)completion;
+
+/// Looks up several readings of one upload title and returns the best match.
+///
+/// Readings are searched in order and each one is rate limited like any other
+/// request, so this cannot fan out into a burst. The search stops early as soon
+/// as a reading produces a synced timeline whose length all but matches the
+/// video, which is the common case and costs a single request; otherwise every
+/// reading is tried and the match closest to the video length wins.
+- (void)fetchLyricsForCandidates:(NSArray<CISongQuery *> *)candidates
+                        duration:(NSTimeInterval)duration
+                      completion:(CILRCLIBCompletion)completion;
 - (void)cancel;
 @end
 

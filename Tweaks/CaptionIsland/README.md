@@ -413,9 +413,63 @@ Topic／VEVO／Official Artist Channel 才會加入歌手條件。無法可靠�
 以分隔符組成的標題無法從字面判斷哪一側是歌名：`AiNA THE END / On The Way` 是歌手在
 前，`風になる / Nachoneko` 是歌名在前，`Street Fighter 6 Ingrid's Theme - Cosmic
 Scale Pretty` 兩側都不是歌手。解析器必須先選一種讀法，因此當那個讀法查不到任何結果
-時，會**以另一側作為歌名再搜尋一次**，並把原本的歌名降級成歌手提示。每次查詢最多兩
-個請求，且兩者都受既有速率限制約束，不會擴散成連續請求。只有在所有讀法都查不到之後
-才會寫入負向快取，否則第一個猜測會被鎖定 12 小時。
+時，會**以另一側作為歌名再搜尋一次**，並把原本的歌名降級成歌手提示。只有在所有讀法
+都查不到之後才會寫入負向快取，否則第一個猜測會被鎖定 12 小時。
+
+### 一個標題的多種讀法
+
+上傳標題沒有語法可循，單一次解析只能猜。所以查詢時不再只送一種讀法，而是產生一份
+**候選讀法清單**，依序搜尋，並由影片長度決定哪個猜對了。清單最多 4 個讀法
+（`CISongQueryMaximumCandidates`），順序為：
+
+| 順序 | 來源 | 說明 |
+|---|---|---|
+| 1 | `parsed` | `CISplitSongMetadata` 選定的讀法，與改動前完全相同 |
+| 2 | `dash-right` | 破折號右側；`歌手 - 歌名` 是較常見的形狀 |
+| 3 | `dash-left` | 破折號左側 |
+| 4 | `bracket` | `「」`、`『』` 內的每一段 |
+
+破折號的兩側各自把另一側當作歌手提示——猜對時那正好是真正的歌手，是有效的排序訊號。
+半形 `-` 必須兩側有空白才算分隔，所以 `Re-Bell`、`K-POP`、`lo-fi` 不會被切開；`–`／`—`
+不需空白但不會切在數字之間，所以 `2019—2020` 是區間而不是分隔。
+
+每一側都會先截到第一個括號為止再清理裝飾字串，因為那個位置之後是上傳說明而不是歌名。
+以實例說明：
+
+```
+封茗囧菌x雙笙 - 世末歌者「那怕只 一瞬的 奇蹟。」 [ High Quality Lyrics ][ Chinese Style ] tk推薦 益笙菌
+  → parsed      "那怕只 一瞬的 奇蹟。"   （「」抽取，改動前唯一會查的讀法）
+  → dash-right  "世末歌者"              歌手提示 "封茗囧菌x雙笙"
+  → dash-left   "封茗囧菌x雙笙"          歌手提示 "世末歌者"
+```
+
+**`《》` 刻意不作為抽取來源。** 它是中文標示作品名的慣例，但在音樂上傳中那個作品是
+歌曲本身的機率，並不明顯高於是動畫、電影或專輯名稱，而標題裡沒有任何線索能可靠區分這
+兩者——`竖屏｜《トレセン音頭》花钻Ver` 的括號是歌名，`《鬼滅之刃》主題曲 紅蓮華` 的括號
+是作品名，形狀完全相同。既然無法區分，就不值得為它花一個請求。`《` 仍然是破折號側邊的
+**截斷點**（它後面是上傳說明而不是歌名），這與把括號內容當歌名是兩件不同的事。
+
+代價是這類標題會把括號一起送出去查：`竖屏｜《トレセン音頭》花钻Ver` 會由 `｜` 切出歌手
+`竖屏`、歌名 `《トレセン音頭》花钻Ver`，而後者幾乎一定查不到。這種影片需要用「目前影片的
+歌詞設定」手動填入歌名。
+
+**成本控制。** 讀法逐一搜尋，每個請求都經過同一個速率限制器，所以無論標題產生幾個讀法
+都不會擴散成連續請求。常見情況仍然只花一個請求：`parsed` 排在最前，而一旦某個讀法找到
+**帶時間軸且長度差在 2.5 秒以內**的結果就立刻結束搜尋（`resultIsConclusive:`）。兩個條
+件必須同時成立才算定案——只有長度對的純文字歌詞可能被另一個讀法的同步版本擊敗，而長度
+不對的同步歌詞正是這整個改動要抓的錯誤。
+
+不夠確定的結果會被留作備案繼續往下搜，最後由長度最接近者勝出；長度差在容許範圍內並列
+時，由有無時間軸決定。網路錯誤或冷卻會立刻中止整串搜尋（`abortLookupWithContext:`），
+但先前已經取得的備案仍然會回傳而不是丟掉。
+
+結果一律寫在**第一個讀法**的快取鍵下，不管實際是哪個讀法找到的，所以重看同一支影片只
+需一次快取讀取，舊版本寫入的項目也仍然定位得到。使用者在「目前影片的歌詞設定」裡自行
+輸入的歌名是決定而不是猜測，會單獨搜尋，不會展開成多個讀法。
+
+`CILRCLIBCacheQueryGeneration` 已由 2 提升為 3，因此舊版本記錄的「查無歌詞」會被丟棄
+重查；**已經成功存下的歌詞不受影響**。如果某支影片先前是配對到「錯的歌」而不是查無結果，
+那筆正向快取不會自動失效，需要手動使用「清除 LRCLIB 查詢快取」。
 
 通過門檻後以影片總時間選擇最接近的版本。LRCLIB 曲目比影片長時只容許約 18～35 秒
 差距，避免 90 秒 TV Size 誤配到較長版本；影片比曲目長時則容許約 35～60 秒，保留
@@ -469,6 +523,34 @@ LRCLIB 的曲目永遠找不到，而 12 小時已足以避免播放期間反覆
 
 ## 建置與驗證
 
+### 目錄結構
+
+三個建置產物住在同一棵樹底下，但**必須是三個不同的目錄**：theos 一個目錄的 Makefile
+只能產出一個產物，而 tweak（`tweak.mk`）與 App Extension（`appex.mk`）是不同型別。
+
+```
+Tweaks/CaptionIsland/
+├── *.m *.h *.xm            tweak 本體 → CaptionIsland.dylib
+├── Shared/                 tweak 與 widget 共同編譯的 Activity payload 定義
+│   └── CICaptionActivityAttributes.swift
+├── Assets/CaptionIsland.bundle    在地化字串與資源，由根 Makefile 嵌入
+├── Widget/                 → CaptionIslandWidget.appex（動態島與鎖定畫面 UI）
+└── Tests/                  Swift Package + ObjC smoke test，不編進成品
+```
+
+`Shared/CICaptionActivityAttributes.swift` 同時列在兩邊的 `_FILES` 裡
+（`Makefile:34` 與 `Widget/Makefile:13`）——這是 tweak 與 widget 對「Activity 資料
+長什麼樣」達成一致的方式，不能只編一邊。
+
+`Widget` 在根 `Makefile` 的 `SUBPROJECTS` 裡是獨立條目
+（`Tweaks/CaptionIsland/Widget`）。theos 不會自己遞迴子目錄，所以巢狀只是檔案系統
+上的擺放；同樣兩層深的 `Tweaks/FLEXing/libflex` 早已這樣運作。`.appex` 的輸出路徑
+由 `Widget/Makefile` 的 `THEOS_OBJ_DIR_NAME = obj/CaptionIslandWidget` 決定，與目錄
+位置無關，因此搬動目錄不影響 `CAPTION_ISLAND_WIDGET_APPEX`。
+
+`Tests/` 不在 `SUBPROJECTS`、不在任何 `_FILES`，對 IPA 完全零影響，但 CI 會執行它，
+所以刪掉會讓 CI 失敗。
+
 專案由根 Makefile 編譯 tweak、嵌入 `CaptionIsland.bundle`，並封裝
 `CaptionIslandWidget.appex`。封裝時也會把
 `<主程式 Bundle ID>.captionisland.background-captions.*` 加入主程式的
@@ -496,10 +578,10 @@ SDK 的 `.swiftinterface`），腳本會在建置前就中止並提示兩種解�
 改用本機 Xcode 的 iOS SDK（部署目標仍為 17.5），或 `--developer-dir` 指向 Swift
 版本相符的 Xcode。
 
-純 Foundation fixtures 位於 `Tweaks/CaptionIslandTests`：
+純 Foundation fixtures 位於 `Tweaks/CaptionIsland/Tests`：
 
 ```sh
-swift test --package-path Tweaks/CaptionIslandTests
+swift test --package-path Tweaks/CaptionIsland/Tests
 ```
 
 同目錄的 `ObjC/` 另有六個獨立 smoke test，各自只連結所需的少數 `.m`，用來守住
@@ -515,9 +597,30 @@ YouTube 的私有 class／selector 可能隨版本改動；更新 YouTube 後，
 
 ### 待實作
 
-- **播放器內的歌詞選擇按鈕**：讓使用者為目前影片指定要用哪一筆 LRCLIB 結果，或
-  選擇完全不使用歌詞；選擇需以 YouTube video ID 持久保存，再次開啟同一支影片時
-  自動套用。按鈕的擺放位置尚未決定。
+- **播放器內的歌詞控制按鈕**。位置已決定：**右下角**，與 YouTimeStamp 的「複製
+  timestamp」同一排。走 YTVideoOverlay 註冊制（`initYTVideoOverlay`），不自己算佈局——
+  該框架以全螢幕按鈕的 frame 為錨點往左排，順序由使用者在設定裡調。按下後的面板需提供
+  三件事，全部以 YouTube video ID 持久保存並在重看時自動套用：
+
+  1. **歌詞選擇器**：列出這支影片的 LRCLIB 候選（歌名／歌手／長度差／有無時間軸），
+     可挑一筆或選「不使用歌詞」。目前 provider 只回傳最佳解，需要改為能回傳整份候選清單。
+  2. **秒數校正**：`+3`／`-3` 這類微調。後端已存在——`CIVideoOverride.captionAdvanceSeconds`
+     （範圍 ±30 秒），目前只能從設定頁輸入，這裡是把它搬到播放器內。
+  3. **字幕語言挑選**：LRCLIB 查無資料而改用 CC／ASR 時，從選單挑要用哪個語言
+     （「中文（繁體）」、「中文」、「英文」…）。後端也已存在——
+     `CIVideoOverride.captionLanguagePriorities` 與 `CILanguagePriorityViewController`。
+
+  待確認的實作細節：
+  - **`TweakKey` 不能用 `CaptionIsland`**。YTVideoOverlay 以 `_LOC(TweakBundle(name), @"ENABLED")`
+    取設定列標題，而它找 bundle 的方式與 `CIConstants.m` 完全相同，所以會取到
+    CaptionIsland.bundle 現有的 `ENABLED`（「啟用 Live Activity」），且 `POSITION` 不存在。
+    需要另一個 key 配一個只裝 `ENABLED`／`POSITION` 與圖示的小 bundle（bundle 名須等於 key）。
+  - 預設值需自行 `registerDefaults`：`-Enabled` 預設 `NO`、`-Position` 預設 `0`（右上），
+    要預設出現在右下角得比照 YouPiP 的做法。
+  - 面板外觀希望能用 iOS 26 的 Liquid Glass；需要先確認在 tweak 內能否取得該 API，
+    以及 17.5 最低版本下的降級路徑。
+  - 不需要新的 dylib 或 Makefile 條目：`CaptionIsland.dylib` 與 `YTVideoOverlay.dylib`
+    都已在 `_INJECT_DYLIBS`，`Bundles/*.bundle` 已是 wildcard。
 
 ### 已完成
 
@@ -543,6 +646,9 @@ YouTube 的私有 class／selector 可能隨版本改動；更新 YouTube 後，
   的實際成因。
 - **同一份回應做兩次評分**：嚴格通道保留歌手排序，寬鬆通道只用歌名與長度，不需額外請求。
 - **分隔符標題的反向重試**：第一種讀法查不到時，改以另一側作為歌名再搜尋一次。
+- **一個標題送出多種讀法**：破折號兩側、以及 `「」`／`『』` 內的每一段，都成為
+  候選讀法，依序搜尋並由影片長度挑出最佳結果。上限 4 個讀法，全部經過同一個速率限制器；
+  找到帶時間軸且長度差 2.5 秒內的結果就立刻結束，所以常見情況仍然只花一個請求。
 - **負向快取加上查詢世代標記**：搜尋行為改動時逐筆丟棄過期結論，但保留已取得的歌詞，
   也不影響使用者匯出檔的可匯入性。
 - **`【ライブ映像】` 等日文現場／版本標註**加入可剝除的裝飾標記；僅限括號內或分隔符

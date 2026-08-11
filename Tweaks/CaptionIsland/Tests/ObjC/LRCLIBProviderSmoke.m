@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <math.h>
-#import "../../CaptionIsland/CILRCLIBProvider.h"
-#import "../../CaptionIsland/CITextUtilities.h"
+#import "../../CILRCLIBProvider.h"
+#import "../../CITextUtilities.h"
 
 @interface CILRCLIBProvider (SmokeTesting)
 - (CILRCLIBResult *)lyricsResultFromSearchData:(NSData *)data
@@ -213,6 +213,40 @@ int main(void) {
             @"【赛马娘】GIRLS' LEGEND U 18 音频优化+米浴纯享版")
             isEqualToString:@"GIRLS' LEGEND U"],
             @"franchise and re-upload notes should be removed from a song title");
+
+        // 《》 is deliberately not an extraction source: the work it names is as
+        // often the anime, film or album as the song. Pinned so reinstating it
+        // has to be a deliberate change rather than a side effect.
+        CIAssert(![CISongTitleFromVideoTitle(@"竖屏｜《トレセン音頭》花钻Ver")
+            isEqualToString:@"トレセン音頭"],
+            @"a 《》 block must not be treated as the track name");
+        CIAssert(CISongQueryCandidates(@"竖屏｜《トレセン音頭》花钻Ver", @"")
+            .count == 1,
+            @"a 《》 block must not add a reading of its own");
+
+        // Several readings of one title, most likely first. Nothing here reaches
+        // the network: the assertions pin which queries would be issued.
+        NSArray<CISongQuery *> *readings = CISongQueryCandidates(
+            @"封茗囧菌x雙笙 - 世末歌者「那怕只 一瞬的 奇蹟。」 [ High Quality Lyrics ][ Chinese Style ] tk推薦 益笙菌",
+            @"");
+        NSMutableArray<NSString *> *readingTitles = [NSMutableArray array];
+        for (CISongQuery *reading in readings) {
+            [readingTitles addObject:reading.title];
+        }
+        CIAssert([readingTitles isEqualToArray:@[
+            @"那怕只 一瞬的 奇蹟。", @"世末歌者", @"封茗囧菌x雙笙",
+        ]], @"a quoted title over a dash should offer the quote and both dash sides");
+        CIAssert([readings[1].artist isEqualToString:@"封茗囧菌x雙笙"] &&
+            [readings[2].artist isEqualToString:@"世末歌者"],
+            @"each dash side should carry the other side as its ranking artist");
+        CIAssert(CISongQueryCandidates(@"Re-Bell", @"").count == 1,
+            @"an unspaced ASCII hyphen inside a word must not be split");
+        CIAssert(CISongQueryCandidates(@"", @"").count == 0,
+            @"an empty title cannot produce a searchable reading");
+        CIAssert(CISongQueryCandidates(
+            @"A - B 「C」 『D』 「E」 - F", @"").count <=
+                CISongQueryMaximumCandidates,
+            @"the reading count must stay bounded so one lookup cannot burst");
         NSURLComponents *broadComponents = [NSURLComponents componentsWithURL:
             [provider searchURLForTitle:@"Example Song" artist:@"Example Artist" broad:YES]
             resolvingAgainstBaseURL:NO];
