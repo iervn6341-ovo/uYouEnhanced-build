@@ -11,10 +11,13 @@ TWEAK_NAME = CaptionIsland
 CaptionIsland_FILES = \
 	Tweak.xm \
 	CISettings.xm \
+	CIPlayerButton.xm \
+	CIGearMenuItem.xm \
 	CIBackgroundPlaybackMonitor.m \
 	CIPlaybackState.m \
 	CIConstants.m \
 	CILanguagePriorityViewController.m \
+	CITitleKeywordViewController.m \
 	CIModels.m \
 	CICaptionTiming.m \
 	CIVideoEligibility.m \
@@ -30,6 +33,7 @@ CaptionIsland_FILES = \
 	CILogViewController.m \
 	CIActivityPresenter.m \
 	CICaptionCoordinator.m \
+	CIPlayerControlPanel.m \
 	CIActivityBridge.swift \
 	Shared/CICaptionActivityAttributes.swift
 CaptionIsland_CFLAGS = -fobjc-arc

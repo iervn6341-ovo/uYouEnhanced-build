@@ -1,0 +1,5 @@
+// Rows YTVideoOverlay builds for this button. It reads these two keys from a
+// bundle whose name must equal the registered tweak key, which is why they do
+// not live in CaptionIsland.bundle.
+"ENABLED" = "Show Caption Island button";
+"POSITION" = "Caption Island button position";

@@ -430,7 +430,16 @@ static NSArray<CICaptionCue *> *CILRCLIBUsableCues(NSString *syncedLyrics,
 @property (nonatomic, copy, nullable) NSString *bestOrigin;
 /// The failure to report if no reading matches at all.
 @property (nonatomic, strong, nullable) NSError *lastError;
-@property (nonatomic, copy) CILRCLIBCompletion completion;
+@property (nonatomic, copy, nullable) CILRCLIBCompletion completion;
+/// Set for a manual browse: search every reading, filter permissively, cache
+/// nothing, and report the whole list instead of one winner.
+@property (nonatomic) BOOL collectsAllMatches;
+@property (nonatomic, strong, nullable)
+    NSMutableArray<CILRCLIBResult *> *allMatches;
+@property (nonatomic, strong, nullable)
+    NSMutableSet<NSNumber *> *seenRecordIDs;
+@property (nonatomic, copy, nullable)
+    void (^listCompletion)(NSArray<CILRCLIBResult *> *, NSError * _Nullable);
 /// The reading at `candidateIndex`, or nil once the list is exhausted.
 @property (nonatomic, readonly, nullable) CISongQuery *currentCandidate;
 @end
@@ -908,7 +917,17 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
                               withIntermediateDirectories:YES
                                                attributes:nil
                                                     error:nil];
-    [data writeToFile:path options:NSDataWritingAtomic error:nil];
+    if (![data writeToFile:path options:NSDataWritingAtomic error:nil]) return;
+    // Tell every other provider instance that its in-memory copy is stale.
+    //
+    // Without this a write is invisible across instances: the panel's browse
+    // provider could pin the user's chosen lyrics and the coordinator's provider
+    // would keep serving the copy it loaded at launch. The writer advances its own
+    // marker in the same breath so it does not throw away the copy it just wrote.
+    @synchronized (CILRCLIBProvider.class) {
+        CILRCLIBPersistentCacheGeneration++;
+        self.persistentCacheGeneration = CILRCLIBPersistentCacheGeneration;
+    }
 }
 
 - (NSString *)cacheKeyForTitle:(NSString *)title
@@ -1338,6 +1357,57 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     return candidate;
 }
 
+// Everything in a payload that carries lyrics at all, for the manual chooser.
+//
+// The only rejections here are the ones that would make a row useless to a human:
+// no track name, marked instrumental, or no lyrics of either kind. Title
+// similarity and duration are surfaced as sort order and displayed detail rather
+// than used as gates, because the user is looking at this list precisely when the
+// automatic gates rejected everything.
+- (NSArray<CILRCLIBCandidate *> *)browsableCandidatesFromObjects:(NSArray *)objects
+                                                   videoDuration:(NSTimeInterval)videoDuration {
+    if (![objects isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray<CILRCLIBCandidate *> *candidates = [NSMutableArray array];
+    NSUInteger count = MIN(objects.count, CILRCLIBMaximumCandidates);
+    for (NSUInteger index = 0; index < count; index++) {
+        id object = objects[index];
+        if (![object isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *dictionary = object;
+        if ([dictionary[@"instrumental"] respondsToSelector:@selector(boolValue)] &&
+            [dictionary[@"instrumental"] boolValue]) continue;
+        NSString *trackName = CILRCLIBString(dictionary[@"trackName"], 512);
+        if (trackName.length == 0) continue;
+
+        double duration = CILRCLIBDouble(dictionary[@"duration"]);
+        NSString *plainLyrics = CILRCLIBLyricsString(dictionary[@"plainLyrics"]);
+        NSUInteger plainLineCount = CILRCLIBPlainLineCount(plainLyrics);
+        if (plainLineCount > CILRCLIBMaximumPlainLines) {
+            plainLyrics = @"";
+            plainLineCount = 0;
+        }
+        NSString *syncedLyrics = CILRCLIBLyricsString(dictionary[@"syncedLyrics"]);
+        NSArray<CICaptionCue *> *syncedCues = syncedLyrics.length > 0
+            ? CILRCLIBUsableCues(syncedLyrics, plainLineCount, videoDuration, duration)
+            : @[];
+        if (syncedCues.count == 0 && plainLineCount == 0) continue;
+
+        CILRCLIBCandidate *candidate = [CILRCLIBCandidate new];
+        candidate.recordID =
+            [dictionary[@"id"] respondsToSelector:@selector(integerValue)]
+                ? [dictionary[@"id"] integerValue] : 0;
+        candidate.trackName = trackName;
+        candidate.artistName = CILRCLIBString(dictionary[@"artistName"], 512);
+        candidate.albumName = CILRCLIBString(dictionary[@"albumName"], 512);
+        candidate.duration = duration > 0 ? duration : 0;
+        candidate.durationDifference = videoDuration > 0 && duration > 0
+            ? fabs(duration - videoDuration) : DBL_MAX;
+        candidate.syncedCues = syncedCues;
+        candidate.plainLyrics = plainLyrics;
+        [candidates addObject:candidate];
+    }
+    return candidates;
+}
+
 - (CILRCLIBCandidate *)bestCandidateFromObjects:(NSArray *)objects
                                            title:(NSString *)title
                                           artist:(NSString *)artist
@@ -1629,6 +1699,58 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     context.bestOrigin = label;
 }
 
+// Appends this payload's usable rows to the browse list, ignoring repeats.
+//
+// One record routinely appears under several readings of the same title, so the
+// record id is the identity; without that the list would show the same song three
+// times for a title carrying a dash and a quote.
+- (void)collectBrowsableMatchesFromData:(NSData *)data
+                                context:(CILRCLIBLookupContext *)context {
+    id root = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![root isKindOfClass:NSArray.class]) return;
+    for (CILRCLIBCandidate *candidate in
+         [self browsableCandidatesFromObjects:root
+                               videoDuration:context.duration]) {
+        NSNumber *identity = @(candidate.recordID);
+        if (candidate.recordID != 0) {
+            if ([context.seenRecordIDs containsObject:identity]) continue;
+            [context.seenRecordIDs addObject:identity];
+        }
+        CILRCLIBResult *result = [self resultFromCandidate:candidate error:nil];
+        if (result) [context.allMatches addObject:result];
+    }
+}
+
+- (void)completeBrowseWithContext:(CILRCLIBLookupContext *)context
+                            error:(NSError *)error {
+    NSArray<CILRCLIBResult *> *matches = [context.allMatches
+        sortedArrayUsingComparator:^NSComparisonResult(CILRCLIBResult *left,
+                                                       CILRCLIBResult *right) {
+        // Unknown lengths sort last: they are the rows the user can judge least.
+        double leftDelta = left.durationDifference < 0
+            ? DBL_MAX : left.durationDifference;
+        double rightDelta = right.durationDifference < 0
+            ? DBL_MAX : right.durationDifference;
+        if (leftDelta != rightDelta) {
+            return leftDelta < rightDelta
+                ? NSOrderedAscending : NSOrderedDescending;
+        }
+        BOOL leftSynced = left.syncedCues.count > 0;
+        BOOL rightSynced = right.syncedCues.count > 0;
+        if (leftSynced != rightSynced) {
+            return leftSynced ? NSOrderedAscending : NSOrderedDescending;
+        }
+        return NSOrderedSame;
+    }];
+    void (^completion)(NSArray<CILRCLIBResult *> *, NSError *) =
+        context.listCompletion;
+    if (!completion) return;
+    @synchronized (self) {
+        if (context.token != self.requestToken) return;
+        completion(matches, matches.count > 0 ? nil : error);
+    }
+}
+
 // Moves to the next reading, or finishes when the list is spent.
 - (void)advanceLookupWithContext:(CILRCLIBLookupContext *)context {
     if (![self isCurrentToken:context.token]) return;
@@ -1647,6 +1769,10 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
 // every reading has failed, which is what keeps the negative cache from freezing
 // one wrong guess in place for twelve hours.
 - (void)finishLookupWithContext:(CILRCLIBLookupContext *)context {
+    if (context.collectsAllMatches) {
+        [self completeBrowseWithContext:context error:nil];
+        return;
+    }
     CILRCLIBResult *result = context.bestResult;
     if (result) {
         if (context.candidates.count > 1) {
@@ -1679,6 +1805,13 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
 // banked by an earlier reading is still returned rather than thrown away.
 - (void)abortLookupWithContext:(CILRCLIBLookupContext *)context
                          error:(NSError *)error {
+    if (context.collectsAllMatches) {
+        // Whatever earlier readings already found is still worth showing; the
+        // error only stands in when the list is empty.
+        [self completeBrowseWithContext:context
+                                 error:context.allMatches.count > 0 ? nil : error];
+        return;
+    }
     if (context.bestResult) {
         [self finishLookupWithContext:context];
         return;
@@ -1805,6 +1938,11 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
             }
             return;
         }
+        if (context.collectsAllMatches) {
+            [self collectBrowsableMatchesFromData:data context:context];
+            [self advanceLookupWithContext:context];
+            return;
+        }
         NSError *parseError = nil;
         CILRCLIBResult *result = [self bestResultFromSearchData:data
             title:queryTitle artist:queryArtist videoDuration:duration
@@ -1917,29 +2055,20 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     ] duration:duration completion:completion];
 }
 
-- (void)fetchLyricsForCandidates:(NSArray<CISongQuery *> *)candidates
-                        duration:(NSTimeInterval)duration
-                      completion:(CILRCLIBCompletion)completion {
-    // The first reading defines the query identity: it is what earlier builds
-    // stored under, and it is the reading the settings screen shows the user.
+// Cleans a caller's readings and derives the lookup identity they share.
+//
+// Both entry points must agree on the cache key or a pinned choice would be
+// filed where the playback lookup never looks, so the derivation lives here once.
+- (nullable CILRCLIBLookupContext *)contextForCandidates:
+                                        (NSArray<CISongQuery *> *)candidates
+                                              duration:(NSTimeInterval)duration
+                                                 token:(NSUInteger)token {
     CISongQuery *primary = candidates.firstObject;
-    NSString *cleanTitle = CILRCLIBString(CICleanCaptionText(primary.title), 512);
-    NSString *cleanArtist = CILRCLIBString(CICleanCaptionText(primary.artist), 512);
-    NSUInteger token;
-    @synchronized (self) {
-        self.requestToken++;
-        [self.currentTask cancel];
-        self.currentTask = nil;
-        token = self.requestToken;
-    }
-    if (cleanTitle.length == 0) {
-        [self completeToken:token result:nil
-            error:CILRCLIBError(-1, @"A song title is required.")
-            completion:completion];
-        return;
-    }
-    // Every reading is re-cleaned here so a caller cannot smuggle an empty or
-    // oversized query past the checks the first reading just went through.
+    NSString *cleanTitle =
+        CILRCLIBString(CICleanCaptionText(primary.title), 512);
+    NSString *cleanArtist =
+        CILRCLIBString(CICleanCaptionText(primary.artist), 512);
+    if (cleanTitle.length == 0) return nil;
     NSMutableArray<CISongQuery *> *readings =
         [NSMutableArray arrayWithCapacity:candidates.count];
     for (CISongQuery *candidate in candidates) {
@@ -1951,23 +2080,89 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
             artist:CILRCLIBString(CICleanCaptionText(candidate.artist), 512)
             origin:candidate.origin]];
     }
-    if (readings.count == 0) {
+    if (readings.count == 0) return nil;
+
+    CILRCLIBLookupContext *context = [CILRCLIBLookupContext new];
+    context.candidates = readings;
+    context.candidateIndex = 0;
+    context.duration = duration;
+    context.token = token;
+    context.cacheKey = [self cacheKeyForTitle:cleanTitle
+        artist:cleanArtist duration:duration
+        exact:cleanArtist.length > 0
+        endpointIdentity:CILRCLIBBaseURL()];
+    return context;
+}
+
+- (void)fetchAllMatchesForCandidates:(NSArray<CISongQuery *> *)candidates
+                            duration:(NSTimeInterval)duration
+                          completion:
+    (void (^)(NSArray<CILRCLIBResult *> *, NSError * _Nullable))completion {
+    NSUInteger token;
+    @synchronized (self) {
+        self.requestToken++;
+        [self.currentTask cancel];
+        self.currentTask = nil;
+        token = self.requestToken;
+    }
+    CILRCLIBLookupContext *context =
+        [self contextForCandidates:candidates duration:duration token:token];
+    if (!context) {
+        completion(@[], CILRCLIBError(-1, @"A song title is required."));
+        return;
+    }
+    NSTimeInterval cooldown =
+        [self cooldownRemainingForEndpoint:CILRCLIBBaseURL()];
+    if (cooldown > 0) {
+        completion(@[], CILRCLIBError(429, [NSString stringWithFormat:
+            @"LRCLIB cooldown is active for another %.0f minute(s).",
+            ceil(cooldown / 60.0)]));
+        return;
+    }
+    context.collectsAllMatches = YES;
+    context.allMatches = [NSMutableArray array];
+    context.seenRecordIDs = [NSMutableSet set];
+    context.listCompletion = completion;
+    [self startLookupWithContext:context attempt:1];
+}
+
+- (void)pinResult:(CILRCLIBResult *)result
+    forCandidates:(NSArray<CISongQuery *> *)candidates
+         duration:(NSTimeInterval)duration {
+    if (!result) return;
+    CILRCLIBLookupContext *context =
+        [self contextForCandidates:candidates duration:duration token:0];
+    if (!context) return;
+    [self storeResult:result forCacheKey:context.cacheKey];
+    [CILogStore.sharedStore recordLevel:CILogLevelInfo
+        category:@"LRCLIB"
+        format:@"User pinned record #%ld (%@ — %@) for this video; the automatic lookup will now find it in the cache.",
+               (long)result.recordID, result.artistName, result.trackName];
+}
+
+- (void)fetchLyricsForCandidates:(NSArray<CISongQuery *> *)candidates
+                        duration:(NSTimeInterval)duration
+                      completion:(CILRCLIBCompletion)completion {
+    NSUInteger token;
+    @synchronized (self) {
+        self.requestToken++;
+        [self.currentTask cancel];
+        self.currentTask = nil;
+        token = self.requestToken;
+    }
+    CILRCLIBLookupContext *context =
+        [self contextForCandidates:candidates duration:duration token:token];
+    if (!context) {
         [self completeToken:token result:nil
             error:CILRCLIBError(-1, @"A song title is required.")
             completion:completion];
         return;
     }
-    // The key still records whether an artist was available, so entries written
-    // by earlier builds stay addressable and the user's exported lyrics keep
-    // resolving; only the endpoint this flag used to select has changed.
-    BOOL hasArtist = cleanArtist.length > 0;
-    NSString *serviceIdentity = CILRCLIBBaseURL();
-    NSString *cacheKey = [self cacheKeyForTitle:cleanTitle
-        artist:cleanArtist duration:duration exact:hasArtist
-        endpointIdentity:serviceIdentity];
+    context.completion = completion;
+
     BOOL negativeHit = NO;
     CILRCLIBResult *cached =
-        [self cachedResultForKey:cacheKey negativeHit:&negativeHit];
+        [self cachedResultForKey:context.cacheKey negativeHit:&negativeHit];
     if (cached) {
         [self completeToken:token result:cached error:nil
             completion:completion];
@@ -1981,7 +2176,7 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
         return;
     }
     NSTimeInterval cooldown =
-        [self cooldownRemainingForEndpoint:serviceIdentity];
+        [self cooldownRemainingForEndpoint:CILRCLIBBaseURL()];
     if (cooldown > 0) {
         [self completeToken:token result:nil
             error:CILRCLIBError(429, [NSString stringWithFormat:
@@ -1995,13 +2190,6 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     // readings a title produces. The common case still costs a single request:
     // the committed reading leads, and a synced match of the right length ends
     // the search immediately.
-    CILRCLIBLookupContext *context = [CILRCLIBLookupContext new];
-    context.candidates = readings;
-    context.candidateIndex = 0;
-    context.duration = duration;
-    context.token = token;
-    context.cacheKey = cacheKey;
-    context.completion = completion;
     [self startLookupWithContext:context attempt:1];
 }
 

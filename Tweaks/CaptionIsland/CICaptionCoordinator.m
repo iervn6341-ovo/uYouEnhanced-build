@@ -248,7 +248,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
 // it is searched on its own — expanding it into alternative readings would spend
 // requests second-guessing an answer that was already given. Only an
 // automatically parsed title fans out.
-- (NSArray<CISongQuery *> *)LRCLIBQueryCandidatesForContext:
+- (NSArray<CISongQuery *> *)LRCLIBReadingsForContext:
     (CIVideoContext *)context {
     CIVideoOverride *override =
         CIVideoOverrideForVideoID(context.videoID);
@@ -614,6 +614,17 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                                    cacheKey:cacheKey];
         return;
     }
+    // The user looked at this video's matches and rejected all of them. That is a
+    // decision, not a failed lookup, so it is honoured before any request is made
+    // and it never expires the way a cached miss does.
+    if (CIVideoOverrideForVideoID(context.videoID).lyricsSuppressed) {
+        CIPipelineLog(CILogLevelInfo,
+            @"LRCLIB is switched off for this video by an explicit choice; skipping the lookup.");
+        [self fallbackAfterLRCLIBForContext:context
+                                 generation:generation
+                                   cacheKey:cacheKey];
+        return;
+    }
 
     NSString *songTitle = @"";
     [self effectiveLRCLIBMetadataForContext:context
@@ -654,7 +665,7 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
             return;
         }
         NSArray<CISongQuery *> *candidates =
-            [self LRCLIBQueryCandidatesForContext:latestContext];
+            [self LRCLIBReadingsForContext:latestContext];
         NSMutableArray<NSString *> *descriptions =
             [NSMutableArray arrayWithCapacity:candidates.count];
         for (CISongQuery *candidate in candidates) {

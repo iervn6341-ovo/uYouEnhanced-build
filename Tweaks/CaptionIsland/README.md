@@ -533,7 +533,9 @@ Tweaks/CaptionIsland/
 ├── *.m *.h *.xm            tweak 本體 → CaptionIsland.dylib
 ├── Shared/                 tweak 與 widget 共同編譯的 Activity payload 定義
 │   └── CICaptionActivityAttributes.swift
-├── Assets/CaptionIsland.bundle    在地化字串與資源，由根 Makefile 嵌入
+├── Assets/                 由根 Makefile 嵌入的 bundle
+│   ├── CaptionIsland.bundle        在地化字串與資源
+│   └── CaptionIslandLyrics.bundle  只裝播放器按鈕的兩個設定字串
 ├── Widget/                 → CaptionIslandWidget.appex（動態島與鎖定畫面 UI）
 └── Tests/                  Swift Package + ObjC smoke test，不編進成品
 ```
@@ -597,30 +599,10 @@ YouTube 的私有 class／selector 可能隨版本改動；更新 YouTube 後，
 
 ### 待實作
 
-- **播放器內的歌詞控制按鈕**。位置已決定：**右下角**，與 YouTimeStamp 的「複製
-  timestamp」同一排。走 YTVideoOverlay 註冊制（`initYTVideoOverlay`），不自己算佈局——
-  該框架以全螢幕按鈕的 frame 為錨點往左排，順序由使用者在設定裡調。按下後的面板需提供
-  三件事，全部以 YouTube video ID 持久保存並在重看時自動套用：
-
-  1. **歌詞選擇器**：列出這支影片的 LRCLIB 候選（歌名／歌手／長度差／有無時間軸），
-     可挑一筆或選「不使用歌詞」。目前 provider 只回傳最佳解，需要改為能回傳整份候選清單。
-  2. **秒數校正**：`+3`／`-3` 這類微調。後端已存在——`CIVideoOverride.captionAdvanceSeconds`
-     （範圍 ±30 秒），目前只能從設定頁輸入，這裡是把它搬到播放器內。
-  3. **字幕語言挑選**：LRCLIB 查無資料而改用 CC／ASR 時，從選單挑要用哪個語言
-     （「中文（繁體）」、「中文」、「英文」…）。後端也已存在——
-     `CIVideoOverride.captionLanguagePriorities` 與 `CILanguagePriorityViewController`。
-
-  待確認的實作細節：
-  - **`TweakKey` 不能用 `CaptionIsland`**。YTVideoOverlay 以 `_LOC(TweakBundle(name), @"ENABLED")`
-    取設定列標題，而它找 bundle 的方式與 `CIConstants.m` 完全相同，所以會取到
-    CaptionIsland.bundle 現有的 `ENABLED`（「啟用 Live Activity」），且 `POSITION` 不存在。
-    需要另一個 key 配一個只裝 `ENABLED`／`POSITION` 與圖示的小 bundle（bundle 名須等於 key）。
-  - 預設值需自行 `registerDefaults`：`-Enabled` 預設 `NO`、`-Position` 預設 `0`（右上），
-    要預設出現在右下角得比照 YouPiP 的做法。
-  - 面板外觀希望能用 iOS 26 的 Liquid Glass；需要先確認在 tweak 內能否取得該 API，
-    以及 17.5 最低版本下的降級路徑。
-  - 不需要新的 dylib 或 Makefile 條目：`CaptionIsland.dylib` 與 `YTVideoOverlay.dylib`
-    都已在 `_INJECT_DYLIBS`，`Bundles/*.bundle` 已是 wildcard。
+- **播放器面板的歌詞選擇器**。按鈕與面板本身已完成（見下節），但「列出這支影片的
+  LRCLIB 候選（歌名／歌手／長度差／有無時間軸），挑一筆或選不使用歌詞」這一項還沒做：
+  provider 目前只回傳最佳解，`bestCandidateFromObjects:` 評分完就把其餘候選丟掉。要做
+  這項得讓它保留整份候選並以 video ID 為鍵暫存，是實質的架構改動，因此與按鈕分階段。
 
 ### 已完成
 
@@ -646,6 +628,37 @@ YouTube 的私有 class／selector 可能隨版本改動；更新 YouTube 後，
   的實際成因。
 - **同一份回應做兩次評分**：嚴格通道保留歌手排序，寬鬆通道只用歌名與長度，不需額外請求。
 - **分隔符標題的反向重試**：第一種讀法查不到時，改以另一側作為歌名再搜尋一次。
+- **播放器內的 Caption Island 按鈕與快速面板**（`CIPlayerButton.xm`、
+  `CIPlayerControlPanel.m`）。預設出現在**右下角**，與 YouTimeStamp 的「複製 timestamp」
+  同一排。註冊走 YTVideoOverlay（`initYTVideoOverlay`），不自己算佈局：該框架已經擁有
+  位置（以全螢幕按鈕的 frame 為錨點往左排）、顯示／隱藏、全螢幕時的 superview 切換，
+  以及「啟用／位置／順序」三列設定；自己 hook player bar 就得重造這一切，還要對抗它裝的
+  六個可見性 hook。我們只提供一張圖與一個 tap handler。
+
+  面板目前提供兩項，都以 YouTube video ID 持久保存並在重看時自動套用：
+  **字幕時間校正**（±3 秒／±0.5 秒／重設，沿用設定頁同一個 ±30 秒上限）與
+  **YouTube 字幕語言挑選**（只列這支影片實際擁有的軌，同語言的 CC 與 ASR 去重，並標出
+  是 `CC` 還是 `ASR`，用詞與字幕上的來源標籤一致）。兩者的後端本來就存在
+  （`captionAdvanceSeconds`、`captionLanguagePriorities`），這裡是把既有能力搬到播放器內。
+
+  三個實作細節值得記下：
+
+  - **`TweakKey` 是 `CaptionIslandLyrics`，不能用 `CaptionIsland`。** YTVideoOverlay 以
+    `_LOC(TweakBundle(key), @"ENABLED")` 當設定列標題，而它找 bundle 的方式與
+    `CIConstants.m` 完全相同，所以沿用 tweak 自己的 key 會把按鈕開關標成
+    CaptionIsland.bundle 現有的 `ENABLED`——「啟用 Live Activity」——而且找不到 `POSITION`。
+    因此另外放了一個只裝這兩個字串的 `CaptionIslandLyrics.bundle`（bundle 名必須等於 key），
+    位置在 `Assets/`，所以根 Makefile 既有的 `$(wildcard Tweaks/CaptionIsland/Assets/*.bundle)`
+    就會嵌入它，不需要改 Makefile 或加 symlink。
+  - **預設值要自己 seed。** YTVideoOverlay 對新註冊的 tweak 預設 `-Enabled` 為 `NO`、
+    `-Position` 為 `0`（右上）。`registerDefaults` 把兩者改成啟用與右下角，且不會覆蓋
+    使用者已經選過的值。
+  - **圖示用 SF Symbol 而非打包的 PNG。** 少一個打包失敗模式（美術檔沒進 bundle 會留下
+    一顆看不見的按鈕），字重也本來就與旁邊的控制項一致。以 `AlwaysOriginal` 白色算繪，
+    因為 YTVideoOverlay 直接 `setImage:` 而不設 tint。
+  - **面板背景在 iOS 26 是真的 Liquid Glass。** `UIGlassEffect` 無法在編譯期具名（本
+    tweak 對 17.5 SDK 建置），所以以名稱查找並 `isKindOfClass:` 驗證後才使用；查找失敗
+    是所有現行系統的正常路徑，會退回 `UIBlurEffectStyleSystemMaterial`。
 - **一個標題送出多種讀法**：破折號兩側、以及 `「」`／`『』` 內的每一段，都成為
   候選讀法，依序搜尋並由影片長度挑出最佳結果。上限 4 個讀法，全部經過同一個速率限制器；
   找到帶時間軸且長度差 2.5 秒內的結果就立刻結束，所以常見情況仍然只花一個請求。

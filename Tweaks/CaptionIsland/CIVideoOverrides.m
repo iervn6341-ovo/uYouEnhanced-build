@@ -11,6 +11,8 @@ static NSString *const CIVideoOverrideAdvanceKey = @"captionAdvance";
 static NSString *const CIVideoOverrideLanguagesKey =
     @"captionLanguagePriorities";
 static NSString *const CIVideoOverrideOriginalTitleKey = @"originalTitle";
+static NSString *const CIVideoOverrideLyricsSuppressedKey =
+    @"lyricsSuppressed";
 static NSString *const CIVideoOverrideUpdatedAtKey = @"updatedAt";
 static const NSUInteger CIVideoOverrideMaximumEntries = 500;
 static const NSUInteger CIVideoOverrideMaximumVideoIDLength = 128;
@@ -23,6 +25,7 @@ static const NSTimeInterval CIVideoOverrideMaximumAdvance = 30.0;
 @property (nonatomic, copy, readwrite)
     NSArray<NSString *> *captionLanguagePriorities;
 @property (nonatomic, readwrite) NSTimeInterval captionAdvanceSeconds;
+@property (nonatomic, readwrite) BOOL lyricsSuppressed;
 @property (nonatomic, copy, readwrite) NSString *originalTitle;
 @property (nonatomic, readwrite) NSTimeInterval updatedAt;
 @end
@@ -150,6 +153,10 @@ CIVideoOverride * _Nullable CIVideoOverrideForVideoID(
             ? [[stored objectForKey:CIVideoOverrideAdvanceKey]
                 doubleValue] : 0
     );
+    result.lyricsSuppressed =
+        [[stored objectForKey:CIVideoOverrideLyricsSuppressedKey]
+            respondsToSelector:@selector(boolValue)] &&
+        [[stored objectForKey:CIVideoOverrideLyricsSuppressedKey] boolValue];
     result.updatedAt = [[stored objectForKey:CIVideoOverrideUpdatedAtKey]
         respondsToSelector:@selector(doubleValue)]
         ? [[stored objectForKey:CIVideoOverrideUpdatedAtKey]
@@ -160,6 +167,125 @@ CIVideoOverride * _Nullable CIVideoOverrideForVideoID(
     return result;
 }
 
+/// The one place a stored entry is created, merged, pruned or deleted.
+///
+/// Every writer used to repeat the read-merge-evict-write dance, which is how the
+/// language-priority writer ended up silently dropping a field the title writer
+/// kept. `mutate` receives the existing entry's decoded fields and returns the
+/// ones to store; an entry that ends up carrying no user decision at all is
+/// removed rather than written as an empty record.
+static void CIUpdateVideoOverride(
+    NSString * _Nullable videoID,
+    NSString * _Nullable originalTitle,
+    void (^mutate)(NSMutableDictionary<NSString *, id> *entry)
+) {
+    NSString *cleanVideoID = CIVideoOverrideCleanVideoID(videoID);
+    if (cleanVideoID.length == 0) return;
+    NSString *cleanOriginalTitle = CIVideoOverrideCleanString(
+        originalTitle,
+        CIVideoOverrideMaximumTextLength
+    );
+
+    @synchronized (NSUserDefaults.standardUserDefaults) {
+        NSMutableDictionary<NSString *, id> *all =
+            [CIVideoOverrideDictionary() mutableCopy];
+        BOOL isNewEntry = ![all objectForKey:cleanVideoID];
+        NSDictionary<NSString *, id> *existing =
+            [[all objectForKey:cleanVideoID] isKindOfClass:NSDictionary.class]
+                ? [all objectForKey:cleanVideoID] : @{};
+
+        // Decode every field first, so a writer that only cares about one of
+        // them cannot erase the others.
+        NSMutableDictionary<NSString *, id> *entry = [NSMutableDictionary
+            dictionaryWithCapacity:6];
+        entry[CIVideoOverrideTitleKey] = CIVideoOverrideCleanString(
+            existing[CIVideoOverrideTitleKey],
+            CIVideoOverrideMaximumTextLength
+        );
+        entry[CIVideoOverrideArtistKey] = CIVideoOverrideCleanString(
+            existing[CIVideoOverrideArtistKey],
+            CIVideoOverrideMaximumTextLength
+        );
+        entry[CIVideoOverrideAdvanceKey] = @(CIVideoOverrideClampedAdvance(
+            [existing[CIVideoOverrideAdvanceKey]
+                respondsToSelector:@selector(doubleValue)]
+                ? [existing[CIVideoOverrideAdvanceKey] doubleValue] : 0
+        ));
+        entry[CIVideoOverrideLanguagesKey] = CIVideoOverrideCleanLanguages(
+            existing[CIVideoOverrideLanguagesKey]
+        );
+        entry[CIVideoOverrideLyricsSuppressedKey] = @(
+            [existing[CIVideoOverrideLyricsSuppressedKey]
+                respondsToSelector:@selector(boolValue)] &&
+            [existing[CIVideoOverrideLyricsSuppressedKey] boolValue]
+        );
+        NSString *storedOriginalTitle = CIVideoOverrideCleanString(
+            existing[CIVideoOverrideOriginalTitleKey],
+            CIVideoOverrideMaximumTextLength
+        );
+        entry[CIVideoOverrideOriginalTitleKey] =
+            cleanOriginalTitle.length > 0
+                ? cleanOriginalTitle : storedOriginalTitle;
+
+        mutate(entry);
+
+        NSString *title = entry[CIVideoOverrideTitleKey];
+        NSString *artist = entry[CIVideoOverrideArtistKey];
+        NSArray *languages = entry[CIVideoOverrideLanguagesKey];
+        double advance = [entry[CIVideoOverrideAdvanceKey] doubleValue];
+        BOOL suppressed =
+            [entry[CIVideoOverrideLyricsSuppressedKey] boolValue];
+        if (title.length == 0 && artist.length == 0 &&
+            fabs(advance) < 0.001 && languages.count == 0 && !suppressed) {
+            [all removeObjectForKey:cleanVideoID];
+            [NSUserDefaults.standardUserDefaults
+                setObject:all.copy forKey:CIVideoOverridesDefaultsKey];
+            return;
+        }
+
+        if (isNewEntry && all.count >= CIVideoOverrideMaximumEntries) {
+            __block NSString *oldestVideoID;
+            __block NSTimeInterval oldestUpdate = DBL_MAX;
+            [all enumerateKeysAndObjectsUsingBlock:^(
+                NSString *candidateVideoID,
+                id candidateValue,
+                __unused BOOL *stop
+            ) {
+                NSDictionary<NSString *, id> *candidate =
+                    [candidateValue isKindOfClass:NSDictionary.class]
+                        ? (NSDictionary<NSString *, id> *)candidateValue : @{};
+                NSTimeInterval update =
+                    [candidate[CIVideoOverrideUpdatedAtKey]
+                        respondsToSelector:@selector(doubleValue)]
+                        ? [candidate[CIVideoOverrideUpdatedAtKey] doubleValue]
+                        : 0;
+                if (!isfinite(update) || update < 0) update = 0;
+                if (update < oldestUpdate) {
+                    oldestUpdate = update;
+                    oldestVideoID = candidateVideoID;
+                }
+            }];
+            if (oldestVideoID.length > 0) {
+                [all removeObjectForKey:oldestVideoID];
+            }
+        }
+
+        // An empty language list is omitted rather than stored, matching what
+        // earlier builds wrote so their entries stay byte-comparable.
+        if (languages.count == 0) {
+            [entry removeObjectForKey:CIVideoOverrideLanguagesKey];
+        }
+        if (!suppressed) {
+            [entry removeObjectForKey:CIVideoOverrideLyricsSuppressedKey];
+        }
+        entry[CIVideoOverrideUpdatedAtKey] =
+            @(NSDate.date.timeIntervalSince1970);
+        [all setObject:entry.copy forKey:cleanVideoID];
+        [NSUserDefaults.standardUserDefaults
+            setObject:all.copy forKey:CIVideoOverridesDefaultsKey];
+    }
+}
+
 void CISaveVideoOverride(
     NSString * _Nullable videoID,
     NSString * _Nullable searchTitle,
@@ -167,87 +293,18 @@ void CISaveVideoOverride(
     NSTimeInterval captionAdvanceSeconds,
     NSString * _Nullable originalTitle
 ) {
-    NSString *cleanVideoID = CIVideoOverrideCleanVideoID(videoID);
-    if (cleanVideoID.length == 0) return;
     NSString *cleanTitle = CIVideoOverrideCleanString(
-        searchTitle,
-        CIVideoOverrideMaximumTextLength
-    );
+        searchTitle, CIVideoOverrideMaximumTextLength);
     NSString *cleanArtist = CIVideoOverrideCleanString(
-        searchArtist,
-        CIVideoOverrideMaximumTextLength
-    );
-    NSString *cleanOriginalTitle = CIVideoOverrideCleanString(
-        originalTitle,
-        CIVideoOverrideMaximumTextLength
-    );
+        searchArtist, CIVideoOverrideMaximumTextLength);
     NSTimeInterval cleanAdvance =
         CIVideoOverrideClampedAdvance(captionAdvanceSeconds);
-
-    @synchronized (NSUserDefaults.standardUserDefaults) {
-        NSMutableDictionary<NSString *, id> *all =
-            [CIVideoOverrideDictionary() mutableCopy];
-        NSDictionary<NSString *, id> *existing =
-            [[all objectForKey:cleanVideoID]
-                isKindOfClass:NSDictionary.class]
-                ? [all objectForKey:cleanVideoID] : @{};
-        NSArray<NSString *> *languages =
-            CIVideoOverrideCleanLanguages(
-                existing[CIVideoOverrideLanguagesKey]
-            );
-        if (cleanTitle.length == 0 &&
-            cleanArtist.length == 0 &&
-            fabs(cleanAdvance) < 0.001 &&
-            languages.count == 0) {
-            [all removeObjectForKey:cleanVideoID];
-        } else {
-            if (![all objectForKey:cleanVideoID] &&
-                all.count >= CIVideoOverrideMaximumEntries) {
-                __block NSString *oldestVideoID;
-                __block NSTimeInterval oldestUpdate = DBL_MAX;
-                [all enumerateKeysAndObjectsUsingBlock:^(
-                    NSString *candidateVideoID,
-                    id candidateValue,
-                    __unused BOOL *stop
-                ) {
-                    NSDictionary<NSString *, id> *candidate =
-                        [candidateValue isKindOfClass:NSDictionary.class]
-                            ? (NSDictionary<NSString *, id> *)candidateValue
-                            : @{};
-                    NSTimeInterval update =
-                        [[candidate objectForKey:
-                            CIVideoOverrideUpdatedAtKey]
-                            respondsToSelector:@selector(doubleValue)]
-                            ? [[candidate objectForKey:
-                                CIVideoOverrideUpdatedAtKey]
-                                doubleValue] : 0;
-                    if (!isfinite(update) || update < 0) update = 0;
-                    if (update < oldestUpdate) {
-                        oldestUpdate = update;
-                        oldestVideoID = candidateVideoID;
-                    }
-                }];
-                if (oldestVideoID.length > 0) {
-                    [all removeObjectForKey:oldestVideoID];
-                }
-            }
-            NSMutableDictionary<NSString *, id> *entry = [@{
-                CIVideoOverrideTitleKey: cleanTitle,
-                CIVideoOverrideArtistKey: cleanArtist,
-                CIVideoOverrideAdvanceKey: @(cleanAdvance),
-                CIVideoOverrideOriginalTitleKey: cleanOriginalTitle,
-                CIVideoOverrideUpdatedAtKey:
-                    @(NSDate.date.timeIntervalSince1970),
-            } mutableCopy];
-            if (languages.count > 0) {
-                entry[CIVideoOverrideLanguagesKey] = languages;
-            }
-            [all setObject:entry.copy forKey:cleanVideoID];
-        }
-        [NSUserDefaults.standardUserDefaults
-            setObject:all.copy
-            forKey:CIVideoOverridesDefaultsKey];
-    }
+    CIUpdateVideoOverride(videoID, originalTitle,
+        ^(NSMutableDictionary<NSString *, id> *entry) {
+        entry[CIVideoOverrideTitleKey] = cleanTitle;
+        entry[CIVideoOverrideArtistKey] = cleanArtist;
+        entry[CIVideoOverrideAdvanceKey] = @(cleanAdvance);
+    });
 }
 
 void CISaveVideoCaptionLanguagePriorities(
@@ -255,92 +312,23 @@ void CISaveVideoCaptionLanguagePriorities(
     NSArray<NSString *> * _Nullable priorities,
     NSString * _Nullable originalTitle
 ) {
-    NSString *cleanVideoID = CIVideoOverrideCleanVideoID(videoID);
-    if (cleanVideoID.length == 0) return;
     NSArray<NSString *> *cleanLanguages =
         CIVideoOverrideCleanLanguages(priorities);
-    NSString *cleanOriginalTitle = CIVideoOverrideCleanString(
-        originalTitle,
-        CIVideoOverrideMaximumTextLength
-    );
+    CIUpdateVideoOverride(videoID, originalTitle,
+        ^(NSMutableDictionary<NSString *, id> *entry) {
+        entry[CIVideoOverrideLanguagesKey] = cleanLanguages;
+    });
+}
 
-    @synchronized (NSUserDefaults.standardUserDefaults) {
-        NSMutableDictionary<NSString *, id> *all =
-            [CIVideoOverrideDictionary() mutableCopy];
-        NSDictionary<NSString *, id> *existing =
-            [[all objectForKey:cleanVideoID]
-                isKindOfClass:NSDictionary.class]
-                ? [all objectForKey:cleanVideoID] : @{};
-        NSString *title = CIVideoOverrideCleanString(
-            existing[CIVideoOverrideTitleKey],
-            CIVideoOverrideMaximumTextLength
-        );
-        NSString *artist = CIVideoOverrideCleanString(
-            existing[CIVideoOverrideArtistKey],
-            CIVideoOverrideMaximumTextLength
-        );
-        NSTimeInterval advance = CIVideoOverrideClampedAdvance(
-            [existing[CIVideoOverrideAdvanceKey]
-                respondsToSelector:@selector(doubleValue)]
-                ? [existing[CIVideoOverrideAdvanceKey] doubleValue]
-                : 0
-        );
-        NSString *storedOriginalTitle = CIVideoOverrideCleanString(
-            existing[CIVideoOverrideOriginalTitleKey],
-            CIVideoOverrideMaximumTextLength
-        );
-        if (cleanOriginalTitle.length == 0) {
-            cleanOriginalTitle = storedOriginalTitle;
-        }
-
-        if (title.length == 0 && artist.length == 0 &&
-            fabs(advance) < 0.001 && cleanLanguages.count == 0) {
-            [all removeObjectForKey:cleanVideoID];
-        } else {
-            if (![all objectForKey:cleanVideoID] &&
-                all.count >= CIVideoOverrideMaximumEntries) {
-                __block NSString *oldestVideoID;
-                __block NSTimeInterval oldestUpdate = DBL_MAX;
-                [all enumerateKeysAndObjectsUsingBlock:^(
-                    NSString *candidateVideoID,
-                    id candidateValue,
-                    __unused BOOL *stop
-                ) {
-                    NSDictionary<NSString *, id> *candidate =
-                        [candidateValue isKindOfClass:NSDictionary.class]
-                            ? candidateValue : @{};
-                    NSTimeInterval update =
-                        [candidate[CIVideoOverrideUpdatedAtKey]
-                            respondsToSelector:@selector(doubleValue)]
-                            ? [candidate[CIVideoOverrideUpdatedAtKey]
-                                doubleValue] : 0;
-                    if (!isfinite(update) || update < 0) update = 0;
-                    if (update < oldestUpdate) {
-                        oldestUpdate = update;
-                        oldestVideoID = candidateVideoID;
-                    }
-                }];
-                if (oldestVideoID.length > 0) {
-                    [all removeObjectForKey:oldestVideoID];
-                }
-            }
-            NSMutableDictionary<NSString *, id> *entry = [@{
-                CIVideoOverrideTitleKey: title,
-                CIVideoOverrideArtistKey: artist,
-                CIVideoOverrideAdvanceKey: @(advance),
-                CIVideoOverrideOriginalTitleKey: cleanOriginalTitle,
-                CIVideoOverrideUpdatedAtKey:
-                    @(NSDate.date.timeIntervalSince1970),
-            } mutableCopy];
-            if (cleanLanguages.count > 0) {
-                entry[CIVideoOverrideLanguagesKey] = cleanLanguages;
-            }
-            [all setObject:entry.copy forKey:cleanVideoID];
-        }
-        [NSUserDefaults.standardUserDefaults
-            setObject:all.copy
-            forKey:CIVideoOverridesDefaultsKey];
-    }
+void CISaveVideoLyricsSuppressed(
+    NSString * _Nullable videoID,
+    BOOL suppressed,
+    NSString * _Nullable originalTitle
+) {
+    CIUpdateVideoOverride(videoID, originalTitle,
+        ^(NSMutableDictionary<NSString *, id> *entry) {
+        entry[CIVideoOverrideLyricsSuppressedKey] = @(suppressed);
+    });
 }
 
 void CIClearVideoOverride(NSString * _Nullable videoID) {

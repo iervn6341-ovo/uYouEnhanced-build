@@ -98,6 +98,41 @@ typedef void (^CILRCLIBCompletion)(CILRCLIBResult * _Nullable result,
 - (void)fetchLyricsForCandidates:(NSArray<CISongQuery *> *)candidates
                         duration:(NSTimeInterval)duration
                       completion:(CILRCLIBCompletion)completion;
+
+/// Searches every reading and returns everything LRCLIB holds, for the user to
+/// choose from by hand.
+///
+/// This differs from the automatic lookup in three deliberate ways, all of them
+/// because a person is about to read the list rather than a scorer:
+///
+/// * **No early exit.** Every reading is searched even after a good match, so the
+///   list is complete. That costs one rate-limited request per reading, which is
+///   acceptable for an action the user explicitly asked for and would not be for
+///   playback.
+/// * **Permissive filtering.** The title-similarity and duration gates that the
+///   automatic path uses are dropped. Those gates are exactly what rejected
+///   everything when the automatic lookup came back empty, so applying them here
+///   would show an empty list precisely when the feature is needed.
+/// * **Nothing is cached.** A browse must not teach the automatic path anything;
+///   only an explicit `pinResult:` does that.
+///
+/// Results are de-duplicated by record id across readings and ordered by how
+/// close their length is to the video.
+- (void)fetchAllMatchesForCandidates:(NSArray<CISongQuery *> *)candidates
+                            duration:(NSTimeInterval)duration
+                          completion:
+    (void (^)(NSArray<CILRCLIBResult *> *matches,
+              NSError * _Nullable error))completion;
+
+/// Makes `result` the answer the automatic lookup will give for this video.
+///
+/// Written under the same cache key `fetchLyricsForCandidates:` derives from the
+/// first reading, so the ordinary playback path finds it as a cache hit and needs
+/// no separate "user picked this" branch. Lyric cache entries never expire, so the
+/// choice survives until the user clears the cache or picks again.
+- (void)pinResult:(CILRCLIBResult *)result
+    forCandidates:(NSArray<CISongQuery *> *)candidates
+         duration:(NSTimeInterval)duration;
 - (void)cancel;
 @end
 

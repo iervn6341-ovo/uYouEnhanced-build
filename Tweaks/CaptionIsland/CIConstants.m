@@ -146,6 +146,62 @@ NSBundle *CIBundle(void) {
     return bundle;
 }
 
+NSString *const CIDiscardedTitleKeywordsKey =
+    @"CaptionIsland.DiscardedTitleKeywords";
+
+// Only the phrases that genuinely cannot be detected structurally. The Chinese
+// re-upload notes ("音频优化", "纯享版") used to be hardcoded here too and were
+// removed on request: they are channel habits, not a property of video titles, so
+// they belong in the user's own list.
+NSArray<NSString *> *CIDefaultDiscardedTitleKeywords(void) {
+    return @[
+        @"Official Music Video",
+        @"Official Lyric Video",
+        @"Official Video",
+        @"Music Video",
+        @"Lyric Video",
+        @"Official Audio",
+        @"Official Visualizer",
+    ];
+}
+
+NSArray<NSString *> *CIDiscardedTitleKeywords(void) {
+    id stored = [NSUserDefaults.standardUserDefaults
+        objectForKey:CIDiscardedTitleKeywordsKey];
+    if (![stored isKindOfClass:NSArray.class]) {
+        return CIDefaultDiscardedTitleKeywords();
+    }
+    NSMutableArray<NSString *> *keywords = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (id candidate in (NSArray *)stored) {
+        if (![candidate isKindOfClass:NSString.class]) continue;
+        NSString *keyword = [(NSString *)candidate
+            stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        // A very short phrase would match the tail of ordinary titles, and a very
+        // long one is a sentence rather than a suffix.
+        if (keyword.length < 2 || keyword.length > 64) continue;
+        NSString *identity = keyword.lowercaseString;
+        if ([seen containsObject:identity]) continue;
+        [seen addObject:identity];
+        [keywords addObject:keyword];
+        if (keywords.count >= 64) break;
+    }
+    // An empty stored list is a deliberate "strip nothing", not a missing value,
+    // so it is honoured rather than replaced by the defaults.
+    return keywords.copy;
+}
+
+void CISetDiscardedTitleKeywords(NSArray<NSString *> * _Nullable keywords) {
+    if (!keywords) {
+        [NSUserDefaults.standardUserDefaults
+            removeObjectForKey:CIDiscardedTitleKeywordsKey];
+        return;
+    }
+    [NSUserDefaults.standardUserDefaults
+        setObject:keywords forKey:CIDiscardedTitleKeywordsKey];
+}
+
 NSString *CILocalized(NSString *key, NSString *fallback) {
     NSBundle *bundle = CIBundle();
     return bundle ? [bundle localizedStringForKey:key value:fallback table:nil] : fallback;

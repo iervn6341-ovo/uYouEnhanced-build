@@ -10,6 +10,10 @@ NS_ASSUME_NONNULL_BEGIN
     NSArray<NSString *> *captionLanguagePriorities;
 /// Positive values display captions earlier; negative values display them later.
 @property (nonatomic, readonly) NSTimeInterval captionAdvanceSeconds;
+/// YES when the user inspected this video's LRCLIB matches and rejected all of
+/// them. Unlike a cached miss this never expires: it records a decision, not the
+/// outcome of a lookup, so the lookup is skipped entirely.
+@property (nonatomic, readonly) BOOL lyricsSuppressed;
 @property (nonatomic, copy, readonly) NSString *originalTitle;
 @property (nonatomic, readonly) NSTimeInterval updatedAt;
 @end
@@ -28,6 +32,13 @@ FOUNDATION_EXPORT void CISaveVideoOverride(
 FOUNDATION_EXPORT void CISaveVideoCaptionLanguagePriorities(
     NSString * _Nullable videoID,
     NSArray<NSString *> * _Nullable priorities,
+    NSString * _Nullable originalTitle
+);
+
+/// Records that this video should never be given LRCLIB lyrics, or lifts that.
+FOUNDATION_EXPORT void CISaveVideoLyricsSuppressed(
+    NSString * _Nullable videoID,
+    BOOL suppressed,
     NSString * _Nullable originalTitle
 );
 

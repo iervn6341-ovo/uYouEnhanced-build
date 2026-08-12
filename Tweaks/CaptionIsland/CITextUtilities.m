@@ -1,4 +1,5 @@
 #import "CITextUtilities.h"
+#import "CIConstants.h"
 
 static NSString *CIDecodeCommonEntities(NSString *text) {
     NSDictionary<NSString *, NSString *> *entities = @{
@@ -98,44 +99,85 @@ double CITextSimilarity(NSString *lhs, NSString *rhs) {
     return 1.0 - ((double)row[m] / (double)MAX(n, m));
 }
 
+// Bracket pairs whose contents are upload decoration rather than part of a track
+// name. 「」, 『』 and 《》 are deliberately absent: all three quote a title, and are
+// handled as a title source instead.
+//
+// This replaced a hand-maintained keyword list ("official", "歌詞", "音频优化", …).
+// The list was surgical because a single wrong guess used to be the only guess;
+// now that a lookup offers several readings and keeps the untouched title as a
+// last resort, removing a bracket that mattered costs one wasted request rather
+// than the whole match, and structural rules cover shapes nobody thought to add.
+static NSString *const CIDecorationOpenBrackets = @"([{（［｛【〔〈";
+static NSString *const CIDecorationCloseBrackets = @")]}）］｝】〕〉";
+// The same two sets as regex character-class bodies. "]" and "[" must be escaped
+// or the class terminates early and the rest becomes literal text — which is
+// exactly how the first version of this silently stripped nothing at all.
+static NSString *const CIDecorationOpenClass = @"(\\[{（［｛【〔〈";
+static NSString *const CIDecorationCloseClass = @")\\]}）］｝】〕〉";
+
+/// Strips bracketed decoration and any `feat.` credit.
+///
+/// Unbalanced brackets are left alone: an upload title truncated mid-bracket is
+/// far more likely than a title that means to open one, and deleting to the end of
+/// the string on a stray "(" would throw away the song name.
 static NSString *CIRemoveVideoDecorations(NSString *value) {
     if (value.length == 0) return @"";
-    // Only discard bracketed text when it is recognizably upload metadata.
-    // Artist identities such as SawanoHiroyuki[nZk] must remain searchable.
-    NSArray<NSString *> *patterns = @[
-        // A leading lenticular block is normally a franchise/category tag.
-        // CISongTitleFromVideoTitle restores the original if it was the whole
-        // title, so a real title such as 【アイドル】 is still preserved.
-        @"^\\s*【[^】\\r\\n]*】\\s*",
-        // Known decoration blocks can occur anywhere in an upload title.
-        @"(?i)[\\[［【][^\\]］】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|ライブ映像|ライブ|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\]］】\\r\\n]*[\\]］】]",
-        // Remove a trailing bracket only when it contains a known video,
-        // version, lyric, subtitle, or transliteration marker.
-        @"(?i)\\s*[\\[(（【][^\\])）】\\r\\n]*(?:official|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|full\\s*(?:ver(?:sion)?\\.?|song)|歌詞|歌词|パート分け|字幕|高音質|フル|ライブ映像|ライブ|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)[^\\])）】\\r\\n]*[\\])）】]\\s*$",
-        // Anime/program context following a clean song title is upload
-        // metadata, not part of the LRCLIB track name.
-        @"(?i)\\s*\\((?:tv\\s*)?(?:anime|アニメ)[^\\r\\n)]*(?:opening|ending|\\bop\\b|\\bed\\b|主題歌)[^\\r\\n)]*\\)\\s*$",
-        // A pipe normally separates the actual title from upload metadata.
-        // Unknown pipe suffixes are retained instead of being guessed away.
-        @"(?i)\\s*[|｜]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|ライブ映像|ライブ|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
-        // The same metadata is sometimes introduced with a dash.
-        @"(?i)\\s*[-–—]\\s*(?:full\\s*(?:ver(?:sion)?\\.?|song)|official(?:\\s*(?:music\\s*)?video)?|music\\s*video|lyric\\s*video|mv|pv|lyrics?|audio|visualizer|hd|4k|歌詞|歌词|パート分け|字幕|高音質|フル|ライブ映像|ライブ|完整版|動態歌詞|动态歌词|中文歌詞|中文歌词|中日字幕|romaji)(?:\\b|[\\s.：:【\\[(（/]).*$",
-        // Common re-upload notes, optionally preceded by a take/track number.
-        @"(?i)\\s+(?:\\d+\\s*)?(?:音[频頻](?:优化|優化)|纯享版|純享版).*$",
-        // A bare trailing video-format phrase with no bracket or separator, as
-        // in "AiNA THE END / On The Way Official Music Video". Anchored to the
-        // end and limited to unambiguous phrases, so a song genuinely called
-        // e.g. "Video" or "Audio" is not truncated.
-        @"(?i)\\s+(?:official\\s*(?:music\\s*|lyric\\s*)?video|music\\s*video|lyric\\s*video|official\\s*audio|official\\s*visualizer)\\s*$"
-    ];
-    NSString *result = value;
-    for (NSString *pattern in patterns) {
-        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
-        result = [regex stringByReplacingMatchesInString:result options:0 range:NSMakeRange(0, result.length) withTemplate:@""];
-        result = CICleanCaptionText(result);
+    NSString *result = CICleanCaptionText(value);
+
+    NSString *pattern = [NSString stringWithFormat:
+        @"[%@][^%@%@]*[%@]",
+        CIDecorationOpenClass, CIDecorationOpenClass,
+        CIDecorationCloseClass, CIDecorationCloseClass];
+    NSRegularExpression *brackets = [NSRegularExpression
+        regularExpressionWithPattern:pattern options:0 error:nil];
+    // Innermost-first, repeatedly: one pass cannot clear 【[MV]】, and the inner
+    // pair has to go before the outer one becomes a balanced match.
+    for (NSUInteger pass = 0; pass < 4; pass++) {
+        NSString *next = [brackets
+            stringByReplacingMatchesInString:result options:0
+                                       range:NSMakeRange(0, result.length)
+                                withTemplate:@""];
+        if ([next isEqualToString:result]) break;
+        result = next;
     }
-    NSCharacterSet *edgeSeparators = [NSCharacterSet characterSetWithCharactersInString:@" \t-|｜–—:："];
-    result = [result stringByTrimmingCharactersInSet:edgeSeparators];
+
+    // The only keyword rule left in code, and it is user-editable.
+    //
+    // A bare trailing "Official Music Video" carries no bracket, no separator and
+    // no other structural marker, so nothing but the words themselves identifies
+    // it — and left in place it reliably defeats the title match. Anchored to the
+    // end so the words alone can never remove a whole title, and driven by
+    // CIDiscardedTitleKeywords() so the user can add the phrases their own
+    // uploaders use without a rebuild.
+    //
+    // feat./ft. is deliberately NOT handled here. Stripping it before the
+    // separator split threw away everything after the credit, which for
+    // "HoneyWorks feat.ハコニワリリィ - 質問、恋って何でしょうか?" was the song
+    // itself. It is offered as an extra reading instead; see CISongQueryCandidates.
+    for (NSString *keyword in CIDiscardedTitleKeywords()) {
+        NSString *escaped =
+            [NSRegularExpression escapedPatternForString:keyword];
+        NSRegularExpression *anchored = [NSRegularExpression
+            regularExpressionWithPattern:[NSString stringWithFormat:
+                @"(?i)\\s*[-–—/|｜+]?\\s*%@\\s*$", escaped]
+                                   options:0 error:nil];
+        if (!anchored) continue;
+        result = [anchored stringByReplacingMatchesInString:result options:0
+            range:NSMakeRange(0, result.length) withTemplate:@""];
+    }
+
+    result = CICleanCaptionText(result);
+    // Orphaned bracket characters left by nesting or by a truncated upload title.
+    NSCharacterSet *orphans = [NSCharacterSet characterSetWithCharactersInString:
+        [CIDecorationOpenBrackets
+            stringByAppendingString:CIDecorationCloseBrackets]];
+    result = [[result componentsSeparatedByCharactersInSet:orphans]
+        componentsJoinedByString:@" "];
+    NSCharacterSet *edgeSeparators = [NSCharacterSet
+        characterSetWithCharactersInString:@" \t-|｜–—:：/／、,，"];
+    result = [CICleanCaptionText(result)
+        stringByTrimmingCharactersInSet:edgeSeparators];
     return CICleanCaptionText(result);
 }
 
@@ -208,7 +250,8 @@ static BOOL CIExtractQuotedSongMetadata(NSString *value,
                                         NSString **artist) {
     if (value.length == 0) return NO;
     NSRegularExpression *quotes = [NSRegularExpression
-        regularExpressionWithPattern:@"「([^」\\r\\n]+)」|『([^』\\r\\n]+)』"
+        regularExpressionWithPattern:
+            @"「([^」\\r\\n]+)」|『([^』\\r\\n]+)』|《([^》\\r\\n]+)》"
                                options:0
                                  error:nil];
     NSArray<NSTextCheckingResult *> *matches =
@@ -221,6 +264,7 @@ static BOOL CIExtractQuotedSongMetadata(NSString *value,
     for (NSTextCheckingResult *match in matches) {
         NSRange titleRange = [match rangeAtIndex:1];
         if (titleRange.location == NSNotFound) titleRange = [match rangeAtIndex:2];
+        if (titleRange.location == NSNotFound) titleRange = [match rangeAtIndex:3];
         if (titleRange.location == NSNotFound || titleRange.length == 0) continue;
 
         NSString *prefix = [value substringToIndex:match.range.location];
@@ -370,7 +414,7 @@ void CISplitSongMetadata(NSString *videoTitle,
     if (artist) *artist = author;
 }
 
-const NSUInteger CISongQueryMaximumCandidates = 4;
+const NSUInteger CISongQueryMaximumCandidates = 6;
 
 @interface CISongQuery ()
 @property (nonatomic, copy) NSString *title;
@@ -390,77 +434,68 @@ const NSUInteger CISongQueryMaximumCandidates = 4;
 }
 @end
 
-// A dash side often carries the song name followed by notes about the upload:
-// "世末歌者「那怕只 一瞬的 奇蹟。」 [ Chinese Style ] tk推薦 益笙菌". A CJK
-// bracket or a square bracket at that position never begins a track name, so
-// everything from there on is commentary and the leading run is what LRCLIB
-// should be asked about.
-//
-// This deliberately truncates an identity such as SawanoHiroyuki[nZk] to its
-// first half. That only ever happens on an extra candidate — the committed
-// reading is generated separately and untouched — and searching a truncated
-// artist as a track name produces a miss, not a wrong match, because candidate
-// scoring still requires the returned track name to resemble the query.
-static NSString *CILeadingTitleFragment(NSString *value) {
-    NSString *result = CICleanCaptionText(value);
-    if (result.length == 0) return @"";
-    NSRange opening = [result rangeOfCharacterFromSet:
-        [NSCharacterSet characterSetWithCharactersInString:@"「『【［《[｛"]];
-    if (opening.location != NSNotFound && opening.location > 0) {
-        result = [result substringToIndex:opening.location];
-    }
-    result = CIRemoveVideoDecorations(result);
-    NSCharacterSet *edges = [NSCharacterSet characterSetWithCharactersInString:
-        @" \t-|｜/／–—:：、,，"];
-    return [CICleanCaptionText(result)
-        stringByTrimmingCharactersInSet:edges];
-}
 
-// The two sides of the first dash that genuinely separates two halves of a
-// title, or an empty array when there is no such dash.
+// The two sides of the first separator that genuinely divides a title, or an
+// empty array when there is none.
 //
-// An ASCII hyphen has to be surrounded by whitespace to count, so "Re-Bell",
-// "K-POP" and "lo-fi" stay intact. An en or em dash is not used inside words,
-// so it counts unspaced, but never between digits — "2019—2020" is a range.
-static NSArray<NSString *> *CIDashSeparatedSides(NSString *value) {
+// Which side is the song is not decidable from the title — "AiNA THE END / On The
+// Way" is artist-first and "風になる / Nachoneko" is title-first — so this only
+// reports the split and lets the caller offer both readings.
+//
+// An ASCII hyphen must be surrounded by whitespace, so "Re-Bell", "K-POP" and
+// "lo-fi" stay intact. An en or em dash is not used inside words so it counts
+// unspaced, but never between digits, keeping "2019—2020" a range. Slashes and
+// pipes count either way; a slash between digits is a date, not a separator.
+static NSArray<NSString *> *CISeparatedSides(NSString *value,
+                                            NSString *separatorPattern) {
     NSString *searchValue = CICleanCaptionText(value);
     if (searchValue.length == 0) return @[];
     NSRegularExpression *separator = [NSRegularExpression
-        regularExpressionWithPattern:
-            @"\\s+[-–—]\\s+|(?<=[^\\s\\d])[–—](?=[^\\s\\d])"
-                               options:0
-                                 error:nil];
+        regularExpressionWithPattern:separatorPattern options:0 error:nil];
     NSTextCheckingResult *match =
-        [separator firstMatchInString:searchValue
-                             options:0
+        [separator firstMatchInString:searchValue options:0
                                range:NSMakeRange(0, searchValue.length)];
     if (!match) return @[];
-    NSString *left =
-        CILeadingTitleFragment([searchValue substringToIndex:match.range.location]);
-    NSString *right =
-        CILeadingTitleFragment([searchValue substringFromIndex:NSMaxRange(match.range)]);
+    NSString *left = CIRemoveVideoDecorations(
+        [searchValue substringToIndex:match.range.location]);
+    NSString *right = CIRemoveVideoDecorations(
+        [searchValue substringFromIndex:NSMaxRange(match.range)]);
     if (left.length == 0 || right.length == 0) return @[];
     return @[left, right];
 }
 
-// Every 「」 or 『』 run in the title, in the order they appear.
+// Dash, slash and pipe all divide a title the same way, so they share one rule.
+static NSString *const CIPrimarySeparatorPattern =
+    @"\\s+[-–—+]\\s+|(?<=[^\\s\\d])[–—](?=[^\\s\\d])"
+     @"|\\s*[/／](?![/\\d])(?<![:/\\d][/／])\\s*|\\s*[|｜]\\s*"
+     @"|(?<=[^\\s\\d])\\+(?=[^\\s\\d])";
+
+// A colon usually introduces a credit or a role rather than dividing title from
+// artist ("SawanoHiroyuki[nZk]:mizuki", "OP：曲名"), so its readings rank below
+// the primary separators rather than replacing them.
+static NSString *const CIColonSeparatorPattern = @"\\s*[:：]\\s*";
+
+// Every 「」, 『』 or 《》 run in the title, in the order they appear.
 //
-// 《》 is deliberately not included. It is the Chinese convention for naming a
-// work, but on a music upload that work is as often the anime, film or album the
-// song belongs to as the song itself, and nothing in the title distinguishes the
-// two reliably enough to spend a request on.
-static NSArray<NSString *> *CIBracketedFragments(NSString *value) {
+// These three are the only brackets treated as a title source; every other pair is
+// discarded outright by CIRemoveVideoDecorations. 《》 is the Chinese convention for
+// naming a work, and on a music upload that work is usually the song. When it is
+// not — "《鬼滅之刃》主題曲 紅蓮華" names the anime — the separator readings still
+// cover the real track name, which is why this can be a first guess rather than a
+// decision.
+static NSArray<NSString *> *CIQuotedFragments(NSString *value) {
     if (value.length == 0) return @[];
-    NSRegularExpression *brackets = [NSRegularExpression
-        regularExpressionWithPattern:@"「([^」\\r\\n]+)」|『([^』\\r\\n]+)』"
-                               options:0
-                                 error:nil];
+    NSRegularExpression *quotes = [NSRegularExpression
+        regularExpressionWithPattern:
+            @"「([^」\\r\\n]+)」|『([^』\\r\\n]+)』|《([^》\\r\\n]+)》"
+                               options:0 error:nil];
     NSMutableArray<NSString *> *fragments = [NSMutableArray array];
     for (NSTextCheckingResult *match in
-         [brackets matchesInString:value options:0
-                            range:NSMakeRange(0, value.length)]) {
+         [quotes matchesInString:value options:0
+                          range:NSMakeRange(0, value.length)]) {
         NSRange range = [match rangeAtIndex:1];
         if (range.location == NSNotFound) range = [match rangeAtIndex:2];
+        if (range.location == NSNotFound) range = [match rangeAtIndex:3];
         if (range.location == NSNotFound || range.length == 0) continue;
         NSString *fragment =
             CICleanCaptionText([value substringWithRange:range]);
@@ -479,8 +514,8 @@ NSArray<CISongQuery *> *CISongQueryCandidates(NSString *videoTitle,
     ^(NSString *title, NSString *artist, NSString *origin) {
         if (queries.count >= CISongQueryMaximumCandidates) return;
         NSString *cleanTitle = CICleanCaptionText(title ?: @"");
-        // A run this long is a sentence or a channel blurb, not a track name,
-        // and searching it only spends a rate-limited request.
+        // A run this long is a sentence or a channel blurb, not a track name, and
+        // searching it only spends a rate-limited request.
         if (cleanTitle.length == 0 || cleanTitle.length > 200) return;
         NSString *identity = CINormalizedText(cleanTitle);
         if (identity.length == 0 || [seen containsObject:identity]) return;
@@ -490,31 +525,79 @@ NSArray<CISongQuery *> *CISongQueryCandidates(NSString *videoTitle,
                                                origin:origin]];
     };
 
-    // The committed reading always leads, so a title that already resolves
-    // keeps resolving on the first request with no extra traffic.
+    // 1. A quoted run is the strongest signal a title can carry: the uploader
+    //    marked the song themselves. The committed parse already prefers it, and
+    //    it leads here so a title that resolves today still costs one request.
     NSString *parsedTitle = @"";
     NSString *parsedArtist = @"";
     CISplitSongMetadata(original, videoAuthor, &parsedTitle, &parsedArtist);
-    add(parsedTitle, parsedArtist, @"parsed");
+    NSArray<NSString *> *quoted = CIQuotedFragments(original);
+    if (quoted.count > 0) {
+        add(parsedTitle, parsedArtist, @"parsed");
+        for (NSString *fragment in quoted) add(fragment, @"", @"quoted");
+    } else {
+        add(parsedTitle, parsedArtist, @"parsed");
+    }
 
-    // Both sides of a dash, because the title never says which side is the
-    // song. "封茗囧菌x雙笙 - 世末歌者" is artist-first and "風になる - Nachoneko"
-    // is title-first, so offer both readings and let the track length decide.
-    // The right side leads: "Artist - Song" is the more common shape, and each
-    // side is handed the other as its artist, which is a genuine ranking signal
-    // whenever the reading happens to be the correct one.
-    NSArray<NSString *> *sides = CIDashSeparatedSides(original);
+    // 2. Both sides of a dash, slash or pipe. The right side leads because
+    //    "Artist - Song" is the more common shape, and each side is handed the
+    //    other as its artist, which is a real ranking signal when the reading is
+    //    the correct one.
+    NSArray<NSString *> *sides =
+        CISeparatedSides(original, CIPrimarySeparatorPattern);
     if (sides.count == 2) {
-        add(sides[1], sides[0], @"dash-right");
-        add(sides[0], sides[1], @"dash-left");
+        add(sides[1], sides[0], @"separator-right");
+        add(sides[0], sides[1], @"separator-left");
+        // A side that also carries a quoted run keeps that run, because 「」 is a
+        // title source and must not be stripped. But then the side reads
+        // "世末歌者「那怕只 一瞬的 奇蹟。」 tk推薦 益笙菌" and matches nothing, so the
+        // run before the quote is offered too. That is where the song name sits
+        // when an uploader writes "artist - song「tagline」extra notes".
+        for (NSString *side in sides) {
+            NSRange quote = [side rangeOfCharacterFromSet:
+                [NSCharacterSet characterSetWithCharactersInString:@"「『《"]];
+            if (quote.location == NSNotFound || quote.location == 0) continue;
+            add(CIRemoveVideoDecorations([side substringToIndex:quote.location]),
+                @"", @"separator-head");
+        }
     }
 
-    // Anything the title placed in a work-naming bracket. The quoted reading is
-    // usually already the committed one, but when several brackets exist only
-    // the best-scoring one was chosen, and the others are still worth a search.
-    for (NSString *fragment in CIBracketedFragments(original)) {
-        add(fragment, @"", @"bracket");
+    // 3. A colon's readings, ranked after the primary separators.
+    NSArray<NSString *> *colonSides =
+        CISeparatedSides(original, CIColonSeparatorPattern);
+    if (colonSides.count == 2) {
+        add(colonSides[1], colonSides[0], @"colon-right");
+        add(colonSides[0], colonSides[1], @"colon-left");
     }
+
+    // 4. A feat./ft. credit dropped. This is a reading, not a rewrite: stripping
+    //    it in the shared cleaner ran before the separator split and threw away
+    //    everything after the credit — for
+    //    "HoneyWorks feat.ハコニワリリィ - 質問、恋って何でしょうか?" that was the
+    //    song. Both separator sides are offered above with the credit intact, and
+    //    this adds the shortened form for the case where LRCLIB stores the track
+    //    without it.
+    NSRegularExpression *feat = [NSRegularExpression
+        regularExpressionWithPattern:
+            @"(?i)\\s*[-–—/|｜+]?\\s*\\b(?:feat|ft|featuring)\\b\\.?\\s*.*$"
+                               options:0 error:nil];
+    for (NSString *reading in queries.count > 0
+             ? [queries valueForKey:@"title"] : @[]) {
+        if (![reading isKindOfClass:NSString.class]) continue;
+        NSString *withoutCredit = [feat
+            stringByReplacingMatchesInString:reading options:0
+                                       range:NSMakeRange(0, reading.length)
+                                withTemplate:@""];
+        if ([withoutCredit isEqualToString:reading]) continue;
+        add(CIRemoveVideoDecorations(withoutCredit), @"", @"no-feat");
+    }
+
+    // 5. The title with nothing removed, as a last resort. This is what makes
+    //    blanket bracket removal safe: when a bracket held part of the real name
+    //    — "(Don't Fear) The Reaper", "Mine (Taylor's Version)" — the untouched
+    //    title is still searched, so an over-eager strip costs a request instead
+    //    of the match.
+    add(original, @"", @"verbatim");
 
     // Never hand back an empty list: the caller has no other way to search.
     if (queries.count == 0) {

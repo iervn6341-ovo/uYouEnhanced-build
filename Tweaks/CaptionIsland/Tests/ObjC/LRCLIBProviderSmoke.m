@@ -2,6 +2,7 @@
 #import <math.h>
 #import "../../CILRCLIBProvider.h"
 #import "../../CITextUtilities.h"
+#import "../../CIConstants.h"
 
 @interface CILRCLIBProvider (SmokeTesting)
 - (CILRCLIBResult *)lyricsResultFromSearchData:(NSData *)data
@@ -123,9 +124,11 @@ int main(void) {
             @"common YouTube decorations should be removed before lookup");
         CIAssert([splitArtist isEqualToString:@"Example Artist"],
             @"Unicode title separators should provide the canonical artist");
+        // A pipe is a separator now rather than a keyword-stripped suffix, so the
+        // committed title keeps both halves and the reading list splits them.
         CIAssert([CISongTitleFromVideoTitle(
             @"【ウマ娘】Precious Star Dreamer | Full Ver.【パート分け/歌詞】")
-            isEqualToString:@"Precious Star Dreamer"],
+            isEqualToString:@"Precious Star Dreamer | Full Ver."],
             @"series labels and known version/lyric suffixes should be removed");
         CIAssert([CISongTitleFromVideoTitle(@"Precious Star Dreamer【歌詞・パート分け】")
             isEqualToString:@"Precious Star Dreamer"],
@@ -209,20 +212,53 @@ int main(void) {
         CIAssert([splitTitle isEqualToString:@"Never Looking Back"] &&
             [splitArtist isEqualToString:@"Example Artist"],
             @"a YouTube Topic channel may provide a reliable artist");
+        // The Chinese re-upload notes are no longer a built-in keyword rule: they
+        // are a channel habit, so they belong in the user's editable list. The
+        // committed title keeps them, and "+" being a separator means the reading
+        // list still offers the halves.
         CIAssert([CISongTitleFromVideoTitle(
             @"【赛马娘】GIRLS' LEGEND U 18 音频优化+米浴纯享版")
-            isEqualToString:@"GIRLS' LEGEND U"],
-            @"franchise and re-upload notes should be removed from a song title");
+            isEqualToString:@"GIRLS' LEGEND U 18 音频优化+米浴纯享版"],
+            @"a franchise label is structural and removed; a bare re-upload note is not");
+        CISetDiscardedTitleKeywords(@[@"音频优化+米浴纯享版"]);
+        CIAssert([CISongTitleFromVideoTitle(
+            @"【赛马娘】GIRLS' LEGEND U 18 音频优化+米浴纯享版")
+            isEqualToString:@"GIRLS' LEGEND U 18"],
+            @"a user-supplied keyword should strip the suffix it names");
+        CIAssert([CISongTitleFromVideoTitle(@"音频优化+米浴纯享版")
+            isEqualToString:@"音频优化+米浴纯享版"],
+            @"a keyword must never delete an entire title");
+        CISetDiscardedTitleKeywords(nil);
+        // The same re-upload notes wrapped in a bracket. Only the bare form was
+        // recognized before, so a parenthesized one reached LRCLIB as part of the
+        // track name and the lookup missed.
+        // Bracketed, so no keyword is needed at all: every bracket pair except
+        // 「」/『』 is discarded structurally.
+        CIAssert([CISongTitleFromVideoTitle(
+            @"【赛马娘】ユメヲカケル！  (米浴纯享版)")
+            isEqualToString:@"ユメヲカケル！"],
+            @"a bracketed note is discarded without any keyword involved");
+        CIAssert([CISongTitleFromVideoTitle(
+            @"【赛马娘】ユメヲカケル！（音频优化）")
+            isEqualToString:@"ユメヲカケル！"],
+            @"full-width brackets are discarded the same way");
+        // A tilde is not a bracket and never decoration; subtitles use it.
+        CIAssert([CISongTitleFromVideoTitle(@"歌名〜サブタイトル〜")
+            isEqualToString:@"歌名〜サブタイトル〜"],
+            @"tildes must be preserved");
 
         // 《》 is deliberately not an extraction source: the work it names is as
         // often the anime, film or album as the song. Pinned so reinstating it
         // has to be a deliberate change rather than a side effect.
-        CIAssert(![CISongTitleFromVideoTitle(@"竖屏｜《トレセン音頭》花钻Ver")
+        // 《》 is a title source alongside 「」 and 『』, not decoration.
+        CIAssert([CISongTitleFromVideoTitle(@"竖屏｜《トレセン音頭》花钻Ver")
             isEqualToString:@"トレセン音頭"],
-            @"a 《》 block must not be treated as the track name");
-        CIAssert(CISongQueryCandidates(@"竖屏｜《トレセン音頭》花钻Ver", @"")
-            .count == 1,
-            @"a 《》 block must not add a reading of its own");
+            @"a 《》 block names the track and leads the readings");
+        // When the bracket names the work rather than the song, the separator
+        // readings still reach the real track name, so a first guess is safe.
+        CIAssert(CISongQueryCandidates(
+            @"《鬼滅之刃》主題曲 紅蓮華 / LiSA", @"").count >= 3,
+            @"an anime-naming bracket must not be the only reading offered");
 
         // Several readings of one title, most likely first. Nothing here reaches
         // the network: the assertions pin which queries would be issued.
@@ -233,12 +269,15 @@ int main(void) {
         for (CISongQuery *reading in readings) {
             [readingTitles addObject:reading.title];
         }
-        CIAssert([readingTitles isEqualToArray:@[
-            @"那怕只 一瞬的 奇蹟。", @"世末歌者", @"封茗囧菌x雙笙",
-        ]], @"a quoted title over a dash should offer the quote and both dash sides");
-        CIAssert([readings[1].artist isEqualToString:@"封茗囧菌x雙笙"] &&
-            [readings[2].artist isEqualToString:@"世末歌者"],
-            @"each dash side should carry the other side as its ranking artist");
+        CIAssert([readingTitles containsObject:@"那怕只 一瞬的 奇蹟。"],
+            @"the quoted run is the strongest signal and must be offered");
+        CIAssert([readingTitles containsObject:@"世末歌者"],
+            @"the run before a quote on a separator side is where the song name sits");
+        CIAssert([readingTitles containsObject:@"封茗囧菌x雙笙"],
+            @"both separator sides must be offered, since neither is knowably the song");
+        CIAssert([readingTitles.lastObject isEqualToString:
+            @"封茗囧菌x雙笙 - 世末歌者「那怕只 一瞬的 奇蹟。」 [ High Quality Lyrics ][ Chinese Style ] tk推薦 益笙菌"],
+            @"the untouched title must remain as the last resort, so stripping is never fatal");
         CIAssert(CISongQueryCandidates(@"Re-Bell", @"").count == 1,
             @"an unspaced ASCII hyphen inside a word must not be split");
         CIAssert(CISongQueryCandidates(@"", @"").count == 0,

@@ -17,6 +17,8 @@
 #import "CIConstants.h"
 #import "CILogStore.h"
 #import "CIPlaybackState.h"
+#import "CIGearMenuItem.h"
+#import "CIPlayerButton.h"
 #import "CIProcessDiagnostics.h"
 #import "CIToastPresenter.h"
 #import "CIYouTubeInspector.h"
@@ -2333,6 +2335,8 @@ static void CIStopPlayback(YTPlayerViewController *controller) {
     CIInstallLaunchPrefetchRetentionProbe();
     Class playerClass = NSClassFromString(@"YTPlayerViewController");
     if (!playerClass) return;
+    CIInstallPlayerButton();
+    CIInstallGearMenuItem();
     (void)CIBackgroundPlaybackMonitor.sharedMonitor;
     CIPiPActiveVideoByController =
         [NSMapTable weakToWeakObjectsMapTable];

@@ -11,6 +11,9 @@
 #import "CIBackgroundPlaybackMonitor.h"
 #import "CIConstants.h"
 #import "CILanguagePriorityViewController.h"
+#import "CIGearMenuItem.h"
+#import "CIPlayerButton.h"
+#import "CITitleKeywordViewController.h"
 #import "CILRCLIBCacheViewController.h"
 #import "CILRCLIBProvider.h"
 #import "CILogViewController.h"
@@ -902,6 +905,128 @@ static YTSettingsViewController *CISettingsControllerForManager(id manager) {
             return YES;
         }];
     [items addObject:durationLimit];
+
+    // The in-player button. Its placement is still carried out by YTVideoOverlay —
+    // that framework owns the whole bottom-right row and is the only thing that can
+    // keep several tweaks' buttons from overlapping — but the two settings the user
+    // cares about are surfaced here rather than under "Player buttons". Both rows
+    // read and write YTVideoOverlay's own NSUserDefaults keys, so the two screens
+    // can never disagree, and the registration passes ToggleKey so YTVideoOverlay
+    // does not also draw its own duplicate switch.
+    [items addObject:[%c(YTSettingsSectionItem)
+        switchItemWithTitle:CILocalized(
+            @"PLAYER_BUTTON", @"Show button in the player")
+        titleDescription:CILocalized(
+            @"PLAYER_BUTTON_DESCRIPTION",
+            @"Adds a Caption Island button to the player controls. Tapping it opens the lyric, timing and caption-language panel for the current video."
+        )
+        accessibilityIdentifier:@"CaptionIsland.PlayerButton"
+        switchOn:CIPlayerButtonEnabled()
+        switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
+            CISetPlayerButtonEnabled(enabled);
+            return YES;
+        } settingItemId:0]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(
+            @"PLAYER_BUTTON_POSITION", @"Button position")
+        titleDescription:CILocalized(
+            @"PLAYER_BUTTON_POSITION_DESCRIPTION",
+            @"Bottom right sits beside the fullscreen button; top right sits with autoplay and captions. Order among several tweaks' buttons is set under Player buttons."
+        )
+        accessibilityIdentifier:@"CaptionIsland.PlayerButtonPosition"
+        detailTextBlock:^NSString * {
+            return CIPlayerButtonPosition_() == CIPlayerButtonPositionBottom
+                ? CILocalized(@"PLAYER_BUTTON_BOTTOM", @"Bottom right")
+                : CILocalized(@"PLAYER_BUTTON_TOP", @"Top right");
+        }
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            NSArray<YTSettingsSectionItem *> *rows = @[
+                [%c(YTSettingsSectionItem)
+                    checkmarkItemWithTitle:CILocalized(
+                        @"PLAYER_BUTTON_TOP", @"Top right")
+                    selectBlock:^BOOL(
+                        __unused YTSettingsCell *row,
+                        __unused NSUInteger index
+                    ) {
+                        CISetPlayerButtonPosition(
+                            CIPlayerButtonPositionTop);
+                        [settingsViewController reloadData];
+                        return YES;
+                    }],
+                [%c(YTSettingsSectionItem)
+                    checkmarkItemWithTitle:CILocalized(
+                        @"PLAYER_BUTTON_BOTTOM", @"Bottom right")
+                    selectBlock:^BOOL(
+                        __unused YTSettingsCell *row,
+                        __unused NSUInteger index
+                    ) {
+                        CISetPlayerButtonPosition(
+                            CIPlayerButtonPositionBottom);
+                        [settingsViewController reloadData];
+                        return YES;
+                    }],
+            ];
+            YTSettingsPickerViewController *picker =
+                [[%c(YTSettingsPickerViewController) alloc]
+                    initWithNavTitle:CILocalized(
+                        @"PLAYER_BUTTON_POSITION", @"Button position")
+                    pickerSectionTitle:nil
+                    rows:rows
+                    selectedItemIndex:
+                        CIPlayerButtonPosition_() == CIPlayerButtonPositionBottom
+                            ? 1 : 0
+                    parentResponder:
+                        [settingsViewController parentResponder]];
+            [settingsViewController pushViewController:picker];
+            return YES;
+        }]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        switchItemWithTitle:CILocalized(
+            @"GEAR_MENU_ITEM", @"Show in the player settings menu")
+        titleDescription:CILocalized(
+            @"GEAR_MENU_ITEM_DESCRIPTION",
+            @"Adds a Caption Island row to the gear menu beside Quality and Playback speed. Independent of the player button, so either or both can be used."
+        )
+        accessibilityIdentifier:@"CaptionIsland.GearMenuItem"
+        switchOn:CIGearMenuItemEnabled()
+        switchBlock:^BOOL(__unused YTSettingsCell *cell, BOOL enabled) {
+            CISetGearMenuItemEnabled(enabled);
+            return YES;
+        } settingItemId:0]];
+
+    [items addObject:[%c(YTSettingsSectionItem)
+        itemWithTitle:CILocalized(
+            @"TITLE_KEYWORDS", @"Discarded title phrases")
+        titleDescription:CILocalized(
+            @"TITLE_KEYWORDS_DESCRIPTION_SHORT",
+            @"Phrases removed from the end of a video title before it is searched, such as a channel's own re-upload note."
+        )
+        accessibilityIdentifier:@"CaptionIsland.TitleKeywords"
+        detailTextBlock:^NSString * {
+            NSUInteger count = CIDiscardedTitleKeywords().count;
+            return [NSString stringWithFormat:CILocalized(
+                @"TITLE_KEYWORDS_COUNT", @"%lu phrases"),
+                (unsigned long)count];
+        }
+        selectBlock:^BOOL(
+            __unused YTSettingsCell *cell,
+            __unused NSUInteger sectionItemIndex
+        ) {
+            CITitleKeywordViewController *controller =
+                [[CITitleKeywordViewController alloc]
+                    initWithCompletion:^{
+                        [CICaptionCoordinator.sharedCoordinator
+                            reloadPreferences];
+                        [settingsViewController reloadData];
+                    }];
+            [settingsViewController pushViewController:controller];
+            return YES;
+        }]];
 
     [items addObject:[%c(YTSettingsSectionItem)
         switchItemWithTitle:CILocalized(@"EXTERNAL_LYRICS", @"LRCLIB lyrics")
