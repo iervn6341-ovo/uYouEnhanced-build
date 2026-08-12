@@ -89,6 +89,8 @@ jobs:
             Tweaks/CaptionIsland/CIYouTubeInspector.m \
             Tweaks/CaptionIsland/CIModels.m \
             Tweaks/CaptionIsland/CITextUtilities.m \
+            Tweaks/CaptionIsland/CIConstants.m \
+            Tweaks/CaptionIsland/CILogStore.m \
             -o "$smoke_dir/YouTubeInspectorSmoke"
           "$smoke_dir/YouTubeInspectorSmoke"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
@@ -113,6 +115,8 @@ jobs:
             Tweaks/CaptionIsland/Tests/ObjC/VideoOverridesSmoke.m \
             Tweaks/CaptionIsland/CIVideoOverrides.m \
             Tweaks/CaptionIsland/CITextUtilities.m \
+            Tweaks/CaptionIsland/CIConstants.m \
+            Tweaks/CaptionIsland/CILogStore.m \
             -o "$smoke_dir/VideoOverridesSmoke"
           "$smoke_dir/VideoOverridesSmoke"
           xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
