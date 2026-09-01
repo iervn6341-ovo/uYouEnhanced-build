@@ -10,6 +10,8 @@ static NSString *const CIVideoOverrideArtistKey = @"searchArtist";
 static NSString *const CIVideoOverrideAdvanceKey = @"captionAdvance";
 static NSString *const CIVideoOverrideLanguagesKey =
     @"captionLanguagePriorities";
+static NSString *const CIVideoOverrideCaptionSourceKey =
+    @"captionSourcePreference";
 static NSString *const CIVideoOverrideOriginalTitleKey = @"originalTitle";
 static NSString *const CIVideoOverrideLyricsSuppressedKey =
     @"lyricsSuppressed";
@@ -24,6 +26,8 @@ static const NSTimeInterval CIVideoOverrideMaximumAdvance = 30.0;
 @property (nonatomic, copy, readwrite) NSString *searchArtist;
 @property (nonatomic, copy, readwrite)
     NSArray<NSString *> *captionLanguagePriorities;
+@property (nonatomic, readwrite)
+    CIVideoCaptionSourcePreference captionSourcePreference;
 @property (nonatomic, readwrite) NSTimeInterval captionAdvanceSeconds;
 @property (nonatomic, readwrite) BOOL lyricsSuppressed;
 @property (nonatomic, copy, readwrite) NSString *originalTitle;
@@ -109,6 +113,20 @@ static NSArray<NSString *> *CIVideoOverrideCleanLanguages(
     return languages.copy;
 }
 
+static CIVideoCaptionSourcePreference CIVideoOverrideCleanCaptionSource(
+    id _Nullable value
+) {
+    NSInteger rawValue = [value respondsToSelector:@selector(integerValue)]
+        ? [value integerValue] : CIVideoCaptionSourcePreferenceInherit;
+    switch (rawValue) {
+        case CIVideoCaptionSourcePreferenceManualCC:
+        case CIVideoCaptionSourcePreferenceASR:
+            return (CIVideoCaptionSourcePreference)rawValue;
+        default:
+            return CIVideoCaptionSourcePreferenceInherit;
+    }
+}
+
 static NSDictionary<NSString *, id> *CIVideoOverrideDictionary(void) {
     id value = [NSUserDefaults.standardUserDefaults
         objectForKey:CIVideoOverridesDefaultsKey];
@@ -143,6 +161,9 @@ CIVideoOverride * _Nullable CIVideoOverrideForVideoID(
         CIVideoOverrideCleanLanguages(
             stored[CIVideoOverrideLanguagesKey]
         );
+    result.captionSourcePreference = CIVideoOverrideCleanCaptionSource(
+        stored[CIVideoOverrideCaptionSourceKey]
+    );
     result.originalTitle = CIVideoOverrideCleanString(
         stored[CIVideoOverrideOriginalTitleKey],
         CIVideoOverrideMaximumTextLength
@@ -197,7 +218,7 @@ static void CIUpdateVideoOverride(
         // Decode every field first, so a writer that only cares about one of
         // them cannot erase the others.
         NSMutableDictionary<NSString *, id> *entry = [NSMutableDictionary
-            dictionaryWithCapacity:6];
+            dictionaryWithCapacity:7];
         entry[CIVideoOverrideTitleKey] = CIVideoOverrideCleanString(
             existing[CIVideoOverrideTitleKey],
             CIVideoOverrideMaximumTextLength
@@ -213,6 +234,11 @@ static void CIUpdateVideoOverride(
         ));
         entry[CIVideoOverrideLanguagesKey] = CIVideoOverrideCleanLanguages(
             existing[CIVideoOverrideLanguagesKey]
+        );
+        entry[CIVideoOverrideCaptionSourceKey] = @(
+            CIVideoOverrideCleanCaptionSource(
+                existing[CIVideoOverrideCaptionSourceKey]
+            )
         );
         entry[CIVideoOverrideLyricsSuppressedKey] = @(
             [existing[CIVideoOverrideLyricsSuppressedKey]
@@ -232,11 +258,17 @@ static void CIUpdateVideoOverride(
         NSString *title = entry[CIVideoOverrideTitleKey];
         NSString *artist = entry[CIVideoOverrideArtistKey];
         NSArray *languages = entry[CIVideoOverrideLanguagesKey];
+        CIVideoCaptionSourcePreference captionSource =
+            CIVideoOverrideCleanCaptionSource(
+                entry[CIVideoOverrideCaptionSourceKey]
+            );
         double advance = [entry[CIVideoOverrideAdvanceKey] doubleValue];
         BOOL suppressed =
             [entry[CIVideoOverrideLyricsSuppressedKey] boolValue];
         if (title.length == 0 && artist.length == 0 &&
-            fabs(advance) < 0.001 && languages.count == 0 && !suppressed) {
+            fabs(advance) < 0.001 && languages.count == 0 &&
+            captionSource == CIVideoCaptionSourcePreferenceInherit &&
+            !suppressed) {
             [all removeObjectForKey:cleanVideoID];
             [NSUserDefaults.standardUserDefaults
                 setObject:all.copy forKey:CIVideoOverridesDefaultsKey];
@@ -274,6 +306,9 @@ static void CIUpdateVideoOverride(
         // earlier builds wrote so their entries stay byte-comparable.
         if (languages.count == 0) {
             [entry removeObjectForKey:CIVideoOverrideLanguagesKey];
+        }
+        if (captionSource == CIVideoCaptionSourcePreferenceInherit) {
+            [entry removeObjectForKey:CIVideoOverrideCaptionSourceKey];
         }
         if (!suppressed) {
             [entry removeObjectForKey:CIVideoOverrideLyricsSuppressedKey];
@@ -317,6 +352,34 @@ void CISaveVideoCaptionLanguagePriorities(
     CIUpdateVideoOverride(videoID, originalTitle,
         ^(NSMutableDictionary<NSString *, id> *entry) {
         entry[CIVideoOverrideLanguagesKey] = cleanLanguages;
+        if (cleanLanguages.count == 0) {
+            entry[CIVideoOverrideCaptionSourceKey] = @(
+                CIVideoCaptionSourcePreferenceInherit
+            );
+        }
+    });
+}
+
+void CISaveVideoCaptionSelection(
+    NSString * _Nullable videoID,
+    NSArray<NSString *> * _Nullable priorities,
+    CIVideoCaptionSourcePreference sourcePreference,
+    NSString * _Nullable originalTitle
+) {
+    NSArray<NSString *> *cleanLanguages =
+        CIVideoOverrideCleanLanguages(priorities);
+    CIVideoCaptionSourcePreference cleanSource =
+        CIVideoOverrideCleanCaptionSource(@(sourcePreference));
+    // A source without a language cannot identify a track. Treat malformed
+    // callers as an explicit request to inherit instead of storing a state the
+    // player can never fulfil.
+    if (cleanLanguages.count == 0) {
+        cleanSource = CIVideoCaptionSourcePreferenceInherit;
+    }
+    CIUpdateVideoOverride(videoID, originalTitle,
+        ^(NSMutableDictionary<NSString *, id> *entry) {
+        entry[CIVideoOverrideLanguagesKey] = cleanLanguages;
+        entry[CIVideoOverrideCaptionSourceKey] = @(cleanSource);
     });
 }
 

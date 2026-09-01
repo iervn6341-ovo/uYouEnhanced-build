@@ -69,8 +69,16 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
 @property (nonatomic, strong, nullable) CILRCLIBProvider *browseProvider;
 @property (nonatomic, copy, nullable)
     NSArray<CILRCLIBResult *> *browseMatches;
+/// The one parsed reading (or manually entered title) chosen for the current
+/// browse. Playback still pins the selected result to the video's normal query.
+@property (nonatomic, copy, nullable)
+    NSArray<CISongQuery *> *activeBrowseReadings;
+@property (nonatomic, copy, nullable) NSString *activeBrowseTitle;
 @property (nonatomic) BOOL browsing;
 @property (nonatomic, copy, nullable) NSString *browseMessage;
+- (void)presentBrowseMenu;
+- (void)presentCustomBrowsePrompt;
+- (void)beginBrowseWithReadings:(NSArray<CISongQuery *> *)readings;
 @end
 
 @implementation CIPlayerControlPanelViewController
@@ -133,24 +141,35 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
     NSArray<CICaptionTrack *> *tracks = self.selectableTracks;
     NSInteger index = sender.tag;
     NSArray<NSString *> *priorities = @[];
+    CIVideoCaptionSourcePreference sourcePreference =
+        CIVideoCaptionSourcePreferenceInherit;
     if (index >= 0 && index < (NSInteger)tracks.count) {
-        priorities = @[tracks[(NSUInteger)index].languageCode ?: @""];
+        CICaptionTrack *track = tracks[(NSUInteger)index];
+        priorities = @[track.languageCode ?: @""];
+        sourcePreference = track.isAutomatic
+            ? CIVideoCaptionSourcePreferenceASR
+            : CIVideoCaptionSourcePreferenceManualCC;
     }
-    CISaveVideoCaptionLanguagePriorities(
+    CISaveVideoCaptionSelection(
         self.context.videoID,
         priorities,
+        sourcePreference,
         self.context.title
     );
     [CICaptionCoordinator.sharedCoordinator reloadPreferences];
-    CIShowToast(priorities.count > 0
-        ? CILocalized(
-            @"VIDEO_LANGUAGE_PRIORITY_SAVED",
-            @"Saved the language order for this video."
-          )
-        : CILocalized(
+    if (priorities.count > 0) {
+        CICaptionTrack *track = tracks[(NSUInteger)index];
+        CIShowToast([NSString stringWithFormat:CILocalized(
+            @"PANEL_CAPTION_SELECTED",
+            @"This video now uses %@ · %@ before LRCLIB."
+        ), CICaptionLanguageTitle(track.languageCode),
+           track.isAutomatic ? @"ASR" : @"CC"]);
+    } else {
+        CIShowToast(CILocalized(
             @"VIDEO_LANGUAGE_PRIORITY_RESET_DONE",
             @"This video now uses the global language order."
-          ));
+        ));
+    }
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
@@ -160,19 +179,21 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
 
 #pragma mark - Caption tracks
 
-/// The video's own caption tracks, de-duplicated by language.
+/// The video's own caption tracks, de-duplicated by language and source kind.
 ///
 /// A video routinely carries both a manual and an automatic track for one
-/// language, and both would set the same override, so only the first of each
-/// language is offered. Auto-translated tracks never reach here: the inspector
-/// rejects `tlang` URLs before a context is built.
+/// language. They must remain separate choices because the player's selection is
+/// also a per-video source override. Auto-translated tracks never reach here: the
+/// inspector rejects `tlang` URLs before a context is built.
 - (NSArray<CICaptionTrack *> *)selectableTracks {
     NSMutableArray<CICaptionTrack *> *tracks = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
     for (CICaptionTrack *track in self.context.captionTracks) {
         NSString *code = track.languageCode ?: @"";
-        if (code.length == 0 || [seen containsObject:code]) continue;
-        [seen addObject:code];
+        NSString *identity = [NSString stringWithFormat:@"%@|%d",
+            code.lowercaseString, track.isAutomatic];
+        if (code.length == 0 || [seen containsObject:identity]) continue;
+        [seen addObject:identity];
         [tracks addObject:track];
     }
     return tracks;
@@ -385,11 +406,10 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
 
     if (self.browsing) {
         UILabel *progress = [UILabel new];
-        NSUInteger count = self.readings.count;
         progress.text = [NSString stringWithFormat:CILocalized(
-            @"PANEL_LYRICS_SEARCHING",
-            @"Searching %lu reading(s) of the title…"
-        ), (unsigned long)count];
+            @"PANEL_LYRICS_SEARCHING_QUERY",
+            @"Searching LRCLIB for “%@”…"
+        ), self.activeBrowseTitle ?: @""];
         progress.font = [UIFont systemFontOfSize:13];
         progress.textColor = UIColor.secondaryLabelColor;
         progress.numberOfLines = 0;
@@ -403,11 +423,11 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
 
     if (!self.browseMatches) {
         UILabel *hint = [UILabel new];
-        // The cost is stated up front because it is unusually slow for a tap:
-        // one rate-limited request per reading, deliberately not short-circuited.
+        // One selected reading is searched at a time so the user controls both
+        // the query and the number of rate-limited requests this action spends.
         hint.text = CILocalized(
             @"PANEL_LYRICS_HINT",
-            @"List every result LRCLIB holds for this title, including each way the title can be split. Takes a few seconds."
+            @"Choose one possible song title to list every LRCLIB result, or enter a title yourself."
         );
         hint.font = [UIFont systemFontOfSize:12];
         hint.textColor = UIColor.tertiaryLabelColor;
@@ -415,7 +435,7 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
         [self.lyricSection addArrangedSubview:hint];
         [self.lyricSection addArrangedSubview:[self pillButtonWithTitle:
             CILocalized(@"PANEL_LYRICS_SEARCH", @"Search all results")
-            action:@selector(startBrowse) tag:0 selected:NO]];
+            action:@selector(presentBrowseMenu) tag:0 selected:NO]];
         [self.lyricSection addArrangedSubview:[self pillButtonWithTitle:
             CILocalized(@"PANEL_LYRICS_SUPPRESS", @"Show no lyrics for this video")
             action:@selector(suppressLyrics) tag:0 selected:NO]];
@@ -447,6 +467,9 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
             index++;
         }
     }
+    [self.lyricSection addArrangedSubview:[self pillButtonWithTitle:
+        CILocalized(@"PANEL_LYRICS_SEARCH_AGAIN", @"Search another title")
+        action:@selector(presentBrowseMenu) tag:0 selected:NO]];
     [self.lyricSection addArrangedSubview:[self pillButtonWithTitle:
         CILocalized(@"PANEL_LYRICS_SUPPRESS", @"Show no lyrics for this video")
         action:@selector(suppressLyrics) tag:0 selected:NO]];
@@ -483,11 +506,117 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
     return button;
 }
 
-- (void)startBrowse {
+- (NSString *)browseMenuTitleForReading:(CISongQuery *)reading {
+    NSString *label = reading.artist.length > 0
+        ? [NSString stringWithFormat:@"%@ — %@", reading.title, reading.artist]
+        : reading.title;
+    if (label.length > 110) {
+        label = [[label substringToIndex:109] stringByAppendingString:@"…"];
+    }
+    return label;
+}
+
+- (void)presentBrowseMenu {
     NSArray<CISongQuery *> *readings = self.readings;
     if (readings.count == 0) return;
+    UIAlertController *menu = [UIAlertController
+        alertControllerWithTitle:CILocalized(
+            @"PANEL_LYRICS_CHOOSE_QUERY",
+            @"Choose a song title to search"
+        )
+        message:CILocalized(
+            @"PANEL_LYRICS_CHOOSE_QUERY_HINT",
+            @"Only the selected interpretation is searched."
+        )
+        preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    for (CISongQuery *reading in readings) {
+        [menu addAction:[UIAlertAction
+            actionWithTitle:[self browseMenuTitleForReading:reading]
+            style:UIAlertActionStyleDefault
+            handler:^(__unused UIAlertAction *action) {
+                // Browsing is intentionally title-only. The artist shown in the
+                // menu explains the parser's reading, but retaining it here would
+                // let the provider perform its automatic reversed retry and search
+                // a second candidate the user did not choose.
+                CISongQuery *selected = [CISongQuery
+                    queryWithTitle:reading.title
+                             artist:@""
+                             origin:reading.origin];
+                [weakSelf beginBrowseWithReadings:@[selected]];
+            }]];
+    }
+    [menu addAction:[UIAlertAction
+        actionWithTitle:CILocalized(
+            @"PANEL_LYRICS_CUSTOM_QUERY", @"Enter a song title…")
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            // Let the action sheet finish its automatic dismissal before the
+            // text-entry alert is presented by the same controller.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                (int64_t)(0.25 * NSEC_PER_SEC)),
+                dispatch_get_main_queue(), ^{
+                [weakSelf presentCustomBrowsePrompt];
+            });
+        }]];
+    [menu addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"CANCEL", @"Cancel")
+        style:UIAlertActionStyleCancel handler:nil]];
+    UIPopoverPresentationController *popover = menu.popoverPresentationController;
+    if (popover) {
+        popover.sourceView = self.view;
+        popover.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
+            CGRectGetMaxY(self.view.bounds) - 1, 1, 1);
+        popover.permittedArrowDirections = 0;
+    }
+    [self presentViewController:menu animated:YES completion:nil];
+}
+
+- (void)presentCustomBrowsePrompt {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:CILocalized(
+            @"PANEL_LYRICS_CUSTOM_QUERY", @"Enter a song title…")
+        message:CILocalized(
+            @"PANEL_LYRICS_CUSTOM_QUERY_HINT",
+            @"Enter the track name LRCLIB should search."
+        )
+        preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = self.readings.firstObject.title ?: @"";
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.returnKeyType = UIReturnKeySearch;
+    }];
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"CANCEL", @"Cancel")
+        style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction
+        actionWithTitle:CILocalized(@"SEARCH", @"Search")
+        style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *action) {
+            NSString *title = CICleanCaptionText(alert.textFields.firstObject.text);
+            if (title.length == 0) {
+                CIShowToast(CILocalized(
+                    @"PANEL_LYRICS_CUSTOM_QUERY_EMPTY",
+                    @"Enter a song title to search."
+                ));
+                return;
+            }
+            CISongQuery *reading = [CISongQuery queryWithTitle:title
+                artist:@"" origin:@"manual"];
+            [weakSelf beginBrowseWithReadings:@[reading]];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)beginBrowseWithReadings:(NSArray<CISongQuery *> *)readings {
+    if (readings.count == 0) return;
+    self.activeBrowseReadings = readings.copy;
+    self.activeBrowseTitle = readings.firstObject.title ?: @"";
     self.browsing = YES;
     self.browseMatches = nil;
+    self.browseMessage = nil;
     [self rebuildLyricSection];
     if (!self.browseProvider) self.browseProvider = [CILRCLIBProvider new];
     __weak typeof(self) weakSelf = self;
@@ -511,10 +640,20 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
     if (index < 0 || index >= (NSInteger)self.browseMatches.count) return;
     CILRCLIBResult *match = self.browseMatches[(NSUInteger)index];
     // Picking also lifts a previous "no lyrics" decision; the two are the same
-    // choice expressed two ways and leaving both set would be contradictory.
+    // choice expressed two ways and leaving both set would be contradictory. It
+    // also clears a CC/ASR panel override: explicitly choosing an LRCLIB row must
+    // not leave an older YouTube-source choice silently winning on reload.
     CISaveVideoLyricsSuppressed(self.context.videoID, NO, self.context.title);
+    CISaveVideoCaptionSelection(
+        self.context.videoID,
+        @[],
+        CIVideoCaptionSourcePreferenceInherit,
+        self.context.title
+    );
+    NSArray<CISongQuery *> *pinReadings = self.readings;
+    if (pinReadings.count == 0) pinReadings = self.activeBrowseReadings;
     [self.browseProvider pinResult:match
-                    forCandidates:self.readings
+                    forCandidates:pinReadings
                          duration:self.context.duration];
     [CICaptionCoordinator.sharedCoordinator reloadPreferences];
     CIShowToast([NSString stringWithFormat:
@@ -559,6 +698,8 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
 
     NSArray<NSString *> *saved = self.override.captionLanguagePriorities;
     NSString *selectedCode = saved.firstObject;
+    CIVideoCaptionSourcePreference selectedSource =
+        self.override.captionSourcePreference;
     NSInteger index = 0;
     for (CICaptionTrack *track in tracks) {
         NSString *name = CICaptionLanguageTitle(track.languageCode);
@@ -566,8 +707,12 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
         // its consequence are described in the same vocabulary.
         NSString *label = [NSString stringWithFormat:@"%@  ·  %@",
             name, track.isAutomatic ? @"ASR" : @"CC"];
+        CIVideoCaptionSourcePreference trackSource = track.isAutomatic
+            ? CIVideoCaptionSourcePreferenceASR
+            : CIVideoCaptionSourcePreferenceManualCC;
         BOOL selected = selectedCode.length > 0 &&
-            [track.languageCode isEqualToString:selectedCode];
+            [track.languageCode isEqualToString:selectedCode] &&
+            selectedSource == trackSource;
         UIButton *button = [self pillButtonWithTitle:label
             action:@selector(selectLanguage:) tag:index selected:selected];
         button.contentHorizontalAlignment =
@@ -579,7 +724,8 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
     UIButton *inherit = [self pillButtonWithTitle:
         CILocalized(@"LANGUAGE_PRIORITY_INHERIT", @"Use global order")
         action:@selector(selectLanguage:) tag:-1
-        selected:selectedCode.length == 0];
+        selected:selectedCode.length == 0 &&
+            selectedSource == CIVideoCaptionSourcePreferenceInherit];
     inherit.contentHorizontalAlignment =
         UIControlContentHorizontalAlignmentLeft;
     [self.content addArrangedSubview:inherit];

@@ -48,6 +48,18 @@ int main(void) {
             isEqualToArray:@[@"ja", @"en", @"zh-Hant"]],
             @"a per-video language priority should round-trip");
 
+        CISaveVideoCaptionSelection(
+            videoID,
+            @[@"ja"],
+            CIVideoCaptionSourcePreferenceASR,
+            @"Never Looking Back [Official]"
+        );
+        stored = CIVideoOverrideForVideoID(videoID);
+        CIAssert(stored.captionSourcePreference ==
+                CIVideoCaptionSourcePreferenceASR &&
+                [stored.captionLanguagePriorities isEqualToArray:@[@"ja"]],
+            @"the exact ASR selection should round-trip with its language");
+
         CISaveVideoOverride(
             videoID,
             @"Never Looking Back",
@@ -61,8 +73,11 @@ int main(void) {
             @"positive caption advance should clamp to 30 seconds"
         );
         CIAssert([stored.captionLanguagePriorities
-            isEqualToArray:@[@"ja", @"en", @"zh-Hant"]],
+            isEqualToArray:@[@"ja"]],
             @"saving lyric metadata must preserve caption-language priorities");
+        CIAssert(stored.captionSourcePreference ==
+                CIVideoCaptionSourcePreferenceASR,
+            @"saving lyric metadata must preserve the selected caption source");
 
         CISaveVideoOverride(
             videoID,
@@ -85,8 +100,21 @@ int main(void) {
         stored = CIVideoOverrideForVideoID(videoID);
         CIAssert(stored != nil &&
             stored.captionLanguagePriorities.count == 0 &&
+            stored.captionSourcePreference ==
+                CIVideoCaptionSourcePreferenceInherit &&
             [stored.searchTitle isEqualToString:@"Never Looking Back"],
-            @"returning to global languages must preserve lyric overrides");
+            @"returning to global caption settings must preserve lyric overrides");
+
+        CISaveVideoCaptionSelection(
+            videoID,
+            @[],
+            CIVideoCaptionSourcePreferenceManualCC,
+            @"Never Looking Back [Official]"
+        );
+        stored = CIVideoOverrideForVideoID(videoID);
+        CIAssert(stored.captionSourcePreference ==
+                CIVideoCaptionSourcePreferenceInherit,
+            @"a source without a language must safely collapse to inherit");
 
         CIClearVideoOverride(videoID);
         CIAssert(CIVideoOverrideForVideoID(videoID) == nil,

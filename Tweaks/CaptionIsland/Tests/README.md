@@ -55,6 +55,7 @@ swift test --package-path uYouEnhanced-build/Tweaks/CaptionIsland/Tests
 - 成功結果與短期「查無結果」都會寫入測試專用暫存快取，並可由新的 provider 實例讀回；
 - 只使用清理後的影片標題查詢時，不送出 YouTube 頻道名稱，並依時長選擇候選；
 - 移除影片標題內所有 `[…]`／`【…】` 區塊及已知版本、歌詞、字幕 suffix；
+- 同一個 `【中文 English】` 區塊會把中英文歌名拆成第二順位候選，單語裝飾不會誤入候選；
 - 同步版本的時長明顯較差時，保留最接近的 `plainLyrics`；
 - 排除錯歌手、未知時長、過短、裁切後不完整及 placeholder-only 的候選；
 - LRC 會轉成可跟隨 media time 的 cue；

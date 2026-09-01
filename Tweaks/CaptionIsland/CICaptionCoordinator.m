@@ -274,6 +274,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         : CICaptionLanguagePriorities();
 }
 
+- (CIVideoCaptionSourcePreference)captionSourcePreferenceForContext:
+    (CIVideoContext *)context {
+    return CIVideoOverrideForVideoID(context.videoID).captionSourcePreference;
+}
+
 - (NSString *)cacheKeyForContext:(CIVideoContext *)context {
     BOOL external = CIPreferenceBool(CIExternalLyricsEnabledKey, YES);
     NSString *queryTitle = @"";
@@ -286,12 +291,13 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     NSString *languages = [[self
         captionLanguagePrioritiesForContext:context]
         componentsJoinedByString:@","];
-    return [NSString stringWithFormat:@"%@|%@|%@|%d|%ld|%@|%@|%.3f",
+    return [NSString stringWithFormat:@"%@|%@|%@|%d|%ld|%ld|%@|%@|%.3f",
         context.videoID,
         languages,
         CILRCLIBBaseURL(),
         external,
         (long)CISourcePriority(),
+        (long)override.captionSourcePreference,
         CINormalizedText(queryTitle),
         CINormalizedText(queryArtist),
         override.captionAdvanceSeconds];
@@ -464,7 +470,10 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
     BOOL ASRTrackChanged = newASR &&
         ![newASR.baseURL isEqualToString:oldASR.baseURL];
     hasRicherTracks = hasRicherTracks || manualTrackChanged || ASRTrackChanged;
+    CIVideoCaptionSourcePreference videoSourcePreference =
+        [self captionSourcePreferenceForContext:context];
     BOOL YouTubeFirst =
+        videoSourcePreference != CIVideoCaptionSourcePreferenceInherit ||
         CISourcePriority() == CISourcePriorityYouTubeFirst;
     BOOL installedLRCLIB =
         self.source == CICaptionSourceLRCLIBSynced ||
@@ -587,7 +596,23 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
             @"Applying %.3fs caption advance for video %@ (positive is earlier).",
             self.activeCaptionAdvanceSeconds, context.videoID);
     }
-    if (CISourcePriority() == CISourcePriorityYouTubeFirst) {
+    videoSourcePreference = override.captionSourcePreference;
+    if (videoSourcePreference ==
+        CIVideoCaptionSourcePreferenceManualCC) {
+        CIPipelineLog(CILogLevelInfo,
+            @"Per-video source override: selected YouTube CC → LRCLIB fallback.");
+        [self loadManualCCForContext:context
+                         generation:generation
+                           cacheKey:cacheKey
+                    ASRFallbackCues:@[]];
+    } else if (videoSourcePreference ==
+               CIVideoCaptionSourcePreferenceASR) {
+        CIPipelineLog(CILogLevelInfo,
+            @"Per-video source override: selected YouTube ASR → LRCLIB fallback.");
+        [self loadASRForContext:context
+                    generation:generation
+                      cacheKey:cacheKey];
+    } else if (CISourcePriority() == CISourcePriorityYouTubeFirst) {
         CIPipelineLog(CILogLevelInfo,
             @"Source priority: YouTube CC → YouTube ASR → LRCLIB.");
         [self loadManualCCForContext:context
@@ -727,7 +752,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                            generation:(NSUInteger)generation
                              cacheKey:(NSString *)cacheKey {
     if (generation != self.generation) return;
-    if (CISourcePriority() == CISourcePriorityYouTubeFirst &&
+    BOOL videoPrefersYouTube =
+        [self captionSourcePreferenceForContext:context] !=
+            CIVideoCaptionSourcePreferenceInherit;
+    if ((videoPrefersYouTube ||
+         CISourcePriority() == CISourcePriorityYouTubeFirst) &&
         self.youtubeSourcesExhausted) {
         [self finishWithoutCaptionsForGeneration:generation];
         return;
@@ -742,7 +771,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                             generation:(NSUInteger)generation
                               cacheKey:(NSString *)cacheKey {
     if (generation != self.generation) return;
-    if (CISourcePriority() == CISourcePriorityYouTubeFirst &&
+    BOOL videoPrefersYouTube =
+        [self captionSourcePreferenceForContext:context] !=
+            CIVideoCaptionSourcePreferenceInherit;
+    if ((videoPrefersYouTube ||
+         CISourcePriority() == CISourcePriorityYouTubeFirst) &&
         CIPreferenceBool(CIExternalLyricsEnabledKey, YES) &&
         !self.youtubeSourcesExhausted) {
         self.youtubeSourcesExhausted = YES;
@@ -872,7 +905,12 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         return;
     }
     if (!manual) {
-        if (ASRFallbackCues.count > 0) {
+        if ([self captionSourcePreferenceForContext:context] ==
+            CIVideoCaptionSourcePreferenceManualCC) {
+            [self fallbackAfterYouTubeForContext:context
+                                      generation:generation
+                                        cacheKey:cacheKey];
+        } else if (ASRFallbackCues.count > 0) {
             [self installCues:ASRFallbackCues source:CICaptionSourceYouTubeASR
                   generation:generation cacheKey:cacheKey];
         } else {
@@ -886,6 +924,12 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         if (cues.count > 0) {
             [self installCues:cues source:CICaptionSourceYouTubeManual
                   generation:generation cacheKey:cacheKey];
+        } else if ([self captionSourcePreferenceForContext:
+                        self.context ?: context] ==
+                   CIVideoCaptionSourcePreferenceManualCC) {
+            [self fallbackAfterYouTubeForContext:self.context ?: context
+                                      generation:generation
+                                        cacheKey:cacheKey];
         } else if (ASRFallbackCues.count > 0) {
             [self installCues:ASRFallbackCues source:CICaptionSourceYouTubeASR
                   generation:generation cacheKey:cacheKey];
@@ -914,7 +958,11 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
         NSTimeInterval contextAge =
             NSProcessInfo.processInfo.systemUptime -
             self.contextActivatedAt;
-        if (CISourcePriority() == CISourcePriorityYouTubeFirst &&
+        BOOL selectedASR =
+            [self captionSourcePreferenceForContext:context] ==
+                CIVideoCaptionSourcePreferenceASR;
+        if ((selectedASR ||
+             CISourcePriority() == CISourcePriorityYouTubeFirst) &&
             !self.youtubeSourcesExhausted &&
             contextAge < 0.8) {
             NSTimeInterval delay = 0.8 - MAX(0, contextAge);
@@ -927,11 +975,17 @@ static NSArray<CICaptionTrack *> *CIMergedCaptionTracks(
                 ^{
                     if (generation != self.generation ||
                         self.loadStage != CILoadStageASR) return;
-                    [self loadManualCCForContext:
-                            self.context ?: context
-                                         generation:generation
-                                           cacheKey:cacheKey
-                                    ASRFallbackCues:@[]];
+                    if (selectedASR) {
+                        [self loadASRForContext:self.context ?: context
+                                    generation:generation
+                                      cacheKey:cacheKey];
+                    } else {
+                        [self loadManualCCForContext:
+                                self.context ?: context
+                                             generation:generation
+                                               cacheKey:cacheKey
+                                        ASRFallbackCues:@[]];
+                    }
                 }
             );
             return;

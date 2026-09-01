@@ -260,6 +260,42 @@ int main(void) {
             @"《鬼滅之刃》主題曲 紅蓮華 / LiSA", @"").count >= 3,
             @"an anime-naming bracket must not be the only reading offered");
 
+        // A `【】` block remains decoration for the committed parse, but when one
+        // block contains two localized names the Han and Latin halves become
+        // second-tier readings. No artist or song-specific wording is involved.
+        NSArray<CISongQuery *> *bilingualReadings = CISongQueryCandidates(
+            @"MC HotDog 熱狗 feat.張震嶽 A-Yue&關穎 Terri Kwan【嗨嗨人生 High High Life】Official Music Video",
+            @"");
+        CIAssert(bilingualReadings.count >= 3 &&
+            [bilingualReadings[1].title isEqualToString:@"嗨嗨人生"] &&
+            [bilingualReadings[2].title isEqualToString:@"High High Life"] &&
+            [bilingualReadings[1].origin isEqualToString:@"bilingual-bracket"] &&
+            [bilingualReadings[2].origin isEqualToString:@"bilingual-bracket"],
+            @"a bilingual square bracket should offer separate Han and Latin title readings immediately after the committed parse");
+        NSArray<CISongQuery *> *reversedBilingualReadings =
+            CISongQueryCandidates(@"Artist【High High Life 嗨嗨人生】Official Video", @"");
+        NSMutableSet<NSString *> *reversedBilingualTitles = [NSMutableSet set];
+        for (CISongQuery *reading in reversedBilingualReadings) {
+            [reversedBilingualTitles addObject:reading.title];
+        }
+        CIAssert([reversedBilingualTitles containsObject:@"High High Life"] &&
+            [reversedBilingualTitles containsObject:@"嗨嗨人生"],
+            @"the localized-title split should also support Latin-first brackets");
+        NSArray<CISongQuery *> *singleScriptReadings =
+            CISongQueryCandidates(@"Artist【Official Music Video】【歌詞】", @"");
+        for (CISongQuery *reading in singleScriptReadings) {
+            CIAssert(![reading.title isEqualToString:@"Official Music Video"] &&
+                ![reading.title isEqualToString:@"歌詞"],
+                @"single-script square-bracket decoration must not become a title reading");
+        }
+        NSArray<CISongQuery *> *alternatingScriptReadings =
+            CISongQueryCandidates(@"Artist【嗨嗨 High 人生 Life】Official Video", @"");
+        for (CISongQuery *reading in alternatingScriptReadings) {
+            CIAssert(![reading.title isEqualToString:@"嗨嗨"] &&
+                ![reading.title isEqualToString:@"High 人生 Life"],
+                @"a square bracket that alternates scripts more than once must not be split speculatively");
+        }
+
         // Several readings of one title, most likely first. Nothing here reaches
         // the network: the assertions pin which queries would be issued.
         NSArray<CISongQuery *> *readings = CISongQueryCandidates(

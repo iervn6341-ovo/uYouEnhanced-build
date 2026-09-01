@@ -63,7 +63,9 @@ static const NSUInteger CILRCLIBCacheSchemaVersion = 2;
 //   3: a lookup searches several readings of one title — both sides of a dash,
 //      and anything inside 「」 or 『』 — and the video length picks the
 //      winner, so titles that used to miss outright can now resolve.
-static const NSUInteger CILRCLIBCacheQueryGeneration = 3;
+//   4: a bilingual 【Han Latin】 title block yields one reading for each
+//      localized name instead of disappearing with the upload decorations.
+static const NSUInteger CILRCLIBCacheQueryGeneration = 4;
 // Duration gap below which two candidates count as the same edition, so a
 // synced timeline wins over plain lyrics that are only marginally closer.
 static const NSTimeInterval CILRCLIBDurationTieTolerance = 2.5;

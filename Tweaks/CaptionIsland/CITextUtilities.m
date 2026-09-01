@@ -99,9 +99,11 @@ double CITextSimilarity(NSString *lhs, NSString *rhs) {
     return 1.0 - ((double)row[m] / (double)MAX(n, m));
 }
 
-// Bracket pairs whose contents are upload decoration rather than part of a track
-// name. 「」, 『』 and 《》 are deliberately absent: all three quote a title, and are
-// handled as a title source instead.
+// Bracket pairs whose contents are normally upload decoration rather than part of
+// a track name. 「」, 『』 and 《》 are deliberately absent: all three quote a title,
+// and are handled as a title source instead. A bilingual `【中文 English】` block
+// remains removable here but is separately offered as two lower-priority readings
+// by CISongQueryCandidates, so the committed parse does not become less cautious.
 //
 // This replaced a hand-maintained keyword list ("official", "歌詞", "音频优化", …).
 // The list was surgical because a single wrong guess used to be the only guess;
@@ -477,12 +479,12 @@ static NSString *const CIColonSeparatorPattern = @"\\s*[:：]\\s*";
 
 // Every 「」, 『』 or 《》 run in the title, in the order they appear.
 //
-// These three are the only brackets treated as a title source; every other pair is
-// discarded outright by CIRemoveVideoDecorations. 《》 is the Chinese convention for
-// naming a work, and on a music upload that work is usually the song. When it is
-// not — "《鬼滅之刃》主題曲 紅蓮華" names the anime — the separator readings still
-// cover the real track name, which is why this can be a first guess rather than a
-// decision.
+// These three are the strongest brackets treated as a title source. A bilingual
+// `【】` block is handled separately below at a lower priority. 《》 is the Chinese
+// convention for naming a work, and on a music upload that work is usually the
+// song. When it is not — "《鬼滅之刃》主題曲 紅蓮華" names the anime — the separator
+// readings still cover the real track name, which is why this can be a first guess
+// rather than a decision.
 static NSArray<NSString *> *CIQuotedFragments(NSString *value) {
     if (value.length == 0) return @[];
     NSRegularExpression *quotes = [NSRegularExpression
@@ -502,6 +504,79 @@ static NSArray<NSString *> *CIQuotedFragments(NSString *value) {
         if (fragment.length > 0) [fragments addObject:fragment];
     }
     return fragments;
+}
+
+// Chinese-language uploads often put two localized names in one decorative
+// square bracket, e.g. `【中文歌名 English Song Name】`. Treating every `【】` block
+// as a title would resurrect franchise, lyric and video-format labels, so this
+// narrower rule activates only when one balanced block contains both Han and
+// Latin text. The two scripts are returned as independent readings because LRCLIB
+// may store either localized title, but rarely stores the combined upload form.
+//
+// Only a single transition is accepted. A block that alternates scripts again is
+// prose, credits or mixed metadata rather than the common localized-title shape;
+// leaving it to the verbatim fallback is safer than inventing more splits.
+static NSArray<NSString *> *CIBilingualSquareBracketFragments(NSString *value) {
+    if (value.length == 0) return @[];
+    NSRegularExpression *blocks = [NSRegularExpression
+        regularExpressionWithPattern:@"【([^】\\r\\n]+)】"
+                               options:0 error:nil];
+    NSRegularExpression *Han = [NSRegularExpression
+        regularExpressionWithPattern:@"\\p{Han}" options:0 error:nil];
+    NSRegularExpression *Latin = [NSRegularExpression
+        regularExpressionWithPattern:@"[A-Za-z]" options:0 error:nil];
+    NSMutableArray<NSString *> *fragments = [NSMutableArray array];
+    for (NSTextCheckingResult *match in
+         [blocks matchesInString:value options:0
+                           range:NSMakeRange(0, value.length)]) {
+        if ([match rangeAtIndex:1].location == NSNotFound) continue;
+        NSString *content = CICleanCaptionText(
+            [value substringWithRange:[match rangeAtIndex:1]]
+        );
+        NSRange whole = NSMakeRange(0, content.length);
+        NSTextCheckingResult *firstHan =
+            [Han firstMatchInString:content options:0 range:whole];
+        NSTextCheckingResult *firstLatin =
+            [Latin firstMatchInString:content options:0 range:whole];
+        if (!firstHan || !firstLatin) continue;
+
+        BOOL HanComesFirst = firstHan.range.location < firstLatin.range.location;
+        NSUInteger split = HanComesFirst
+            ? firstLatin.range.location : firstHan.range.location;
+        if (split == 0 || split >= content.length) continue;
+        NSString *left = [content substringToIndex:split];
+        NSString *right = [content substringFromIndex:split];
+
+        // Trim only upload-style delimiters around the language boundary. Broad
+        // punctuation trimming would corrupt legitimate names such as "'Til
+        // Morning" or "You?".
+        NSCharacterSet *edges = [NSCharacterSet
+            characterSetWithCharactersInString:@" \t-|｜/／–—:："];
+        left = [CICleanCaptionText(left)
+            stringByTrimmingCharactersInSet:edges];
+        right = [CICleanCaptionText(right)
+            stringByTrimmingCharactersInSet:edges];
+        if (left.length == 0 || right.length == 0) continue;
+
+        NSString *HanFragment = HanComesFirst ? left : right;
+        NSString *LatinFragment = HanComesFirst ? right : left;
+        NSRange HanRange = NSMakeRange(0, HanFragment.length);
+        NSRange LatinRange = NSMakeRange(0, LatinFragment.length);
+        NSUInteger HanCount = [Han numberOfMatchesInString:HanFragment
+            options:0 range:HanRange];
+        NSUInteger LatinCount = [Latin numberOfMatchesInString:LatinFragment
+            options:0 range:LatinRange];
+        // Reject a second script transition and one-character labels. This keeps
+        // the rule specific to two complete localized names.
+        if (HanCount < 2 || LatinCount < 2 ||
+            [Latin firstMatchInString:HanFragment options:0 range:HanRange] ||
+            [Han firstMatchInString:LatinFragment options:0 range:LatinRange]) {
+            continue;
+        }
+        [fragments addObject:left];
+        [fragments addObject:right];
+    }
+    return fragments.copy;
 }
 
 NSArray<CISongQuery *> *CISongQueryCandidates(NSString *videoTitle,
@@ -539,7 +614,14 @@ NSArray<CISongQuery *> *CISongQueryCandidates(NSString *videoTitle,
         add(parsedTitle, parsedArtist, @"parsed");
     }
 
-    // 2. Both sides of a dash, slash or pipe. The right side leads because
+    // 2. Separate localized names inside a bilingual `【中文 English】` block.
+    //    This is weaker than an explicit song quote but stronger than guessing
+    //    which side of a generic separator is the track name.
+    for (NSString *fragment in CIBilingualSquareBracketFragments(original)) {
+        add(fragment, @"", @"bilingual-bracket");
+    }
+
+    // 3. Both sides of a dash, slash or pipe. The right side leads because
     //    "Artist - Song" is the more common shape, and each side is handed the
     //    other as its artist, which is a real ranking signal when the reading is
     //    the correct one.
@@ -562,7 +644,7 @@ NSArray<CISongQuery *> *CISongQueryCandidates(NSString *videoTitle,
         }
     }
 
-    // 3. A colon's readings, ranked after the primary separators.
+    // 4. A colon's readings, ranked after the primary separators.
     NSArray<NSString *> *colonSides =
         CISeparatedSides(original, CIColonSeparatorPattern);
     if (colonSides.count == 2) {
@@ -570,7 +652,7 @@ NSArray<CISongQuery *> *CISongQueryCandidates(NSString *videoTitle,
         add(colonSides[0], colonSides[1], @"colon-left");
     }
 
-    // 4. A feat./ft. credit dropped. This is a reading, not a rewrite: stripping
+    // 5. A feat./ft. credit dropped. This is a reading, not a rewrite: stripping
     //    it in the shared cleaner ran before the separator split and threw away
     //    everything after the credit — for
     //    "HoneyWorks feat.ハコニワリリィ - 質問、恋って何でしょうか?" that was the
@@ -592,7 +674,7 @@ NSArray<CISongQuery *> *CISongQueryCandidates(NSString *videoTitle,
         add(CIRemoveVideoDecorations(withoutCredit), @"", @"no-feat");
     }
 
-    // 5. The title with nothing removed, as a last resort. This is what makes
+    // 6. The title with nothing removed, as a last resort. This is what makes
     //    blanket bracket removal safe: when a bracket held part of the real name
     //    — "(Don't Fear) The Reaper", "Mine (Taylor's Version)" — the untouched
     //    title is still searched, so an over-eager strip costs a request instead
