@@ -65,7 +65,11 @@ static const NSUInteger CILRCLIBCacheSchemaVersion = 2;
 //      winner, so titles that used to miss outright can now resolve.
 //   4: a bilingual 【Han Latin】 title block yields one reading for each
 //      localized name instead of disappearing with the upload decorations.
-static const NSUInteger CILRCLIBCacheQueryGeneration = 4;
+//   5: every /api/search request uses q= so localized names stored only in an
+//      artist or album field remain discoverable during automatic lookup too.
+//   6: an empty q= response retries the same reading with track_name= before
+//      moving to a reversed or lower-priority title candidate.
+static const NSUInteger CILRCLIBCacheQueryGeneration = 6;
 // Duration gap below which two candidates count as the same edition, so a
 // synced timeline wins over plain lyrics that are only marginally closer.
 static const NSTimeInterval CILRCLIBDurationTieTolerance = 2.5;
@@ -1186,33 +1190,29 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     }
 }
 
-- (NSURL *)searchURLForTitle:(NSString *)title artist:(NSString *)artist broad:(BOOL)broad {
+- (NSURL *)searchURLForTitle:(NSString *)title artist:(NSString *)artist {
     NSURLComponents *components = [NSURLComponents
         componentsWithURL:CILRCLIBSearchEndpointURL()
         resolvingAgainstBaseURL:NO];
-    if (broad) {
-        // Not on the automatic path any more. LRCLIB's q= mode matches track,
-        // artist and album as free text, so an upload title padded with a
-        // franchise or channel name returns a wide, loosely-ranked list that
-        // CILRCLIBMaximumCandidates can truncate before the right row is ever
-        // scored. Retained for manual lookups and covered by the smoke test.
-        NSString *query = artist.length > 0
-            ? [NSString stringWithFormat:@"%@ %@", artist, title] : title;
-        components.queryItems = @[
-            [NSURLQueryItem queryItemWithName:@"q" value:query],
-        ];
-    } else {
-        // Search on the track name alone. LRCLIB treats artist_name as an AND
-        // filter, so passing an artist inferred from an upload title made the
-        // API return nothing whenever that guess did not match its canonical
-        // credit exactly — the single biggest cause of "no lyrics found" for
-        // titles that are otherwise parsed correctly. The artist is still
-        // carried through to candidate scoring, where a good match wins and a
-        // bad one merely ranks lower.
-        components.queryItems = @[
-            [NSURLQueryItem queryItemWithName:@"track_name" value:title],
-        ];
-    }
+    // q= searches LRCLIB's track, artist and album fields. This matters when a
+    // localized title is stored only as the album name while trackName is
+    // English or romanized. Do not send artist_name as a structured AND filter:
+    // an artist inferred from a YouTube upload remains only a ranking signal.
+    NSString *query = artist.length > 0
+        ? [NSString stringWithFormat:@"%@ %@", artist, title] : title;
+    components.queryItems = @[
+        [NSURLQueryItem queryItemWithName:@"q" value:query],
+    ];
+    return components.URL;
+}
+
+- (NSURL *)trackNameSearchURLForTitle:(NSString *)title {
+    NSURLComponents *components = [NSURLComponents
+        componentsWithURL:CILRCLIBSearchEndpointURL()
+        resolvingAgainstBaseURL:NO];
+    components.queryItems = @[
+        [NSURLQueryItem queryItemWithName:@"track_name" value:title],
+    ];
     return components.URL;
 }
 
@@ -1822,15 +1822,18 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
         completion:context.completion];
 }
 
-// Attempt 1 searches the reading's own track name; attempt 2 searches the other
-// side of a separator-built title. Both go through /api/search, never /api/get:
+// Each orientation has two possible requests: q= first, then track_name= only
+// when q= explicitly returns no rows. Attempts 1/2 are the reading as written;
+// attempts 3/4 are the reversed sides of the first separator-built reading.
+// All attempts go through /api/search, never /api/get:
 // the metadata endpoint matches track, artist and duration as one AND, so a
 // single wrong guess in an artist inferred from an upload title turns the whole
-// lookup into a 404. Searching by track name keeps the artist as a ranking
-// signal instead, which is the only role a guess can safely play.
+// lookup into a 404. A q= search keeps the artist out of that structured AND
+// filter; it remains a ranking signal, which is the only role a guess can safely
+// play, while localized album and artist fields remain searchable.
 //
-// Exhausting both attempts advances to the next reading rather than ending the
-// lookup; see advanceLookupWithContext:.
+// Exhausting an orientation tries the reverse when it is useful, then advances
+// to the next reading; see advanceLookupWithContext:.
 - (void)performLookupWithContext:(CILRCLIBLookupContext *)context
                          attempt:(NSUInteger)attempt {
     NSUInteger token = context.token;
@@ -1843,7 +1846,8 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     NSString *title = reading.title;
     NSString *artist = reading.artist;
     NSTimeInterval duration = context.duration;
-    BOOL reversed = attempt > 1;
+    BOOL reversed = attempt >= 3;
+    BOOL usesTrackNameFallback = attempt == 2 || attempt == 4;
     NSString *queryTitle = reversed ? artist : title;
     NSString *queryArtist = reversed ? title : artist;
     // Only the committed reading earns a reversed retry. Every later reading is
@@ -1851,7 +1855,9 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     // re-search ground the candidate list already covers, at two seconds a go.
     BOOL canRetryReversed = !reversed && context.candidateIndex == 0 &&
         CILRCLIBReversedQueryIsWorthwhile(title, artist);
-    NSURL *URL = [self searchURLForTitle:queryTitle artist:@"" broad:NO];
+    NSURL *URL = usesTrackNameFallback
+        ? [self trackNameSearchURLForTitle:queryTitle]
+        : [self searchURLForTitle:queryTitle artist:@""];
     if (!URL) {
         [self abortLookupWithContext:context
                               error:CILRCLIBError(-2,
@@ -1914,18 +1920,24 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
         if ((status >= 200 && status < 300) || status == 404) {
             [self clearCooldownForEndpoint:serviceIdentity];
         }
-        // Nothing found for this reading of the title. The reversed retry comes
-        // first, then the next reading in the candidate list; only when all of
-        // them are spent is the miss recorded, otherwise the negative cache
-        // would freeze the first guess in place for twelve hours.
-        void (^completeExhausted)(NSError *) = ^(NSError *reason) {
+        // A genuinely empty q= response gets one structured track_name= retry
+        // for the same reading. A non-empty response that merely fails local
+        // scoring does not: repeating it would spend a request without widening
+        // the data. After both modes, try the reversed primary reading, then the
+        // next candidate. Only the end of the whole chain records a miss.
+        void (^completeExhausted)(NSError *, BOOL) =
+        ^(NSError *reason, BOOL responseHadNoRows) {
             if (reason.code == 404 &&
                 [reason.domain isEqualToString:CILRCLIBErrorDomain] &&
                 !context.lastError) {
                 context.lastError = reason;
             }
+            if (responseHadNoRows && !usesTrackNameFallback) {
+                [self startLookupWithContext:context attempt:attempt + 1];
+                return;
+            }
             if (canRetryReversed) {
-                [self startLookupWithContext:context attempt:2];
+                [self startLookupWithContext:context attempt:3];
                 return;
             }
             [self advanceLookupWithContext:context];
@@ -1934,10 +1946,20 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
         NSError *responseError = [self responseErrorForResponse:response data:data];
         if (responseError) {
             if (responseError.code == 404) {
-                completeExhausted(responseError);
+                completeExhausted(responseError, YES);
             } else {
                 [self abortLookupWithContext:context error:responseError];
             }
+            return;
+        }
+        id responseRoot = [NSJSONSerialization JSONObjectWithData:data
+            options:0 error:nil];
+        BOOL responseHadNoRows =
+            [responseRoot isKindOfClass:NSArray.class] &&
+            [(NSArray *)responseRoot count] == 0;
+        if (responseHadNoRows) {
+            completeExhausted(CILRCLIBError(404,
+                @"LRCLIB returned no rows for this query."), YES);
             return;
         }
         if (context.collectsAllMatches) {
@@ -1961,11 +1983,12 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
                 return;
             }
             completeExhausted(CILRCLIBError(404,
-                @"Match kept as a fallback; still checking the other readings of the title."));
+                @"Match kept as a fallback; still checking the other readings of the title."),
+                NO);
             return;
         }
         completeExhausted(parseError ?:
-            CILRCLIBError(-5, @"Unable to parse LRCLIB response."));
+            CILRCLIBError(-5, @"Unable to parse LRCLIB response."), NO);
     };
     BOOL shouldStart = NO;
     BOOL rateLimited = NO;

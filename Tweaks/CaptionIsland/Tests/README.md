@@ -54,6 +54,7 @@ swift test --package-path uYouEnhanced-build/Tweaks/CaptionIsland/Tests
 - HTTP 403／封鎖頁可被辨識，供 provider 啟動跨重啟冷卻；
 - 成功結果與短期「查無結果」都會寫入測試專用暫存快取，並可由新的 provider 實例讀回；
 - 只使用清理後的影片標題查詢時，不送出 YouTube 頻道名稱，並依時長選擇候選；
+- 所有搜尋都先使用 `q=` 搜尋歌名、歌手與專輯欄位；若回傳 0 筆，再以同一歌名補查 `track_name=`；
 - 移除影片標題內所有 `[…]`／`【…】` 區塊及已知版本、歌詞、字幕 suffix；
 - 同一個 `【中文 English】` 區塊會把中英文歌名拆成第二順位候選，單語裝飾不會誤入候選；
 - 同步版本的時長明顯較差時，保留最接近的 `plainLyrics`；

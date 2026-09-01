@@ -20,7 +20,8 @@
                                         artist:(NSString *)artist
                                  videoDuration:(NSTimeInterval)videoDuration
                                          error:(NSError **)error;
-- (NSURL *)searchURLForTitle:(NSString *)title artist:(NSString *)artist broad:(BOOL)broad;
+- (NSURL *)searchURLForTitle:(NSString *)title artist:(NSString *)artist;
+- (NSURL *)trackNameSearchURLForTitle:(NSString *)title;
 - (NSURL *)getURLForTitle:(NSString *)title
                    artist:(NSString *)artist
                  duration:(NSTimeInterval)duration;
@@ -84,6 +85,61 @@ static NSDictionary *CIRecord(NSInteger recordID,
         @"syncedLyrics": synced ?: NSNull.null,
     };
 }
+
+// Keeps the browse-path regression test offline while still exercising the real
+// NSURLSession request. The response deliberately stores the Japanese name only
+// in albumName, matching the LRCLIB records that exposed the q=/track_name= bug.
+static NSURL *CIStubLastRequestURL;
+static NSData *CIStubResponseData;
+static NSData *CIStubTrackNameResponseData;
+static NSMutableArray<NSURL *> *CIStubRequestURLs;
+
+@interface CILRCLIBStubURLProtocol : NSURLProtocol
+@end
+
+@implementation CILRCLIBStubURLProtocol
+
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    return [request.URL.host isEqualToString:@"127.0.0.1"];
+}
+
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
+    return request;
+}
+
+- (void)startLoading {
+    NSData *data;
+    @synchronized (CILRCLIBStubURLProtocol.class) {
+        CIStubLastRequestURL = self.request.URL;
+        if (!CIStubRequestURLs) CIStubRequestURLs = [NSMutableArray array];
+        [CIStubRequestURLs addObject:self.request.URL];
+        NSURLComponents *components = [NSURLComponents
+            componentsWithURL:self.request.URL resolvingAgainstBaseURL:NO];
+        BOOL usesTrackName = NO;
+        for (NSURLQueryItem *item in components.queryItems) {
+            if ([item.name isEqualToString:@"track_name"]) {
+                usesTrackName = YES;
+                break;
+            }
+        }
+        data = usesTrackName && CIStubTrackNameResponseData
+            ? CIStubTrackNameResponseData : CIStubResponseData;
+        data = data ?: [@"[]" dataUsingEncoding:NSUTF8StringEncoding];
+    }
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc]
+        initWithURL:self.request.URL
+        statusCode:200
+        HTTPVersion:@"HTTP/1.1"
+        headerFields:@{@"Content-Type": @"application/json"}];
+    [self.client URLProtocol:self didReceiveResponse:response
+        cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    [self.client URLProtocol:self didLoadData:data];
+    [self.client URLProtocolDidFinishLoading:self];
+}
+
+- (void)stopLoading {}
+
+@end
 
 int main(void) {
     @autoreleasepool {
@@ -322,36 +378,214 @@ int main(void) {
             @"A - B 「C」 『D』 「E」 - F", @"").count <=
                 CISongQueryMaximumCandidates,
             @"the reading count must stay bounded so one lookup cannot burst");
-        NSURLComponents *broadComponents = [NSURLComponents componentsWithURL:
-            [provider searchURLForTitle:@"Example Song" artist:@"Example Artist" broad:YES]
+        NSURLComponents *keywordComponents = [NSURLComponents componentsWithURL:
+            [provider searchURLForTitle:@"Example Song" artist:@"Example Artist"]
             resolvingAgainstBaseURL:NO];
-        NSString *broadQuery = broadComponents.queryItems.firstObject.value;
-        CIAssert([broadQuery containsString:@"Example Artist"] &&
-            [broadQuery containsString:@"Example Song"],
-            @"broad lookup should constrain the query with both artist and title");
-        NSURLComponents *titleOnlyComponents = [NSURLComponents componentsWithURL:
-            [provider searchURLForTitle:@"Precious Star Dreamer" artist:@"" broad:NO]
-            resolvingAgainstBaseURL:NO];
-        NSMutableDictionary<NSString *, NSString *> *titleOnlyItems = [NSMutableDictionary dictionary];
-        for (NSURLQueryItem *item in titleOnlyComponents.queryItems) {
-            titleOnlyItems[item.name] = item.value;
-        }
-        CIAssert([titleOnlyItems[@"track_name"] isEqualToString:@"Precious Star Dreamer"] &&
-            titleOnlyItems[@"artist_name"] == nil,
-            @"title-only lookup must not send a YouTube channel as artist_name");
+        NSString *keywordQuery = keywordComponents.queryItems.firstObject.value;
+        CIAssert([keywordQuery containsString:@"Example Artist"] &&
+            [keywordQuery containsString:@"Example Song"],
+            @"keyword lookup should include both artist and title when both are supplied");
         NSURLComponents *titleOnlyKeywordComponents = [NSURLComponents componentsWithURL:
-            [provider searchURLForTitle:@"Precious Star Dreamer" artist:@"" broad:YES]
+            [provider searchURLForTitle:@"Precious Star Dreamer" artist:@""]
             resolvingAgainstBaseURL:NO];
         CIAssert(titleOnlyKeywordComponents.queryItems.count == 1 &&
             [titleOnlyKeywordComponents.queryItems.firstObject.name isEqualToString:@"q"] &&
             [titleOnlyKeywordComponents.queryItems.firstObject.value
                 isEqualToString:@"Precious Star Dreamer"],
             @"title-only keyword lookup should match LRCLIB's web search mode");
+        NSURLComponents *localizedAlbumKeywordComponents =
+            [NSURLComponents componentsWithURL:
+                [provider searchURLForTitle:@"「今はいいんだよ」"
+                    artist:@""]
+                resolvingAgainstBaseURL:NO];
+        CIAssert(localizedAlbumKeywordComponents.queryItems.count == 1 &&
+            [localizedAlbumKeywordComponents.queryItems.firstObject.name
+                isEqualToString:@"q"] &&
+            [localizedAlbumKeywordComponents.queryItems.firstObject.value
+                isEqualToString:@"「今はいいんだよ」"],
+            @"manual browsing must preserve a localized title and search all LRCLIB fields");
         CIAssert([titleOnlyKeywordComponents.host
             isEqualToString:@"127.0.0.1"] &&
             [titleOnlyKeywordComponents.path
                 isEqualToString:@"/lyrics/api/search"],
             @"lookups should use the configured LRCLIB base URL");
+
+        NSDictionary *localizedAlbumRecord = @{
+            @"id": @19094338,
+            @"trackName": @"It's Okay Now (feat. KAFU)",
+            @"artistName": @"MIMI, KAFU",
+            @"albumName": @"今はいいんだよ。 (feat. 可不)",
+            @"duration": @147,
+            @"instrumental": @NO,
+            @"plainLyrics": @"First line\nSecond line",
+            @"syncedLyrics": @"[00:01.00]First line\n[00:05.00]Second line",
+        };
+        @synchronized (CILRCLIBStubURLProtocol.class) {
+            CIStubLastRequestURL = nil;
+            CIStubResponseData = CIJSONData(@[localizedAlbumRecord]);
+            CIStubTrackNameResponseData = nil;
+            CIStubRequestURLs = [NSMutableArray array];
+        }
+        NSURLSessionConfiguration *stubConfiguration =
+            NSURLSessionConfiguration.ephemeralSessionConfiguration;
+        stubConfiguration.protocolClasses = @[CILRCLIBStubURLProtocol.class];
+        CILRCLIBProvider *browsePathProvider = [CILRCLIBProvider new];
+        [browsePathProvider setValue:
+            [NSURLSession sessionWithConfiguration:stubConfiguration]
+                           forKey:@"session"];
+        dispatch_semaphore_t browseFinished = dispatch_semaphore_create(0);
+        __block NSArray<CILRCLIBResult *> *localizedMatches = nil;
+        __block NSError *localizedBrowseError = nil;
+        [browsePathProvider fetchAllMatchesForCandidates:@[
+            [CISongQuery queryWithTitle:@"「今はいいんだよ」"
+                                artist:@"" origin:@"manual"]
+        ] duration:147 completion:
+            ^(NSArray<CILRCLIBResult *> *matches, NSError *browseError) {
+                localizedMatches = matches;
+                localizedBrowseError = browseError;
+                dispatch_semaphore_signal(browseFinished);
+            }];
+        long browseWait = dispatch_semaphore_wait(browseFinished,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
+        NSURL *browseRequestURL;
+        @synchronized (CILRCLIBStubURLProtocol.class) {
+            browseRequestURL = CIStubLastRequestURL;
+        }
+        NSURLComponents *browseRequestComponents =
+            [NSURLComponents componentsWithURL:browseRequestURL
+                resolvingAgainstBaseURL:NO];
+        NSMutableDictionary<NSString *, NSString *> *browseRequestItems =
+            [NSMutableDictionary dictionary];
+        for (NSURLQueryItem *item in browseRequestComponents.queryItems) {
+            browseRequestItems[item.name] = item.value;
+        }
+        CIAssert(browseWait == 0 && localizedBrowseError == nil &&
+            localizedMatches.count == 1 &&
+            localizedMatches.firstObject.recordID == 19094338,
+            @"manual browsing should retain an LRCLIB row whose localized title exists only in albumName");
+        CIAssert([browseRequestItems[@"q"] isEqualToString:@"「今はいいんだよ」"] &&
+            browseRequestItems[@"track_name"] == nil,
+            @"the real manual browse path must send q= rather than track_name=");
+
+        // Automatic playback must use the same q= request mode. Its stricter
+        // local scoring remains responsible for rejecting unrelated matches.
+        NSDictionary *automaticRecord = @{
+            @"id": @19094339,
+            @"trackName": @"「今はいいんだよ」",
+            @"artistName": @"MIMI, KAFU",
+            @"albumName": @"Single",
+            @"duration": @147,
+            @"instrumental": @NO,
+            @"plainLyrics": @"First line\nSecond line",
+            @"syncedLyrics": @"[00:01.00]First line\n[00:05.00]Second line",
+        };
+        [CILRCLIBProvider clearPersistentCache];
+        @synchronized (CILRCLIBStubURLProtocol.class) {
+            CIStubLastRequestURL = nil;
+            CIStubResponseData = CIJSONData(@[automaticRecord]);
+            CIStubTrackNameResponseData = nil;
+            CIStubRequestURLs = [NSMutableArray array];
+        }
+        CILRCLIBProvider *automaticPathProvider = [CILRCLIBProvider new];
+        [automaticPathProvider setValue:
+            [NSURLSession sessionWithConfiguration:stubConfiguration]
+                              forKey:@"session"];
+        dispatch_semaphore_t automaticFinished = dispatch_semaphore_create(0);
+        __block CILRCLIBResult *automaticResult = nil;
+        __block NSError *automaticError = nil;
+        [automaticPathProvider fetchLyricsForCandidates:@[
+            [CISongQuery queryWithTitle:@"「今はいいんだよ」"
+                                artist:@"" origin:@"automatic-test"]
+        ] duration:147 completion:
+            ^(CILRCLIBResult *result, NSError *lookupError) {
+                automaticResult = result;
+                automaticError = lookupError;
+                dispatch_semaphore_signal(automaticFinished);
+            }];
+        long automaticWait = dispatch_semaphore_wait(automaticFinished,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)));
+        NSURL *automaticRequestURL;
+        NSUInteger automaticRequestCount;
+        @synchronized (CILRCLIBStubURLProtocol.class) {
+            automaticRequestURL = CIStubLastRequestURL;
+            automaticRequestCount = CIStubRequestURLs.count;
+        }
+        NSURLComponents *automaticRequestComponents =
+            [NSURLComponents componentsWithURL:automaticRequestURL
+                resolvingAgainstBaseURL:NO];
+        NSMutableDictionary<NSString *, NSString *> *automaticRequestItems =
+            [NSMutableDictionary dictionary];
+        for (NSURLQueryItem *item in automaticRequestComponents.queryItems) {
+            automaticRequestItems[item.name] = item.value;
+        }
+        CIAssert(automaticWait == 0 && automaticError == nil &&
+            automaticResult.recordID == 19094339,
+            @"automatic lookup should still score and return a matching q= result");
+        CIAssert([automaticRequestItems[@"q"]
+                isEqualToString:@"「今はいいんだよ」"] &&
+            automaticRequestItems[@"track_name"] == nil &&
+            automaticRequestCount == 1,
+            @"a non-empty automatic q= response must not trigger track_name=");
+        [CILRCLIBProvider clearPersistentCache];
+
+        NSDictionary *fallbackRecord = @{
+            @"id": @19094340,
+            @"trackName": @"Structured Fallback Song",
+            @"artistName": @"Example Artist",
+            @"albumName": @"Example Album",
+            @"duration": @147,
+            @"instrumental": @NO,
+            @"plainLyrics": @"First line\nSecond line",
+            @"syncedLyrics": @"[00:01.00]First line\n[00:05.00]Second line",
+        };
+        @synchronized (CILRCLIBStubURLProtocol.class) {
+            CIStubLastRequestURL = nil;
+            CIStubResponseData = CIJSONData(@[]);
+            CIStubTrackNameResponseData = CIJSONData(@[fallbackRecord]);
+            CIStubRequestURLs = [NSMutableArray array];
+        }
+        CILRCLIBProvider *fallbackPathProvider = [CILRCLIBProvider new];
+        [fallbackPathProvider setValue:
+            [NSURLSession sessionWithConfiguration:stubConfiguration]
+                            forKey:@"session"];
+        dispatch_semaphore_t fallbackFinished = dispatch_semaphore_create(0);
+        __block CILRCLIBResult *fallbackResult = nil;
+        __block NSError *fallbackError = nil;
+        [fallbackPathProvider fetchLyricsForCandidates:@[
+            [CISongQuery queryWithTitle:@"Structured Fallback Song"
+                                artist:@"" origin:@"fallback-test"]
+        ] duration:147 completion:
+            ^(CILRCLIBResult *result, NSError *lookupError) {
+                fallbackResult = result;
+                fallbackError = lookupError;
+                dispatch_semaphore_signal(fallbackFinished);
+            }];
+        long fallbackWait = dispatch_semaphore_wait(fallbackFinished,
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_SEC)));
+        NSArray<NSURL *> *fallbackRequestURLs;
+        @synchronized (CILRCLIBStubURLProtocol.class) {
+            fallbackRequestURLs = CIStubRequestURLs.copy;
+        }
+        NSURLComponents *firstFallbackRequest = fallbackRequestURLs.count > 0
+            ? [NSURLComponents componentsWithURL:fallbackRequestURLs[0]
+                resolvingAgainstBaseURL:NO] : nil;
+        NSURLComponents *secondFallbackRequest = fallbackRequestURLs.count > 1
+            ? [NSURLComponents componentsWithURL:fallbackRequestURLs[1]
+                resolvingAgainstBaseURL:NO] : nil;
+        CIAssert(fallbackWait == 0 && fallbackError == nil &&
+            fallbackResult.recordID == 19094340,
+            @"an empty q= response should still return a valid track_name= fallback result");
+        CIAssert(fallbackRequestURLs.count == 2 &&
+            [firstFallbackRequest.queryItems.firstObject.name
+                isEqualToString:@"q"] &&
+            [secondFallbackRequest.queryItems.firstObject.name
+                isEqualToString:@"track_name"] &&
+            [firstFallbackRequest.queryItems.firstObject.value
+                isEqualToString:@"Structured Fallback Song"] &&
+            [secondFallbackRequest.queryItems.firstObject.value
+                isEqualToString:@"Structured Fallback Song"],
+            @"an empty q= response must retry the same title with track_name= exactly once");
+        [CILRCLIBProvider clearPersistentCache];
         NSURLComponents *exactComponents = [NSURLComponents componentsWithURL:
             [provider getURLForTitle:@"Never Looking Back"
                 artist:@"Example Artist" duration:251.6]

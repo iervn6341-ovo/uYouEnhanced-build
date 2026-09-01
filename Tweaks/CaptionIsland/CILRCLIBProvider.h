@@ -95,6 +95,10 @@ typedef void (^CILRCLIBCompletion)(CILRCLIBResult * _Nullable result,
 /// as a reading produces a synced timeline whose length all but matches the
 /// video, which is the common case and costs a single request; otherwise every
 /// reading is tried and the match closest to the video length wins.
+/// Every reading uses LRCLIB's `q=` search across track, artist and album fields;
+/// inferred artist metadata remains a local ranking signal rather than an API
+/// filter. If `q=` returns no rows, that same reading is retried once with
+/// `track_name=` before the lookup advances.
 - (void)fetchLyricsForCandidates:(NSArray<CISongQuery *> *)candidates
                         duration:(NSTimeInterval)duration
                       completion:(CILRCLIBCompletion)completion;
