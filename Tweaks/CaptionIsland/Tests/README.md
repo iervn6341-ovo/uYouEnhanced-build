@@ -57,6 +57,7 @@ swift test --package-path uYouEnhanced-build/Tweaks/CaptionIsland/Tests
 - 所有搜尋都先使用 `q=` 搜尋歌名、歌手與專輯欄位；若回傳 0 筆，再以同一歌名補查 `track_name=`；
 - 移除影片標題內所有 `[…]`／`【…】` 區塊及已知版本、歌詞、字幕 suffix；
 - 同一個 `【中文 English】` 區塊會把中英文歌名拆成第二順位候選，單語裝飾不會誤入候選；
+- `作品資訊 插曲『歌名』完整版｜歌手` 會採用引號內歌名與管線右側歌手，`CC中日字幕` 不會被誤拆；
 - 同步版本的時長明顯較差時，保留最接近的 `plainLyrics`；
 - 排除錯歌手、未知時長、過短、裁切後不完整及 placeholder-only 的候選；
 - LRC 會轉成可跟隨 media time 的 cue；

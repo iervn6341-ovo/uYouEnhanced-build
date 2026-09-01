@@ -260,6 +260,21 @@ int main(void) {
             @"TVアニメ「作品名」OPテーマ「Example Song」",
             @"Example Song", @"",
             @"anime context before a song quote must not become a hard artist filter");
+        NSString *doorUpload =
+            @"&#x20;【CC中日字幕】從零開始的異世界生活 第二季 插曲『Door』完整版｜高橋李依";
+        CIAssertSongMetadata(doorUpload, @"Door", @"高橋李依",
+            @"a performer after a quoted song's pipe should outrank the preceding work description");
+        NSArray<CISongQuery *> *doorReadings =
+            CISongQueryCandidates(doorUpload, @"");
+        CIAssert(doorReadings.count > 0 &&
+            [doorReadings.firstObject.title isEqualToString:@"Door"] &&
+            [doorReadings.firstObject.artist isEqualToString:@"高橋李依"],
+            @"the quoted song and trailing performer should form the first LRCLIB reading");
+        for (CISongQuery *reading in doorReadings) {
+            CIAssert(![reading.title isEqualToString:@"CC"] &&
+                ![reading.title isEqualToString:@"中日字幕"],
+                @"an adjacent-script caption label must not become bilingual song readings");
+        }
         CIAssertSongMetadata(
             @"Never Looking Back", @"Never Looking Back", @"",
             @"an arbitrary uploader channel must not be treated as the song artist");

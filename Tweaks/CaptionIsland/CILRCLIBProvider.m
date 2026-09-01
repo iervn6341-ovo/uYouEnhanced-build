@@ -69,7 +69,9 @@ static const NSUInteger CILRCLIBCacheSchemaVersion = 2;
 //      artist or album field remain discoverable during automatic lookup too.
 //   6: an empty q= response retries the same reading with track_name= before
 //      moving to a reversed or lower-priority title candidate.
-static const NSUInteger CILRCLIBCacheQueryGeneration = 6;
+//   7: `work metadata『Song』version｜Artist` uses the trailing artist, and
+//      adjacent-script caption labels no longer consume bilingual readings.
+static const NSUInteger CILRCLIBCacheQueryGeneration = 7;
 // Duration gap below which two candidates count as the same edition, so a
 // synced timeline wins over plain lyrics that are only marginally closer.
 static const NSTimeInterval CILRCLIBDurationTieTolerance = 2.5;

@@ -240,11 +240,36 @@ static NSString *CIArtistCandidateFromQuotePrefix(NSString *prefix) {
             candidate,
             @"(?i)(?:tv\\s*anime|anime|アニメ|映画|ドラマ|"
              @"ノンクレジット|opening|ending|\\bop\\b|\\bed\\b|"
-             @"主題歌|テーマ)"
+             @"主題歌|テーマ|插曲|劇中歌|insert\\s+song)"
         )) {
         return @"";
     }
     return candidate;
+}
+
+// Some uploads put the work and role before a quoted song, then append the real
+// performer after a pipe: `作品 插曲『Song』完整版｜Artist`. That explicit
+// trailing field is stronger than treating the entire work description as an
+// artist. Only pipes qualify here; a slash in ordinary suffix prose is too
+// ambiguous to promote into performer metadata.
+static NSString *CIArtistCandidateFromQuoteSuffix(NSString *suffix) {
+    NSString *clean = CICleanCaptionText(suffix);
+    NSUInteger location = NSNotFound;
+    for (NSString *separator in @[@"|", @"｜"]) {
+        NSRange found = [clean rangeOfString:separator
+                                    options:NSBackwardsSearch];
+        if (found.location != NSNotFound &&
+            (location == NSNotFound || found.location > location)) {
+            location = found.location;
+        }
+    }
+    if (location == NSNotFound || location + 1 >= clean.length) return @"";
+    NSString *candidate = [clean substringFromIndex:location + 1];
+    NSCharacterSet *edges = [NSCharacterSet
+        characterSetWithCharactersInString:@" \t-|｜/／–—:：「」『』《》"];
+    candidate = [CICleanCaptionText(candidate)
+        stringByTrimmingCharactersInSet:edges];
+    return CIArtistCandidateFromQuotePrefix(candidate);
 }
 
 static BOOL CIExtractQuotedSongMetadata(NSString *value,
@@ -275,8 +300,10 @@ static BOOL CIExtractQuotedSongMetadata(NSString *value,
         if (title.length == 0) continue;
         NSString *suffix =
             CICleanCaptionText([value substringFromIndex:NSMaxRange(match.range)]);
-        NSString *candidateArtist =
-            CIArtistCandidateFromQuotePrefix(prefix);
+        NSString *suffixArtist =
+            CIArtistCandidateFromQuoteSuffix(suffix);
+        NSString *candidateArtist = suffixArtist.length > 0
+            ? suffixArtist : CIArtistCandidateFromQuotePrefix(prefix);
 
         NSInteger score = 1;
         if (candidateArtist.length > 0) score += 1;
@@ -525,6 +552,12 @@ static NSArray<NSString *> *CIBilingualSquareBracketFragments(NSString *value) {
         regularExpressionWithPattern:@"\\p{Han}" options:0 error:nil];
     NSRegularExpression *Latin = [NSRegularExpression
         regularExpressionWithPattern:@"[A-Za-z]" options:0 error:nil];
+    NSMutableCharacterSet *scriptBoundaries =
+        NSCharacterSet.whitespaceAndNewlineCharacterSet.mutableCopy;
+    [scriptBoundaries formUnionWithCharacterSet:
+        NSCharacterSet.punctuationCharacterSet];
+    [scriptBoundaries formUnionWithCharacterSet:
+        NSCharacterSet.symbolCharacterSet];
     NSMutableArray<NSString *> *fragments = [NSMutableArray array];
     for (NSTextCheckingResult *match in
          [blocks matchesInString:value options:0
@@ -544,6 +577,12 @@ static NSArray<NSString *> *CIBilingualSquareBracketFragments(NSString *value) {
         NSUInteger split = HanComesFirst
             ? firstLatin.range.location : firstHan.range.location;
         if (split == 0 || split >= content.length) continue;
+        // Two localized names need an actual boundary. Adjacent scripts such as
+        // `CC中日字幕` are one upload label, not English and Chinese song names.
+        if (![scriptBoundaries characterIsMember:
+                [content characterAtIndex:split - 1]]) {
+            continue;
+        }
         NSString *left = [content substringToIndex:split];
         NSString *right = [content substringFromIndex:split];
 
