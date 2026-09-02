@@ -439,7 +439,7 @@ int main(void) {
             @"duration": @147,
             @"instrumental": @NO,
             @"plainLyrics": @"First line\nSecond line",
-            @"syncedLyrics": @"[00:01.00]First line\n[00:05.00]Second line",
+            @"syncedLyrics": @"[00:11.00]First line\n[01:20.00]Second line",
         };
         @synchronized (CILRCLIBStubURLProtocol.class) {
             CIStubLastRequestURL = nil;
@@ -460,7 +460,7 @@ int main(void) {
         [browsePathProvider fetchAllMatchesForCandidates:@[
             [CISongQuery queryWithTitle:@"今はいいんだよ"
                                 artist:@"MIMI" origin:@"manual"]
-        ] duration:147 completion:
+        ] duration:180 completion:
             ^(NSArray<CILRCLIBResult *> *matches, NSError *browseError) {
                 localizedMatches = matches;
                 localizedBrowseError = browseError;
@@ -482,8 +482,10 @@ int main(void) {
         }
         CIAssert(browseWait == 0 && localizedBrowseError == nil &&
             localizedMatches.count == 1 &&
-            localizedMatches.firstObject.recordID == 19094338,
-            @"manual browsing should retain an LRCLIB row whose localized title exists only in albumName");
+            localizedMatches.firstObject.recordID == 19094338 &&
+            localizedMatches.firstObject.syncedCues.count == 2 &&
+            fabs(localizedMatches.firstObject.durationDifference - 33.0) < 0.001,
+            @"manual browsing should retain and label a valid synced timeline even when video duration differs");
         CIAssert([browseRequestItems[@"q"] isEqualToString:@"今はいいんだよ MIMI"] &&
             browseRequestItems[@"track_name"] == nil,
             @"the real manual browse path must preserve title-space-artist in q=");

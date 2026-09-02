@@ -1391,8 +1391,12 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
             plainLineCount = 0;
         }
         NSString *syncedLyrics = CILRCLIBLyricsString(dictionary[@"syncedLyrics"]);
+        // A manual chooser must report what this LRCLIB row actually contains.
+        // Validate the timeline against the record's own duration, not the
+        // current YouTube video: duration mismatch is shown to the user for an
+        // informed choice, whereas the automatic path may still reject it.
         NSArray<CICaptionCue *> *syncedCues = syncedLyrics.length > 0
-            ? CILRCLIBUsableCues(syncedLyrics, plainLineCount, videoDuration, duration)
+            ? CILRCLIBUsableCues(syncedLyrics, plainLineCount, 0, duration)
             : @[];
         if (syncedCues.count == 0 && plainLineCount == 0) continue;
 

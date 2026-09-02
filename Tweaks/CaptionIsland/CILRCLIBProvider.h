@@ -118,7 +118,9 @@ typedef void (^CILRCLIBCompletion)(CILRCLIBResult * _Nullable result,
 /// * **Permissive filtering.** The title-similarity and duration gates that the
 ///   automatic path uses are dropped. Those gates are exactly what rejected
 ///   everything when the automatic lookup came back empty, so applying them here
-///   would show an empty list precisely when the feature is needed.
+///   would show an empty list precisely when the feature is needed. A synced
+///   timeline is validated against its LRCLIB record duration, while its
+///   difference from the YouTube video remains visible to the user.
 /// * **Nothing is cached.** A browse must not teach the automatic path anything;
 ///   only an explicit `pinResult:` does that.
 ///
