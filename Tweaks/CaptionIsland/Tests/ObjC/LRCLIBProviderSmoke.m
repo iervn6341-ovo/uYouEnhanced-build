@@ -394,12 +394,18 @@ int main(void) {
                 CISongQueryMaximumCandidates,
             @"the reading count must stay bounded so one lookup cannot burst");
         NSURLComponents *keywordComponents = [NSURLComponents componentsWithURL:
-            [provider searchURLForTitle:@"Example Song" artist:@"Example Artist"]
+            [provider searchURLForTitle:@"Door" artist:@"高橋李依"]
             resolvingAgainstBaseURL:NO];
         NSString *keywordQuery = keywordComponents.queryItems.firstObject.value;
-        CIAssert([keywordQuery containsString:@"Example Artist"] &&
-            [keywordQuery containsString:@"Example Song"],
-            @"keyword lookup should include both artist and title when both are supplied");
+        CIAssert([keywordQuery isEqualToString:@"Door 高橋李依"],
+            @"keyword lookup should use title-space-artist without the display dash");
+        NSURLComponents *reversedKeywordComponents =
+            [NSURLComponents componentsWithURL:
+                [provider searchURLForTitle:@"高橋李依" artist:@"Door"]
+                resolvingAgainstBaseURL:NO];
+        CIAssert([reversedKeywordComponents.queryItems.firstObject.value
+                isEqualToString:@"高橋李依 Door"],
+            @"a reversed retry should swap title and artist while retaining space separation");
         NSURLComponents *titleOnlyKeywordComponents = [NSURLComponents componentsWithURL:
             [provider searchURLForTitle:@"Precious Star Dreamer" artist:@""]
             resolvingAgainstBaseURL:NO];
@@ -452,8 +458,8 @@ int main(void) {
         __block NSArray<CILRCLIBResult *> *localizedMatches = nil;
         __block NSError *localizedBrowseError = nil;
         [browsePathProvider fetchAllMatchesForCandidates:@[
-            [CISongQuery queryWithTitle:@"「今はいいんだよ」"
-                                artist:@"" origin:@"manual"]
+            [CISongQuery queryWithTitle:@"今はいいんだよ"
+                                artist:@"MIMI" origin:@"manual"]
         ] duration:147 completion:
             ^(NSArray<CILRCLIBResult *> *matches, NSError *browseError) {
                 localizedMatches = matches;
@@ -478,9 +484,9 @@ int main(void) {
             localizedMatches.count == 1 &&
             localizedMatches.firstObject.recordID == 19094338,
             @"manual browsing should retain an LRCLIB row whose localized title exists only in albumName");
-        CIAssert([browseRequestItems[@"q"] isEqualToString:@"「今はいいんだよ」"] &&
+        CIAssert([browseRequestItems[@"q"] isEqualToString:@"今はいいんだよ MIMI"] &&
             browseRequestItems[@"track_name"] == nil,
-            @"the real manual browse path must send q= rather than track_name=");
+            @"the real manual browse path must preserve title-space-artist in q=");
 
         // Automatic playback must use the same q= request mode. Its stricter
         // local scoring remains responsible for rejecting unrelated matches.

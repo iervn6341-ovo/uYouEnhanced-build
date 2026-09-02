@@ -535,13 +535,13 @@ static UIViewController *CIPanelPresenter(UIViewController *hint) {
             actionWithTitle:[self browseMenuTitleForReading:reading]
             style:UIAlertActionStyleDefault
             handler:^(__unused UIAlertAction *action) {
-                // Browsing is intentionally title-only. The artist shown in the
-                // menu explains the parser's reading, but retaining it here would
-                // let the provider perform its automatic reversed retry and search
-                // a second candidate the user did not choose.
+                // The dash in the menu is presentation only. Preserve the artist
+                // as structured metadata so manual q= search can send
+                // `title artist` with a plain space and, if that finds nothing,
+                // retry the same pair in reverse order.
                 CISongQuery *selected = [CISongQuery
                     queryWithTitle:reading.title
-                             artist:@""
+                             artist:reading.artist
                              origin:reading.origin];
                 [weakSelf beginBrowseWithReadings:@[selected]];
             }]];

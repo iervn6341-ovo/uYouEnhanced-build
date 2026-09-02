@@ -113,6 +113,8 @@ typedef void (^CILRCLIBCompletion)(CILRCLIBResult * _Nullable result,
 ///   list is complete. That costs one rate-limited request per reading, which is
 ///   acceptable for an action the user explicitly asked for and would not be for
 ///   playback.
+/// * **Displayed artist is searchable.** A selected `title — artist` reading is
+///   sent to `q=` as `title artist`; the display dash never enters the query.
 /// * **Permissive filtering.** The title-similarity and duration gates that the
 ///   automatic path uses are dropped. Those gates are exactly what rejected
 ///   everything when the automatic lookup came back empty, so applying them here

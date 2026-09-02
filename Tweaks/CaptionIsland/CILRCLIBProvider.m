@@ -1198,10 +1198,11 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
         resolvingAgainstBaseURL:NO];
     // q= searches LRCLIB's track, artist and album fields. This matters when a
     // localized title is stored only as the album name while trackName is
-    // English or romanized. Do not send artist_name as a structured AND filter:
-    // an artist inferred from a YouTube upload remains only a ranking signal.
+    // English or romanized. Keep title first: the player displays `title —
+    // artist`, but the dash is not part of the query. Automatic lookup passes no
+    // artist here; a user-selected browse reading may add its displayed artist.
     NSString *query = artist.length > 0
-        ? [NSString stringWithFormat:@"%@ %@", artist, title] : title;
+        ? [NSString stringWithFormat:@"%@ %@", title, artist] : title;
     components.queryItems = @[
         [NSURLQueryItem queryItemWithName:@"q" value:query],
     ];
@@ -1857,9 +1858,13 @@ static NSString *CILRCLIBDisplayLyricsForEntry(NSDictionary *entry) {
     // re-search ground the candidate list already covers, at two seconds a go.
     BOOL canRetryReversed = !reversed && context.candidateIndex == 0 &&
         CILRCLIBReversedQueryIsWorthwhile(title, artist);
+    // Automatic lookup keeps inferred artists as local ranking signals. Manual
+    // browsing is an explicit selection of the displayed `title — artist`
+    // reading, so its q= request preserves both terms without the display dash.
+    NSString *requestArtist = context.collectsAllMatches ? queryArtist : @"";
     NSURL *URL = usesTrackNameFallback
         ? [self trackNameSearchURLForTitle:queryTitle]
-        : [self searchURLForTitle:queryTitle artist:@""];
+        : [self searchURLForTitle:queryTitle artist:requestArtist];
     if (!URL) {
         [self abortLookupWithContext:context
                               error:CILRCLIBError(-2,
