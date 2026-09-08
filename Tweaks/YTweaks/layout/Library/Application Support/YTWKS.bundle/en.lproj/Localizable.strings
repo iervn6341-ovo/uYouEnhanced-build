@@ -1,0 +1,48 @@
+// Quit app alert
+"WARNING" = "Warning";
+"APPLY_DESC" = "This action will quit YouTube. Are you sure you want to continue?";
+
+// Fullscreen Mode
+"FULLSCREEN_MODE" = "Force Fullscreen Direction";
+"FULLSCREEN_MODE_DESC" = "Always enter fullscreen with home button/bar on the left/right side.";
+"FULLSCREEN_OFF" = "Off";
+"FULLSCREEN_LEFT" = "Left";
+"FULLSCREEN_RIGHT" = "Right";
+
+// A/B Testing Settings
+"ENABLE_IOS_FLOATING_MINIPLAYER" = "Disable Floating Miniplayer";
+"ENABLE_IOS_FLOATING_MINIPLAYER_DESC" = "Brings back the classic miniplayer by disabling A/B flag: enableIosFloatingMiniplayer. Requires app restart.";
+
+// Virtual Bezel
+"VIRTUAL_BEZEL" = "Virtual Fullscreen Bezels";
+"VIRTUAL_BEZEL_DESC" = "Adds invisible touch-safe zones on black bars to prevent accidental taps and skips. Meant for iPhones with no home button.";
+
+// Hide AI Summaries (Experimental)
+"HIDE_AI_SUMMARIES" = "Hide AI Summaries (Experimental)";
+"HIDE_AI_SUMMARIES_DESC" = "Hides AI-generated summary buttons that appear below videos in the feed. Experimental feature.";
+
+// Fix Casting
+"FIX_CASTING" = "Fix Casting";
+"FIX_CASTING_DESC" = "Attempts to fix casting by changing some A/B flags. Only works on v20.10.4 or lower";
+
+// Preferences Management
+"PREFERENCES_MANAGEMENT" = "Preferences management";
+"IMPORT_PREFERENCES" = "Import preferences";
+"EXPORT_PREFERENCES" = "Export preferences";
+"RESTORE_DEFAULTS" = "Restore default settings";
+"IMPORT_CONFIRM" = "This will replace current preferences. Continue?";
+"RESTORE_CONFIRM" = "This will reset all settings to defaults. Continue?";
+"IMPORT_SUCCESS" = "Preferences imported successfully";
+"EXPORT_SUCCESS" = "Preferences exported successfully";
+"IMPORT_FAILED" = "Failed to import preferences";
+"CANCEL" = "Cancel";
+"YES" = "Yes";
+
+// Night Mode
+"NIGHT_MODE" = "Night Mode";
+"NIGHT_MODE_DESC" = "Dims the screen below minimum brightness by overlaying a dark filter.";
+"NIGHT_MODE_OFF" = "Off";
+"NIGHT_MODE_LOW" = "Low";
+"NIGHT_MODE_MEDIUM" = "Medium";
+"NIGHT_MODE_HIGH" = "High";
+"NIGHT_MODE_MAXIMUM" = "Max";

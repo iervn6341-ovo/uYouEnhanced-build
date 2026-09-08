@@ -30,16 +30,9 @@
 [submodule "Tweaks/YouGroupSettings"]
     path = Tweaks/YouGroupSettings
     url = https://github.com/PoomSmart/YouGroupSettings.git
-[submodule "Tweaks/YouLoop"]
-    path = Tweaks/YouLoop
-    url = https://github.com/bhackel/YouLoop.git
 [submodule "Tweaks/YouMute"]
     path = Tweaks/YouMute
     url = https://github.com/PoomSmart/YouMute.git
-    branch = main
-[submodule "Tweaks/YouPiP"]
-    path = Tweaks/YouPiP
-    url = https://github.com/PoomSmart/YouPiP.git
     branch = main
 [submodule "Tweaks/YouQuality"]
     path = Tweaks/YouQuality
@@ -94,6 +87,7 @@
 [submodule "Tweaks/libundirect"]
 	path = Tweaks/libundirect
 	url = https://github.com/opa334/libundirect.git
-[submodule "Tweaks/YTweaks"]
-	path = Tweaks/YTweaks
-	url = https://github.com/fosterbarnes/YTweaks.git
+[submodule "Tweaks/CaptionIsland"]
+	path = Tweaks/CaptionIsland
+	url = https://github.com/iervn6341-ovo/Caption-Island-Tweak.git
+	branch = main

@@ -388,13 +388,6 @@ YTMainAppControlsOverlayView *controlsOverlayView;
 + (void)requestReview { }
 %end
 
-// Enable Alternate Icons - @arichornlover
-%hook UIApplication
-- (BOOL)supportsAlternateIcons {
-    return YES;
-}
-%end
-
 // uYou AdBlock Workaround LITE (This Version will only remove ads from only Videos/Shorts!) - @PoomSmart
 %group uYouAdBlockingWorkaroundLite
 %hook YTHotConfig

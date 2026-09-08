@@ -22,7 +22,7 @@ on:
         required: true
         type: string
       bundle_id:
-        description: "Modify the bundle ID"
+        description: "Bundle ID"
         default: "com.google.ios.youtube"
         required: true
         type: string
@@ -57,6 +57,8 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+    env:
+      MINIMUM_IOS_VERSION: "17.5"
 
     steps:
       - name: Checkout Main
@@ -65,6 +67,71 @@ jobs:
           path: main
           ref: ${{ github.event.inputs.commit_id || github.ref }}
           submodules: recursive
+
+      # YTweaks and YouPiP are intentionally built from their configured
+      # upstream branches. The super-project gitlink is only a bootstrap
+      # revision; using --remote here prevents the build from silently
+      # reverting to that pinned revision. The local compatibility changes
+      # are then applied by the root Makefile from Patches/.
+      # - name: Use current YTweaks and YouPiP sources
+      #   run: |
+      #     cd "${{ github.workspace }}/main"
+      #     git submodule update --init --remote Tweaks/YTweaks Tweaks/YouPiP
+
+      - name: Test Caption Island
+        run: |
+          cd ${{ github.workspace }}/main
+          swift test --package-path Tweaks/CaptionIsland/Tests
+          smoke_dir="$(mktemp -d)"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIsland/Tests/ObjC/YouTubeInspectorSmoke.m \
+            Tweaks/CaptionIsland/CIYouTubeInspector.m \
+            Tweaks/CaptionIsland/CIModels.m \
+            Tweaks/CaptionIsland/CITextUtilities.m \
+            Tweaks/CaptionIsland/CIConstants.m \
+            Tweaks/CaptionIsland/CILogStore.m \
+            -o "$smoke_dir/YouTubeInspectorSmoke"
+          "$smoke_dir/YouTubeInspectorSmoke"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIsland/Tests/ObjC/LRCLIBProviderSmoke.m \
+            Tweaks/CaptionIsland/CILRCLIBProvider.m \
+            Tweaks/CaptionIsland/CICaptionParser.m \
+            Tweaks/CaptionIsland/CIModels.m \
+            Tweaks/CaptionIsland/CITextUtilities.m \
+            Tweaks/CaptionIsland/CILogStore.m \
+            Tweaks/CaptionIsland/CIConstants.m \
+            -o "$smoke_dir/LRCLIBProviderSmoke"
+          "$smoke_dir/LRCLIBProviderSmoke"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIsland/Tests/ObjC/VideoEligibilitySmoke.m \
+            Tweaks/CaptionIsland/CIVideoEligibility.m \
+            -o "$smoke_dir/VideoEligibilitySmoke"
+          "$smoke_dir/VideoEligibilitySmoke"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIsland/Tests/ObjC/VideoOverridesSmoke.m \
+            Tweaks/CaptionIsland/CIVideoOverrides.m \
+            Tweaks/CaptionIsland/CITextUtilities.m \
+            Tweaks/CaptionIsland/CIConstants.m \
+            Tweaks/CaptionIsland/CILogStore.m \
+            -o "$smoke_dir/VideoOverridesSmoke"
+          "$smoke_dir/VideoOverridesSmoke"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIsland/Tests/ObjC/ConfigurationSmoke.m \
+            Tweaks/CaptionIsland/CIConstants.m \
+            Tweaks/CaptionIsland/CILogStore.m \
+            -o "$smoke_dir/ConfigurationSmoke"
+          "$smoke_dir/ConfigurationSmoke"
+          xcrun clang -fobjc-arc -fblocks -Wall -Wextra -Werror \
+            -framework Foundation \
+            Tweaks/CaptionIsland/Tests/ObjC/CaptionTimingSmoke.m \
+            Tweaks/CaptionIsland/CICaptionTiming.m \
+            -o "$smoke_dir/CaptionTimingSmoke"
+          "$smoke_dir/CaptionTimingSmoke"
 
       - name: Install Dependencies
         run: brew install ldid dpkg make
@@ -105,7 +172,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: qnblackcat/theos-jailed
-          ref: master
+          ref: 662fd704aed27b8956bcfe52a35e2b676921ab42
           path: theos-jailed
           submodules: recursive
 
@@ -130,7 +197,14 @@ jobs:
           unzip -q YouTube.zip
           youtube_version=$(defaults read "$(pwd)/Payload/YouTube.app/Info" CFBundleVersion)
           echo "==> YouTube v$youtube_version downloaded!"
-          sed -i '' "17s#.*#YOUTUBE_VERSION = ${youtube_version}#g" Makefile
+          plutil -replace NSSupportsLiveActivities -bool YES "Payload/YouTube.app/Info.plist" 2>/dev/null || \
+            plutil -insert NSSupportsLiveActivities -bool YES "Payload/YouTube.app/Info.plist"
+          plutil -replace MinimumOSVersion -string "$MINIMUM_IOS_VERSION" "Payload/YouTube.app/Info.plist" 2>/dev/null || \
+            plutil -insert MinimumOSVersion -string "$MINIMUM_IOS_VERSION" "Payload/YouTube.app/Info.plist"
+          if ! /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "Payload/YouTube.app/Info.plist" 2>/dev/null | grep -qw audio; then
+            /usr/libexec/PlistBuddy -c 'Add :UIBackgroundModes array' "Payload/YouTube.app/Info.plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c 'Add :UIBackgroundModes: string audio' "Payload/YouTube.app/Info.plist"
+          fi
           echo "youtube_version=${youtube_version}" >> $GITHUB_OUTPUT
 
         env:
@@ -141,19 +215,66 @@ jobs:
         id: build_package
         run: |
           cd ${{ github.workspace }}/main
-          sed -i '' "30s#.*#BUNDLE_ID = ${{ env.BUNDLE_ID }}#g" Makefile                          # Modify the bundle ID
-          sed -i '' "29s#.*#DISPLAY_NAME = ${{ env.APP_NAME }}#g" Makefile                        # Modify the app name
-          sed -i '' "1s#.*#export TARGET = iphone:clang:${{ inputs.sdk_version }}:14.0#g" Makefile # Modify the SDK version
-          make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
+          make package \
+            TARGET="iphone:clang:${SDK_VERSION}:${MINIMUM_IOS_VERSION}" \
+            SDK_VERSION="${SDK_VERSION}" \
+            HOST_DEPLOYMENT_VERSION="${MINIMUM_IOS_VERSION}" \
+            YOUTUBE_VERSION="${YOUTUBE_VERSION}" \
+            UYOU_VERSION="${UYOU_VERSION}" \
+            BUNDLE_ID="${BUNDLE_ID}" \
+            DISPLAY_NAME="${APP_NAME}" \
+            THEOS_PACKAGE_SCHEME=rootless \
+            IPA=Payload/YouTube.app \
+            FINALPACKAGE=1
           echo "package=$(ls -t packages | head -n1)" >>$GITHUB_OUTPUT
           echo -e "==> \033[1mSHASUM256: $(shasum -a 256 packages/*.ipa | cut -f1 -d' ')\033[0m"
           echo -e "==> \033[1mBundle ID: ${{ env.BUNDLE_ID }}\033[0m"
 
         env:
           THEOS: ${{ github.workspace }}/theos
+          SDK_VERSION: ${{ inputs.sdk_version }}
+          YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
           UYOU_VERSION: ${{ inputs.uyou_version }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
+
+      - name: Verify Caption Island IPA
+        env:
+          PACKAGE_NAME: ${{ steps.build_package.outputs.package }}
+        run: |
+          cd ${{ github.workspace }}/main
+          verify_dir="$(mktemp -d)"
+          unzip -q "packages/${PACKAGE_NAME}" -d "$verify_dir"
+          app_path="$(find "$verify_dir/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$app_path"
+          test "$(plutil -extract NSSupportsLiveActivities raw -expect bool -o - "$app_path/Info.plist")" = "true"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app_path/Info.plist")" = "$MINIMUM_IOS_VERSION"
+          /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app_path/Info.plist" | grep -qw audio
+          test -f "$app_path/Frameworks/CaptionIsland.dylib"
+          caption_minos="$(otool -l "$app_path/Frameworks/CaptionIsland.dylib" | awk '$1 == "minos" { print $2; exit }')"
+          test "$caption_minos" = "$MINIMUM_IOS_VERSION"
+          widget_path="$app_path/PlugIns/CaptionIslandWidget.appex"
+          test -x "$widget_path/CaptionIslandWidget"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$widget_path/Info.plist")" = "com.apple.widgetkit-extension"
+          host_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")"
+          /usr/libexec/PlistBuddy -c 'Print :BGTaskSchedulerPermittedIdentifiers' "$app_path/Info.plist" | \
+            grep -Fq "${host_id}.captionisland.background-captions.*"
+          widget_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$widget_path/Info.plist")"
+          test "$widget_id" = "${host_id}.CaptionIslandWidget"
+          lipo -archs "$widget_path/CaptionIslandWidget" | grep -qw arm64
+          widget_minos="$(otool -l "$widget_path/CaptionIslandWidget" | awk '$1 == "minos" { print $2; exit }')"
+          test "$widget_minos" = "$MINIMUM_IOS_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$widget_path/Info.plist")" = "$MINIMUM_IOS_VERSION"
+          test "$(plutil -extract NSSupportsLiveActivities raw -expect bool -o - "$widget_path/Info.plist")" = "true"
+          for extension_plist in "$app_path"/PlugIns/*.appex/Info.plist; do
+            extension_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$extension_plist")"
+            case "$extension_id" in
+              "${host_id}."*) ;;
+              *) echo "Invalid extension bundle ID: $extension_id"; exit 1 ;;
+            esac
+            test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension_plist")" = "$MINIMUM_IOS_VERSION"
+          done
+          echo "==> CaptionIsland and native Live Activity extension verified"
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact }}
