@@ -294,46 +294,6 @@ static void hideButtonsInActionBarIfNeeded(id collectionView) {
 }
 %end
 
-// Replace YouTube's download with uYou's
-YTMainAppControlsOverlayView *controlsOverlayView;
-%hook YTMainAppControlsOverlayView
-- (id)initWithDelegate:(id)arg1 {
-    controlsOverlayView = %orig;
-    return controlsOverlayView;
-}
-%end
-%hook YTElementsDefaultSheetController
-+ (void)showSheetController:(id)arg1 showCommand:(id)arg2 commandContext:(id)arg3 handler:(id)arg4 {
-    if (IS_ENABLED(kReplaceYTDownloadWithuYou) && [arg2 isKindOfClass:%c(ELMPBShowActionSheetCommand)]) {
-        ELMPBShowActionSheetCommand *showCommand = (ELMPBShowActionSheetCommand *)arg2;
-        NSArray *listOptions = [showCommand listOptionArray];
-        for (ELMPBElement *element in listOptions) {
-            ELMPBProperties *properties = [element properties];
-            ELMPBIdentifierProperties *identifierProperties = [properties firstSubmessage];
-            // 19.30.2
-            if ([identifierProperties respondsToSelector:@selector(identifier)]) {
-                NSString *identifier = [identifierProperties identifier];
-                if ([identifier containsString:@"offline_upsell_dialog"]) {
-                    if ([controlsOverlayView respondsToSelector:@selector(uYou)]) {
-                        [controlsOverlayView uYou];
-                    }
-                    return;
-                }
-            }
-            // 19.20.2
-            NSString *description = [identifierProperties description];
-            if ([description containsString:@"offline_upsell_dialog"]) {
-                if ([controlsOverlayView respondsToSelector:@selector(uYou)]) {
-                    [controlsOverlayView uYou];
-                }
-                return;
-            }
-        }
-    }
-    %orig;
-}
-%end
-
 # pragma mark - Other hooks
 
 // Activate FLEX
@@ -2058,9 +2018,6 @@ static NSMutableArray <YTIItemSectionRenderer *> *filteredArray(NSArray <YTIItem
     }
     if (![allKeys containsObject:@"YouPiPEnabled"]) { 
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"YouPiPEnabled"]; 
-    }
-    if (![allKeys containsObject:kReplaceYTDownloadWithuYou]) {
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kReplaceYTDownloadWithuYou];
     }
     if (![allKeys containsObject:kAdBlockWorkaroundLite]) { 
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kAdBlockWorkaroundLite];

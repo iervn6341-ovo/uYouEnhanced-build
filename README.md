@@ -1,3 +1,15 @@
+## YTKACE + CaptionIsland branch
+
+This branch replaces the closed-source `uYou.dylib` core with the open-source
+[YTKACE](https://github.com/itzzace/ytkace) tweak while retaining CaptionIsland
+and the existing uYouEnhanced add-on set. The build workflow verifies that the
+resulting IPA contains both `YTKACE.dylib` and `CaptionIsland.dylib`, and that
+`uYou.dylib` is absent.
+
+YTKACE overlaps with some of the retained add-ons, including SponsorBlock,
+PiP, playback controls and interface customization. Keep only one
+implementation of an overlapping feature enabled when testing this branch.
+
 ## About the future of the uYouEnhanced Project (Updated, June 13, 2025)
 Hey everyone,
 
@@ -248,7 +260,7 @@ And thanks to the developers qnblackcat, PoomSmart & other  allowing me to expan
 
 # Features
 
-1. **uYou:** uYou has a ton of features that I can't list them all. Visit [here](https://miro92.com/repo/depictions/?p=com.miro.uyou) for more info!
+1. **YTKACE:** Adds downloads, background playback, ad blocking, gesture controls, interface customization, and other YouTube enhancements. See the [YTKACE project](https://github.com/itzzace/ytkace) for its current feature list.
 
 2. **iSponsorBlock:** Skips annoying sponsor ads inside videos. iSponsorBlock is based on [SponsorBlock engine](https://sponsor.ajay.app/). Basically, this is the iOS version of the SponsorBlock extension.
 
@@ -293,7 +305,7 @@ And thanks to the developers qnblackcat, PoomSmart & other  allowing me to expan
 
 # Known issues
 
-- **uYou**: Issues related to uYou are listed [here](https://github.com/MiRO92/uYou-for-YouTube/issues). Because uYou is not being updated frequently, we recommended creating bug reports on this repo.
+- **YTKACE:** Report YTKACE-specific issues in the [YTKACE issue tracker](https://github.com/itzzace/ytkace/issues).
 
 - Issues related to **uYouEnhanced** can be found [here](https://github.com/arichornlover/uYouEnhanced/issues/).
 
@@ -306,7 +318,7 @@ And thanks to the developers qnblackcat, PoomSmart & other  allowing me to expan
   - My official AltStore repo (uYouEnhanced - **iOS 16+**): https://therealfoxster.github.io/altsource-viewer/view/?source=https://raw.githubusercontent.com/arichornlover/arichornlover.github.io/main/apps.json
 
   - [Open in AltStore (v20.44.2-3.0.4)](https://tinyurl.com/396e7j5s) - It will take a while to install because AltStore needs to download the IPA first.
-  - NEWS - Nov 27 2024: Please be aware that some of the **uYou** features aren't working in newer versions of YouTube.
+  - This branch uses YTKACE instead of `uYou.dylib`; the upstream uYou compatibility notes do not apply to this variant.
 
 <details>
   <summary>Version information (last updated: Feb 24, 2026)</summary>
@@ -314,7 +326,7 @@ And thanks to the developers qnblackcat, PoomSmart & other  allowing me to expan
 | **Tweaks/App** | **Developer** | **Version** | **Open source** |
 | - | - | :-: | :-:  |
 | **YouTube** | Google Inc | 20.44.2 | ✖︎ |
-| [uYou](https://github.com/MiRO92/uYou-for-YouTube) | [MiRO92](https://twitter.com/miro92) | 3.0.4 | ✖︎ |
+| [YTKACE](https://github.com/itzzace/ytkace) | [itzzace](https://github.com/itzzace) | 0.9.2 | [✔︎](https://github.com/itzzace/ytkace) |
 | **OpenYoutubeAndShorts** | [CrossiDev-Studio](https://github.com/CrossiDev-Studio) | 1.0 | [✔︎](https://github.com/CrossiDev-Studio/OpenYoutubeAndShorts) |
 | **iSponsorBlock** | [Galactic-Dev](https://github.com/Galactic-Dev) | 1.2.13 | [✔︎](https://github.com/Galactic-Dev/iSponsorBlock) |
 | **BigYTMiniPlayer** | [Galactic-Dev](https://github.com/Galactic-Dev) | 1.0-1 | [✔︎](https://github.com/Galactic-Dev/BigYTMiniPlayer) |

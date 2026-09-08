@@ -1,7 +1,7 @@
 # Original idea by @ISnackable. Thanks to him for handling the hardest parts!
 # https://github.com/ISnackable/YTCubePlus/blob/main/.github/workflows/Build.yml
 
-name: Build and Release uYouEnhanced
+name: Build and Release YTKACE + CaptionIsland
 
 on:
   workflow_dispatch:
@@ -9,11 +9,6 @@ on:
       sdk_version:
         description: "iOS SDK Version"
         default: "17.5"
-        required: true
-        type: string
-      uyou_version:
-        description: "uYou Version"
-        default: "3.0.4"
         required: true
         type: string
       decrypted_youtube_url:
@@ -53,7 +48,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build uYouEnhanced
+    name: Build YTKACE + CaptionIsland
     runs-on: macos-14
     permissions:
       contents: write
@@ -132,6 +127,24 @@ jobs:
             Tweaks/CaptionIsland/CICaptionTiming.m \
             -o "$smoke_dir/CaptionTimingSmoke"
           "$smoke_dir/CaptionTimingSmoke"
+
+      - name: Set up Python for YTKACE tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test YTKACE
+        run: |
+          cd ${{ github.workspace }}/main
+          python3 -m unittest discover -s Tweaks/YTKACE/Tests -v
+
+      - name: Read YTKACE version
+        id: ytkace
+        run: |
+          cd ${{ github.workspace }}/main
+          version="$(awk '/^Version:/ { print $2; exit }' Tweaks/YTKACE/control)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install Dependencies
         run: brew install ldid dpkg make
@@ -220,7 +233,7 @@ jobs:
             SDK_VERSION="${SDK_VERSION}" \
             HOST_DEPLOYMENT_VERSION="${MINIMUM_IOS_VERSION}" \
             YOUTUBE_VERSION="${YOUTUBE_VERSION}" \
-            UYOU_VERSION="${UYOU_VERSION}" \
+            YTKACE_VERSION="${YTKACE_VERSION}" \
             BUNDLE_ID="${BUNDLE_ID}" \
             DISPLAY_NAME="${APP_NAME}" \
             THEOS_PACKAGE_SCHEME=rootless \
@@ -234,11 +247,11 @@ jobs:
           THEOS: ${{ github.workspace }}/theos
           SDK_VERSION: ${{ inputs.sdk_version }}
           YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
-          UYOU_VERSION: ${{ inputs.uyou_version }}
+          YTKACE_VERSION: ${{ steps.ytkace.outputs.version }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
 
-      - name: Verify Caption Island IPA
+      - name: Verify YTKACE and CaptionIsland IPA
         env:
           PACKAGE_NAME: ${{ steps.build_package.outputs.package }}
         run: |
@@ -251,6 +264,10 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app_path/Info.plist")" = "$MINIMUM_IOS_VERSION"
           /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app_path/Info.plist" | grep -qw audio
           test -f "$app_path/Frameworks/CaptionIsland.dylib"
+          test -f "$app_path/Frameworks/YTKACE.dylib"
+          test -d "$app_path/YTKACE.bundle"
+          test ! -e "$app_path/Frameworks/uYou.dylib"
+          test ! -e "$app_path/uYouBundle.bundle"
           caption_minos="$(otool -l "$app_path/Frameworks/CaptionIsland.dylib" | awk '$1 == "minos" { print $2; exit }')"
           test "$caption_minos" = "$MINIMUM_IOS_VERSION"
           widget_path="$app_path/PlugIns/CaptionIslandWidget.appex"
@@ -274,16 +291,16 @@ jobs:
             esac
             test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$extension_plist")" = "$MINIMUM_IOS_VERSION"
           done
-          echo "==> CaptionIsland and native Live Activity extension verified"
+          echo "==> YTKACE, CaptionIsland and native Live Activity extension verified; uYou is absent"
 
       - name: Upload Artifact
         if: ${{ inputs.upload_artifact }}
         uses: actions/upload-artifact@v5
         env:
-          UYOU_VERSION: ${{ inputs.uyou_version }}
+          YTKACE_VERSION: ${{ steps.ytkace.outputs.version }}
           YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
         with:
-          name: uYouEnhanced_${{ env.YOUTUBE_VERSION }}_${{ env.UYOU_VERSION }}
+          name: YTKACE_CaptionIsland_${{ env.YOUTUBE_VERSION }}_${{ env.YTKACE_VERSION }}
           path: ${{ github.workspace }}/main/packages/${{ steps.build_package.outputs.package }}
           if-no-files-found: error
 
@@ -293,10 +310,10 @@ jobs:
         uses: softprops/action-gh-release@v2.5.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UYOU_VERSION: ${{ inputs.uyou_version }}
+          YTKACE_VERSION: ${{ steps.ytkace.outputs.version }}
           YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
         with:
-          tag_name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
-          name: v${{ env.YOUTUBE_VERSION }}-${{ env.UYOU_VERSION }}-(${{ github.run_number }})
+          tag_name: v${{ env.YOUTUBE_VERSION }}-YTKACE-${{ env.YTKACE_VERSION }}-(${{ github.run_number }})
+          name: YouTube ${{ env.YOUTUBE_VERSION }} + YTKACE ${{ env.YTKACE_VERSION }} + CaptionIsland (${{ github.run_number }})
           files: main/packages/*.ipa
           draft: true

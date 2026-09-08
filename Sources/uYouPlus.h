@@ -85,7 +85,6 @@ static NSString *const kSnapToChapter = @"snapToChapter_enabled";
 static NSString *const kPinchToZoom = @"pinchToZoom_enabled";
 static NSString *const kYTMiniPlayer = @"ytMiniPlayer_enabled";
 static NSString *const kStockVolumeHUD = @"stockVolumeHUD_enabled";
-static NSString *const kReplaceYTDownloadWithuYou = @"kReplaceYTDownloadWithuYou_enabled";
 static NSString *const kDisablePullToFull = @"disablePullToFull_enabled";
 static NSString *const kDisableChapterSkip = @"disableChapterSkip_enabled";
 static NSString *const kAlwaysShowRemainingTime = @"alwaysShowRemainingTime_enabled";

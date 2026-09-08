@@ -91,3 +91,7 @@
 	path = Tweaks/CaptionIsland
 	url = https://github.com/iervn6341-ovo/Caption-Island-Tweak.git
 	branch = main
+[submodule "Tweaks/YTKACE"]
+	path = Tweaks/YTKACE
+	url = https://github.com/itzzace/ytkace.git
+	branch = main
