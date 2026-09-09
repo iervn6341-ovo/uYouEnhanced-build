@@ -294,28 +294,6 @@ static void hideButtonsInActionBarIfNeeded(id collectionView) {
 }
 %end
 
-# pragma mark - Other hooks
-
-// Activate FLEX
-%hook YTAppDelegate
-- (BOOL)application:(UIApplication *)application
-    didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *)launchOptions {
-    BOOL didFinishLaunching = %orig;
-
-    if (IS_ENABLED(kFlex)) {
-        [[%c(FLEXManager) performSelector:@selector(sharedManager)] performSelector:@selector(showExplorer)];
-    }
-
-    return didFinishLaunching;
-}
-- (void)appWillResignActive:(id)arg1 {
-    %orig;
-         if (IS_ENABLED(kFlex)) {
-        [[%c(FLEXManager) performSelector:@selector(sharedManager)] performSelector:@selector(showExplorer)];
-    }
-}
-%end
-
 // Fixes uYou crash when trying to play video (#1422)
 %hook YTPlayerOverlayManager
 %property (nonatomic, assign) float currentPlaybackRate;
@@ -1003,16 +981,12 @@ static NSMutableArray <YTIItemSectionRenderer *> *filteredArray(NSArray <YTIItem
 }
 %end
 
-# pragma mark - Hide Notification Button && SponsorBlock Button && uYouPlus Button
+# pragma mark - Hide Notification Button
 %hook YTRightNavigationButtons
 - (void)layoutSubviews {
     %orig;
     if (IS_ENABLED(@"hideNotificationButton_enabled")) {
         self.notificationButton.hidden = YES;
-    }
-    if (IS_ENABLED(kHideiSponsorBlockButton)) { 
-        self.sponsorBlockButton.hidden = YES;
-        self.sponsorBlockButton.frame = CGRectZero;
     }
 }
 %end
@@ -2015,9 +1989,6 @@ static NSMutableArray <YTIItemSectionRenderer *> *filteredArray(NSArray <YTIItem
     }
     if (![allKeys containsObject:@"RYD-ENABLED"]) { 
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"RYD-ENABLED"]; 
-    }
-    if (![allKeys containsObject:@"YouPiPEnabled"]) { 
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"YouPiPEnabled"]; 
     }
     if (![allKeys containsObject:kAdBlockWorkaroundLite]) { 
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kAdBlockWorkaroundLite];

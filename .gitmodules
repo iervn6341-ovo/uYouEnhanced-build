@@ -95,3 +95,11 @@
 	path = Tweaks/YTKACE
 	url = https://github.com/itzzace/ytkace.git
 	branch = main
+[submodule "Tweaks/Gonerino"]
+	path = Tweaks/Gonerino
+	url = https://github.com/castdrian/Gonerino.git
+	branch = main
+[submodule "Tweaks/YouChooseQuality"]
+	path = Tweaks/YouChooseQuality
+	url = https://github.com/PoomSmart/YouChooseQuality.git
+	branch = main

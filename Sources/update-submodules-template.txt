@@ -20,13 +20,10 @@ jobs:
 
       - name: Add uYouEnhanced submodules
         run: |
-          git submodule add https://github.com/arichornloverALT/YTHoldForSpeed.git Tweaks/YTHoldForSpeed
           git submodule add https://github.com/arichornloverALT/YouGroupSettings.git Tweaks/YouGroupSettings
-          git submodule add https://github.com/arichornloverALT/YouTimeStamp.git Tweaks/YouTimeStamp
-          # YouLoop, YouPiP, and YTweaks are tracked directly by this repository
-          # so local fixes are preserved.
+          git submodule add https://github.com/castdrian/Gonerino.git Tweaks/Gonerino
+          git submodule add https://github.com/PoomSmart/YouChooseQuality.git Tweaks/YouChooseQuality
           git submodule add https://github.com/dayanch96/uYouLocalization.git Tweaks/uYouLocalization
-          git submodule add https://github.com/PoomSmart/YTIcons Tweaks/YTIcons
           git submodule add https://github.com/protocolbuffers/protobuf.git Tweaks/protobuf
           git add .
           git commit -m "added uYouEnhanced submodules"
@@ -50,7 +47,7 @@ jobs:
           git add .
           git submodule update --init --recursive --remote Tweaks/DontEatMyContent
           git add .
-          git submodule update --init --recursive --remote Tweaks/YTHoldForSpeed
+          git submodule update --init --recursive --remote Tweaks/Gonerino
           git add .
           git submodule update --init --recursive --remote Tweaks/PSHeader
           git add .
@@ -62,23 +59,25 @@ jobs:
           git add .
           git submodule update --init --recursive --remote Tweaks/YTClassicVideoQuality
           git add .
-          git submodule update --init --recursive --remote Tweaks/YTIcons
-          git add .
           git submodule update --init --recursive --remote Tweaks/YTUHD
           git add .
           git submodule update --init --recursive --remote Tweaks/YTVideoOverlay
           git add .
           git submodule update --init --recursive --remote Tweaks/YouMute
           git add .
-          # YouLoop, YouPiP, and YTweaks are tracked directly by this repository
-          # so local fixes are preserved.
           git submodule update --init --recursive --remote Tweaks/YouQuality
+          git add .
+          git submodule update --init --recursive --remote Tweaks/YouChooseQuality
+          git add .
+          git submodule update --init --recursive --remote Tweaks/YouSlider
           git add .
           git submodule update --init --recursive --remote Tweaks/YouGroupSettings
           git add .
           git submodule update --init --recursive --remote Tweaks/YouTubeHeader
           git add .
-          git submodule update --init --recursive --remote Tweaks/iSponsorBlock
+          git submodule update --init --recursive --remote Tweaks/YTKACE
+          git add .
+          git submodule update --init --recursive --remote Tweaks/CaptionIsland
           git add .
           git commit -m "updated submodules"
           git push origin
@@ -90,10 +89,7 @@ jobs:
         run: |
           cd Bundles
           ln -s ../Tweaks/uYouLocalization/layout/Library/Application\ Support/uYouLocalization.bundle uYouLocalization.bundle
-          ln -s ../Tweaks/YTHoldForSpeed/layout/Library/Application\ Support/YTHoldForSpeed.bundle YTHoldForSpeed.bundle
           ln -s ../Tweaks/YouGroupSettings/layout/Library/Application\ Support/YouGroupSettings.bundle YouGroupSettings.bundle
-          ln -s ../Tweaks/YouLoop/layout/Library/Application\ Support/YouLoop.bundle YouLoop.bundle
-          ln -s ../Tweaks/YouTimeStamp/layout/Library/Application\ Support/YouTimeStamp.bundle YouTimeStamp.bundle
           git add .
           git commit -m "Added bundles"
           git push origin
@@ -105,10 +101,7 @@ jobs:
 #         cd Bundles
 #         rm -f MrBeastify.bundle
 #         rm -f uYouLocalization.bundle
-#         rm -f YTHoldForSpeed.bundle
 #         rm -f YouGroupSettings.bundle
-#         rm -f YouLoop.bundle
-#         rm -f YouTimeStamp.bundle
 #         git add .
 #         git commit -m "Deleted bundles"
 #         git push origin

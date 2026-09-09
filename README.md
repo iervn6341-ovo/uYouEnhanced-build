@@ -2,13 +2,29 @@
 
 This branch replaces the closed-source `uYou.dylib` core with the open-source
 [YTKACE](https://github.com/itzzace/ytkace) tweak while retaining CaptionIsland
-and the existing uYouEnhanced add-on set. The build workflow verifies that the
+and a curated, low-conflict add-on set. The build workflow verifies that the
 resulting IPA contains both `YTKACE.dylib` and `CaptionIsland.dylib`, and that
 `uYou.dylib` is absent.
 
-YTKACE overlaps with some of the retained add-ons, including SponsorBlock,
-PiP, playback controls and interface customization. Keep only one
-implementation of an overlapping feature enabled when testing this branch.
+The default build uses a low-conflict profile: YTKACE, CaptionIsland, Return
+YouTube Dislikes, DontEatMyContent, Gonerino, YouGroupSettings and YTABConfig.
+Standalone iSponsorBlock, YouPiP, YouLoop, YouSpeed, YTHoldForSpeed and native
+share tweaks are not built because YTKACE already owns those feature areas.
+
+Optional build variables:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `SETTINGS_TWEAK` | `YTABConfig` | Set to `YTweaks` to select it instead; both cannot be included together. |
+| `ENABLE_QUALITY_EXTRAS` | `0` | Adds YouQuality, YouChooseQuality and their YTVideoOverlay dependency. |
+| `ENABLE_YOUMUTE` | `0` | Adds YouMute and its YTVideoOverlay dependency. |
+| `ENABLE_YOUSLIDER` | `0` | Adds YouSlider. |
+| `ENABLE_YTUHD` | `0` | Adds YTUHD only for YouTube versions older than 21.25.5. |
+| `YTUHD_DEVICE_CONFIRMED` | `0` | Must be set to `1` together with `ENABLE_YTUHD=1` after confirming device compatibility. |
+
+The GitHub Actions workflow exposes the same options. It rejects an unsupported
+YTUHD version and verifies that disabled or conflicting standalone dylibs are
+absent from the resulting IPA.
 
 ## About the future of the uYouEnhanced Project (Updated, June 13, 2025)
 Hey everyone,
@@ -260,48 +276,17 @@ And thanks to the developers qnblackcat, PoomSmart & other  allowing me to expan
 
 # Features
 
-1. **YTKACE:** Adds downloads, background playback, ad blocking, gesture controls, interface customization, and other YouTube enhancements. See the [YTKACE project](https://github.com/itzzace/ytkace) for its current feature list.
+- **YTKACE:** Downloads, background playback, ad blocking, SponsorBlock,
+  player controls and interface customization.
+- **CaptionIsland:** Dynamic Island and Live Activity captions.
+- **Return YouTube Dislikes:** Restores dislike information.
+- **DontEatMyContent:** Keeps 2:1 video content clear of the notch and Dynamic Island.
+- **Gonerino:** Filters unwanted channels, videos and keywords from feeds.
+- **YTABConfig:** The default A/B settings tool; YTweaks may be selected instead.
+- **YouGroupSettings:** Groups supported tweak settings inside YouTube.
 
-2. **iSponsorBlock:** Skips annoying sponsor ads inside videos. iSponsorBlock is based on [SponsorBlock engine](https://sponsor.ajay.app/). Basically, this is the iOS version of the SponsorBlock extension.
-
-3. **YouPiP:** enable YouTube's **native PiP**. More options are in YouTube Settings - General.
-
-4. **YTUHD:** unlock VP9 codec and in effect, enables video quality of 2K and 4K. You can enable/disable YTUHD in YouTube Settings - Video quality preferences.
-
-<details>
-  <summary>And many more...!</summary>
-
-5. **YTClassicVideoQuality:** Since YouTube v16.xx, changing video quality requires an extra step. YTClassicVideoQuality brings back the old video quality selector, which is more user-friendly than the new one.
-
-6. **YTNoHoverCards:** This tweak offers the option to enable or disable the annoying suggested videos that appear at the end of YouTube videos.
-
-7. **YouRememberCaption:** YouRememberCaption makes YouTube remember your video caption setting (if not already).
-
-8. **NoYTPremium:** NoYTPremium removes YouTube Premium upsells, preventing the ads and promotions for YouTube Premium from appearing.
-
-9. **YTSpeed:** YTSpeed adds additional playback speed options of 2.25x, 2.5x, 2.75x, 3x and more to the YouTube app, providing more flexibility in video playback speed.
-
-10. **YTMiniplayerEnabler:** YTMiniplayerEnabler enables the Miniplayer feature for all YouTube videos.
-
-11. **DontEatMyContent:** This tweak prevents the notch or Dynamic Island from obstructing 2:1 video content on YouTube, ensuring a better viewing experience.
-
-12. **YTABConfig:** This tweak gives users control over YouTube's A/B testing flags, allowing them to enable or disable experimental features.
-
-13. **YouMute:** YouMute provides a button to mute YouTube videos in the video player, offering a convenient way to toggle the audio on and off.
-
-14. **YouQuality:** YouQuality provides a button to change the video quality of YouTube videos in the video player, allowing quick access to different quality options.
-
-15. **YouTimeStamp:** YouTimeStamp provides a button to copy the video url with the timestamp of whatever part of the video you are currently on.
-
-16. **YTVideoOverlay:** YTVideoOverlay adds buttons to overlay the video, providing quick access to features like captions, speed control, and quality settings.
-
-17. **NotificationsTab:** This tweak recreates the Notifications Tab that was removed from the YouTube App back in 2020, also the tweak includes customization for the tab if you are feeling nostalgic.
-
-18. **YTAppVersionSpoofer:** This tweak allows users to spoof the version of the YouTube app they are using, this is designed to spoof to older YouTube App versions. This can be useful for bypassing certain version checks or retaining features that may have been removed/disabled in newer updates. **<-- uYouEnhanced Exclusive Feature (subject to change)**
-
-19. **LowContrastMode:** LowContrastMode is a tweak that allows users to darken the text in the YouTube app, making it easier to read. which sadly suffers from incompatibility issues and doesn't work right now as of March 19th 2025. **<-- uYouEnhanced Exclusive Feature (subject to change)**
-
-</details>
+YouQuality with YouChooseQuality, YouMute, YouSlider and YTUHD are optional and
+disabled by default. See the build-variable table at the top of this README.
 
 # Known issues
 
@@ -321,41 +306,20 @@ And thanks to the developers qnblackcat, PoomSmart & other  allowing me to expan
   - This branch uses YTKACE instead of `uYou.dylib`; the upstream uYou compatibility notes do not apply to this variant.
 
 <details>
-  <summary>Version information (last updated: Feb 24, 2026)</summary>
+  <summary>Included tweak sources</summary>
 
-| **Tweaks/App** | **Developer** | **Version** | **Open source** |
-| - | - | :-: | :-:  |
-| **YouTube** | Google Inc | 20.44.2 | ✖︎ |
-| [YTKACE](https://github.com/itzzace/ytkace) | [itzzace](https://github.com/itzzace) | 0.9.2 | [✔︎](https://github.com/itzzace/ytkace) |
-| **OpenYoutubeAndShorts** | [CrossiDev-Studio](https://github.com/CrossiDev-Studio) | 1.0 | [✔︎](https://github.com/CrossiDev-Studio/OpenYoutubeAndShorts) |
-| **iSponsorBlock** | [Galactic-Dev](https://github.com/Galactic-Dev) | 1.2.13 | [✔︎](https://github.com/Galactic-Dev/iSponsorBlock) |
-| **BigYTMiniPlayer** | [Galactic-Dev](https://github.com/Galactic-Dev) | 1.0-1 | [✔︎](https://github.com/Galactic-Dev/BigYTMiniPlayer) |
-| **YTNoHoverCards** | [level3tjg](https://twitter.com/level3tjg) | 0.0.3 | [✔︎](https://github.com/level3tjg/YTNoHoverCards) |
-| **YTMiniplayerEnabler** | [level3tjg](https://twitter.com/level3tjg) | 0.0.3 | [✔︎](https://github.com/level3tjg/YTMiniplayerEnabler) |
-| **DontEatMyContent** | [therealFoxster](https://github.com/therealFoxster) | 1.1.11 | [✔︎](https://github.com/therealFoxster/DontEatMyContent) |
-| **YTSpeed** | [Lyvendia](https://github.com/Lyvendia) | 1.0.1 | [✔︎](https://github.com/Lyvendia/YTSpeed) |
-| **Alderis Color Picker** | [HASHBANG Productions](https://github.com/hbang) | 1.2 | [✔︎](https://github.com/hbang/Alderis) |
-| **YTUHD** | [PoomSmart](https://twitter.com/poomsmart) | 2.2.3 | [✔︎](https://github.com/PoomSmart/YTUHD) |
-| **YouLoop** | [bhackel](https://github.com/bhackel) | 1.1.0 | [✔︎](https://github.com/bhackel/YouLoop) |
-| **YouMute** | [PoomSmart](https://twitter.com/poomsmart) | 1.3.3 | [✔︎](https://github.com/PoomSmart/YouMute) |
-| **YouPiP** | [PoomSmart](https://twitter.com/poomsmart) | 1.12.10 | [✔︎](https://github.com/PoomSmart/YouPiP) |
-| **YouQuality** | [PoomSmart](https://twitter.com/poomsmart) | 1.3.6 | [✔︎](https://github.com/PoomSmart/YouQuality) |
-| **YouSpeed** | [PoomSmart](https://twitter.com/poomsmart) | 1.6.2 | [✔︎](https://github.com/PoomSmart/YouSpeed) |
-| **YouTimeStamp** | [arichornlover](https://github.com/arichornlover) | 1.1.0 | [✔︎](https://github.com/aricloverextra/YouTimeStamp) |
-| **IAmYouTube** | [PoomSmart](https://twitter.com/poomsmart) | 1.3.1 | [✔︎](https://github.com/PoomSmart/IAmYouTube) |
-| **YTABConfig** | [PoomSmart](https://twitter.com/poomsmart) | 1.9.1 | [✔︎](https://github.com/PoomSmart/YTABConfig) |
-| **YTIcons** | [PoomSmart](https://twitter.com/poomsmart) | 1.0.0 | [✔︎](https://github.com/PoomSmart/YTIcons) |
-| **YTReExplore** | [PoomSmart](https://twitter.com/poomsmart) | 1.0.4 | [✔︎](https://github.com/PoomSmart/YTReExplore) |
-| **NoYTPremium** | [PoomSmart](https://twitter.com/poomsmart) | 1.0.6 | [✔︎](https://github.com/PoomSmart/NoYTPremium) |
-| **YTNoPaidPromo** | [PoomSmart](https://twitter.com/poomsmart) | 1.0.0 | [✔︎](https://github.com/PoomSmart/YTNoPaidPromo) |
-| **YouRememberCaption** | [PoomSmart](https://twitter.com/poomsmart) | 1.0.0 | [✔︎](https://poomsmart.github.io/repo/depictions/youremembercaption.html) |
-| **Return YouTube Dislike** | [PoomSmart](https://twitter.com/poomsmart) | 1.13.17 | [✔︎](https://github.com/PoomSmart/Return-YouTube-Dislikes) |
-| **YouTube-X** | [PoomSmart](https://twitter.com/poomsmart) | 1.7.17 | [✔︎](https://github.com/PoomSmart/YouTube-X) |
-| **YTVideoOverlay** | [PoomSmart](https://twitter.com/poomsmart) | 2.3.5 | [✔︎](https://github.com/PoomSmart/YTVideoOverlay) |
-| **YouGroupSettings** | [PoomSmart](https://twitter.com/poomsmart) | 1.0.8 | [✔︎](https://github.com/PoomSmart/YouGroupSettings) |
-| **YTHoldForSpeed** | [joshuaseltzer](https://github.com/joshuaseltzer) | 1.2.3 | [✔︎](https://github.com/joshuaseltzer/YTHoldForSpeed) |
-| **YTweaks** | [fosterbarnes](https://github.com/fosterbarnes) | 0.4.0 | [✔︎](https://github.com/fosterbarnes/YTweaks) |
-| **LowContrastMode** | [arichornlover](https://github.com/arichornlover) | 1.8.0 | [✔︎](https://github.com/arichornlover/YTLowContrastMode) |
+| Tweak | Build status | Source |
+| --- | --- | --- |
+| YTKACE | Default | [itzzace/ytkace](https://github.com/itzzace/ytkace) |
+| CaptionIsland | Default | [Donato-fiore/CaptionIsland](https://github.com/Donato-fiore/CaptionIsland) |
+| Return YouTube Dislikes | Default | [PoomSmart/Return-YouTube-Dislikes](https://github.com/PoomSmart/Return-YouTube-Dislikes) |
+| DontEatMyContent | Default | [therealFoxster/DontEatMyContent](https://github.com/therealFoxster/DontEatMyContent) |
+| Gonerino | Default | [castdrian/Gonerino](https://github.com/castdrian/Gonerino) |
+| YTABConfig / YTweaks | Exactly one; YTABConfig by default | [PoomSmart/YTABConfig](https://github.com/PoomSmart/YTABConfig) / [fosterbarnes/YTweaks](https://github.com/fosterbarnes/YTweaks) |
+| YouQuality + YouChooseQuality | Optional pair | [PoomSmart/YouQuality](https://github.com/PoomSmart/YouQuality) / [PoomSmart/YouChooseQuality](https://github.com/PoomSmart/YouChooseQuality) |
+| YouMute | Optional | [PoomSmart/YouMute](https://github.com/PoomSmart/YouMute) |
+| YouSlider | Optional | [PoomSmart/YouSlider](https://github.com/PoomSmart/YouSlider) |
+| YTUHD | Optional with version and device guards | [PoomSmart/YTUHD](https://github.com/PoomSmart/YTUHD) |
 
 </details>
 

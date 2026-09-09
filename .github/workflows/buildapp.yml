@@ -26,6 +26,39 @@ on:
         default: "YouTube"
         required: true
         type: string
+      settings_tweak:
+        description: "Choose one A/B and interface settings tweak"
+        default: "YTABConfig"
+        required: true
+        type: choice
+        options:
+          - "YTABConfig"
+          - "YTweaks"
+      enable_quality_extras:
+        description: "Add YouQuality + YouChooseQuality (and required YTVideoOverlay)"
+        default: false
+        required: false
+        type: boolean
+      enable_youmute:
+        description: "Add YouMute (and required YTVideoOverlay)"
+        default: false
+        required: false
+        type: boolean
+      enable_youslider:
+        description: "Add YouSlider"
+        default: false
+        required: false
+        type: boolean
+      enable_ytuhd:
+        description: "Add YTUHD; only supported below YouTube 21.25.5"
+        default: false
+        required: false
+        type: boolean
+      confirm_ytuhd_device:
+        description: "Confirm the target device needs and supports YTUHD"
+        default: false
+        required: false
+        type: boolean
       commit_id:
         description: "(Optional) Commit ID to build at"
         default: ""
@@ -62,16 +95,6 @@ jobs:
           path: main
           ref: ${{ github.event.inputs.commit_id || github.ref }}
           submodules: recursive
-
-      # YTweaks and YouPiP are intentionally built from their configured
-      # upstream branches. The super-project gitlink is only a bootstrap
-      # revision; using --remote here prevents the build from silently
-      # reverting to that pinned revision. The local compatibility changes
-      # are then applied by the root Makefile from Patches/.
-      # - name: Use current YTweaks and YouPiP sources
-      #   run: |
-      #     cd "${{ github.workspace }}/main"
-      #     git submodule update --init --remote Tweaks/YTweaks Tweaks/YouPiP
 
       - name: Test Caption Island
         run: |
@@ -137,6 +160,17 @@ jobs:
         run: |
           cd ${{ github.workspace }}/main
           python3 -m unittest discover -s Tweaks/YTKACE/Tests -v
+
+      - name: Set up Go for Gonerino
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Prepare Gonerino generated header
+        run: |
+          cd ${{ github.workspace }}/main/Tweaks/Gonerino
+          go run scripts/generate_changelog_header.go
+          test -s headers/ChangelogData.h
 
       - name: Read YTKACE version
         id: ytkace
@@ -236,6 +270,12 @@ jobs:
             YTKACE_VERSION="${YTKACE_VERSION}" \
             BUNDLE_ID="${BUNDLE_ID}" \
             DISPLAY_NAME="${APP_NAME}" \
+            SETTINGS_TWEAK="${SETTINGS_TWEAK}" \
+            ENABLE_QUALITY_EXTRAS="${ENABLE_QUALITY_EXTRAS}" \
+            ENABLE_YOUMUTE="${ENABLE_YOUMUTE}" \
+            ENABLE_YOUSLIDER="${ENABLE_YOUSLIDER}" \
+            ENABLE_YTUHD="${ENABLE_YTUHD}" \
+            YTUHD_DEVICE_CONFIRMED="${YTUHD_DEVICE_CONFIRMED}" \
             THEOS_PACKAGE_SCHEME=rootless \
             IPA=Payload/YouTube.app \
             FINALPACKAGE=1
@@ -250,10 +290,21 @@ jobs:
           YTKACE_VERSION: ${{ steps.ytkace.outputs.version }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
+          SETTINGS_TWEAK: ${{ inputs.settings_tweak }}
+          ENABLE_QUALITY_EXTRAS: ${{ inputs.enable_quality_extras && '1' || '0' }}
+          ENABLE_YOUMUTE: ${{ inputs.enable_youmute && '1' || '0' }}
+          ENABLE_YOUSLIDER: ${{ inputs.enable_youslider && '1' || '0' }}
+          ENABLE_YTUHD: ${{ inputs.enable_ytuhd && '1' || '0' }}
+          YTUHD_DEVICE_CONFIRMED: ${{ inputs.confirm_ytuhd_device && '1' || '0' }}
 
       - name: Verify YTKACE and CaptionIsland IPA
         env:
           PACKAGE_NAME: ${{ steps.build_package.outputs.package }}
+          SETTINGS_TWEAK: ${{ inputs.settings_tweak }}
+          ENABLE_QUALITY_EXTRAS: ${{ inputs.enable_quality_extras && '1' || '0' }}
+          ENABLE_YOUMUTE: ${{ inputs.enable_youmute && '1' || '0' }}
+          ENABLE_YOUSLIDER: ${{ inputs.enable_youslider && '1' || '0' }}
+          ENABLE_YTUHD: ${{ inputs.enable_ytuhd && '1' || '0' }}
         run: |
           cd ${{ github.workspace }}/main
           verify_dir="$(mktemp -d)"
@@ -266,8 +317,59 @@ jobs:
           test -f "$app_path/Frameworks/CaptionIsland.dylib"
           test -f "$app_path/Frameworks/YTKACE.dylib"
           test -d "$app_path/YTKACE.bundle"
+          test -f "$app_path/Frameworks/YouTubeDislikesReturn.dylib"
+          test -f "$app_path/Frameworks/DontEatMyContent.dylib"
+          test -f "$app_path/Frameworks/Gonerino.dylib"
+          test -f "$app_path/Frameworks/YouGroupSettings.dylib"
+          test -d "$app_path/RYD.bundle"
+          test -d "$app_path/DontEatMyContent.bundle"
+          test -d "$app_path/Gonerino.bundle"
+          test -d "$app_path/YouGroupSettings.bundle"
           test ! -e "$app_path/Frameworks/uYou.dylib"
           test ! -e "$app_path/uYouBundle.bundle"
+          for removed in iSponsorBlock YouPiP YouLoop YouSpeed YTHoldForSpeed YTNativeShare YouTubeNativeShare libFLEX YTIcons YouTimeStamp; do
+            test ! -e "$app_path/Frameworks/${removed}.dylib"
+          done
+          if [[ "$SETTINGS_TWEAK" == "YTABConfig" ]]; then
+            test -f "$app_path/Frameworks/YTABConfig.dylib"
+            test -d "$app_path/YTABC.bundle"
+            test ! -e "$app_path/Frameworks/YTweaks.dylib"
+          else
+            test -f "$app_path/Frameworks/YTweaks.dylib"
+            test ! -e "$app_path/Frameworks/YTABConfig.dylib"
+          fi
+          if [[ "$ENABLE_QUALITY_EXTRAS" == "1" ]]; then
+            test -f "$app_path/Frameworks/YouQuality.dylib"
+            test -f "$app_path/Frameworks/YouChooseQuality.dylib"
+            test -f "$app_path/Frameworks/YTVideoOverlay.dylib"
+            test -d "$app_path/YouQuality.bundle"
+            test -d "$app_path/YouChooseQuality.bundle"
+          else
+            test ! -e "$app_path/Frameworks/YouQuality.dylib"
+            test ! -e "$app_path/Frameworks/YouChooseQuality.dylib"
+          fi
+          if [[ "$ENABLE_YOUMUTE" == "1" ]]; then
+            test -f "$app_path/Frameworks/YouMute.dylib"
+            test -f "$app_path/Frameworks/YTVideoOverlay.dylib"
+            test -d "$app_path/YouMute.bundle"
+          else
+            test ! -e "$app_path/Frameworks/YouMute.dylib"
+          fi
+          if [[ "$ENABLE_YOUSLIDER" == "1" ]]; then
+            test -f "$app_path/Frameworks/YouSlider.dylib"
+            test -d "$app_path/YouSlider.bundle"
+          else
+            test ! -e "$app_path/Frameworks/YouSlider.dylib"
+          fi
+          if [[ "$ENABLE_QUALITY_EXTRAS" != "1" && "$ENABLE_YOUMUTE" != "1" ]]; then
+            test ! -e "$app_path/Frameworks/YTVideoOverlay.dylib"
+          fi
+          if [[ "$ENABLE_YTUHD" == "1" ]]; then
+            test -f "$app_path/Frameworks/YTUHD.dylib"
+            test -d "$app_path/YTUHD.bundle"
+          else
+            test ! -e "$app_path/Frameworks/YTUHD.dylib"
+          fi
           caption_minos="$(otool -l "$app_path/Frameworks/CaptionIsland.dylib" | awk '$1 == "minos" { print $2; exit }')"
           test "$caption_minos" = "$MINIMUM_IOS_VERSION"
           widget_path="$app_path/PlugIns/CaptionIslandWidget.appex"

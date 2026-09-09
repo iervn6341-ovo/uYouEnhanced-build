@@ -238,7 +238,7 @@ extern NSBundle *uYouPlusBundle();
                 [[%c(GOOHUDManagerInternal) sharedInstance] showMessageMainThread:[%c(YTHUDMessage) messageWithText:@"Settings copied"]];
             }
             // Prompt to export uYouEnhanced settings - @bhackel
-            UIAlertController *exportAlert = [UIAlertController alertControllerWithTitle:@"Export Settings" message:@"Note: This feature cannot save iSponsorBlock and most YouTube settings.\n\nWould you like to also export your uYouEnhanced Settings?" preferredStyle:UIAlertControllerStyleAlert];
+            UIAlertController *exportAlert = [UIAlertController alertControllerWithTitle:@"Export Settings" message:@"Note: This feature cannot save YTKACE and most YouTube settings.\n\nWould you like to also export your uYouEnhanced Settings?" preferredStyle:UIAlertControllerStyleAlert];
             [exportAlert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
             [exportAlert addAction:[UIAlertAction actionWithTitle:@"Export" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
                 // Export uYouEnhanced Settings functionality - @bhackhel
@@ -543,7 +543,6 @@ NSString *cacheDescription = [NSString stringWithFormat:@"%@", GetCacheSize()];
     SWITCH2(LOC(@"HIDE_ACCOUNT_SECTION"), LOC(@"RESTART_REQUIRED"), kDisableAccountSection);
 //  SWITCH2(LOC(@"Hide `DontEatMyContent` Section"), LOC(@"RESTART_REQUIRED"), kDisableDontEatMyContentSection);
 //  SWITCH2(LOC(@"Hide `YouTube Return Dislike` Section"), LOC(@"RESTART_REQUIRED"), kDisableReturnYouTubeDislikeSection);
-//  SWITCH2(LOC(@"Hide `YouPiP` Section"), LOC(@"RESTART_REQUIRED"), kDisableYouPiPSection);
     SWITCH2(LOC(@"HIDE_AUTOPLAY_SECTION"), LOC(@"RESTART_REQUIRED"), kDisableAutoplaySection);
     SWITCH2(LOC(@"HIDE_TRY_NEW_FEATURES_SECTION"), LOC(@"RESTART_REQUIRED"), kDisableTryNewFeaturesSection);
     SWITCH2(LOC(@"HIDE_VIDEO_QUALITY_PREFERENCES_SECTION"), LOC(@"RESTART_REQUIRED"), kDisableVideoQualityPreferencesSection);
@@ -994,7 +993,6 @@ NSString *cacheDescription = [NSString stringWithFormat:@"%@", GetCacheSize()];
     SWITCH2(LOC(@"ENABLE_YT_STARTUP_ANIMATION"), LOC(@"ENABLE_YT_STARTUP_ANIMATION_DESC"), kYTStartupAnimation);
     SWITCH(LOC(@"DISABLE_HINTS"), LOC(@"DISABLE_HINTS_DESC"), kDisableHints);
     SWITCH(LOC(@"STICK_NAVIGATION_BAR"), LOC(@"STICK_NAVIGATION_BAR_DESC"), kStickNavigationBar);
-    SWITCH2(LOC(@"HIDE_ISPONSORBLOCK"), nil, kHideiSponsorBlockButton);
     SWITCH(LOC(@"HIDE_CHIP_BAR"), LOC(@"HIDE_CHIP_BAR_DESC"), kHideChipBar);
     SWITCH2(LOC(@"Enable Notifications Tab"), LOC(@"Makes the Notifications Tab appear back onto the Pivot Bar, experimental: Testing customization options."), kShowNotificationsTab);
     YTSettingsSectionItem *notificationIconStyle = [%c(YTSettingsSectionItem)
@@ -1059,7 +1057,6 @@ NSString *cacheDescription = [NSString stringWithFormat:@"%@", GetCacheSize()];
     SWITCH2(LOC(@"HIDE_INDICATORS"), LOC(@"HIDE_INDICATORS_DESC"), kHideSubscriptionsNotificationBadge);
     SWITCH2(LOC(@"FIX_CASTING"), LOC(@"FIX_CASTING_DESC"), kFixCasting);
     SWITCH2(LOC(@"NEW_SETTINGS_UI"), LOC(@"NEW_SETTINGS_UI_DESC"), kNewSettingsUI);
-    SWITCH(LOC(@"ENABLE_FLEX"), LOC(@"ENABLE_FLEX_DESC"), kFlex);
 
     if ([settingsViewController respondsToSelector:@selector(setSectionItems:forCategory:title:icon:titleDescription:headerHidden:)])
         [settingsViewController setSectionItems:sectionItems forCategory:uYouPlusSection title:@"uYouEnhanced" icon:nil titleDescription:LOC(@"TITLE DESCRIPTION") headerHidden:YES];

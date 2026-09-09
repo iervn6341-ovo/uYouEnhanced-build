@@ -162,7 +162,6 @@ static NSString *const kHideYouTubeLogo = @"hideYouTubeLogo_enabled";
 static NSString *const kYTStartupAnimation = @"ytStartupAnimation_enabled";
 static NSString *const kDisableHints = @"disableHints_enabled";
 static NSString *const kStickNavigationBar = @"stickNavigationBar_enabled";
-static NSString *const kHideiSponsorBlockButton = @"hideiSponsorBlockButton_enabled";
 static NSString *const kHideChipBar = @"hideChipBar_enabled";
 static NSString *const kShowNotificationsTab = @"showNotificationsTab_enabled";
 static NSString *const kHidePlayNextInQueue = @"hidePlayNextInQueue_enabled";
@@ -175,7 +174,6 @@ static NSString *const kAutoHideHomeBar = @"autoHideHomeBar_enabled";
 static NSString *const kHideSubscriptionsNotificationBadge = @"hideSubscriptionsNotificationBadge_enabled";
 static NSString *const kFixCasting = @"fixCasting_enabled";
 static NSString *const kNewSettingsUI = @"newSettingsUI_enabled";
-static NSString *const kFlex = @"flex_enabled";
 // unused (uYouEnhanced)
 static NSString *const kGoogleSigninFix = @"googleSigninFix_enabled";
 
