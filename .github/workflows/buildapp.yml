@@ -54,11 +54,6 @@ on:
         default: false
         required: false
         type: boolean
-      confirm_ytuhd_device:
-        description: "Confirm the target device needs and supports YTUHD"
-        default: false
-        required: false
-        type: boolean
       commit_id:
         description: "(Optional) Commit ID to build at"
         default: ""
@@ -275,7 +270,6 @@ jobs:
             ENABLE_YOUMUTE="${ENABLE_YOUMUTE}" \
             ENABLE_YOUSLIDER="${ENABLE_YOUSLIDER}" \
             ENABLE_YTUHD="${ENABLE_YTUHD}" \
-            YTUHD_DEVICE_CONFIRMED="${YTUHD_DEVICE_CONFIRMED}" \
             THEOS_PACKAGE_SCHEME=rootless \
             IPA=Payload/YouTube.app \
             FINALPACKAGE=1
@@ -295,7 +289,6 @@ jobs:
           ENABLE_YOUMUTE: ${{ inputs.enable_youmute && '1' || '0' }}
           ENABLE_YOUSLIDER: ${{ inputs.enable_youslider && '1' || '0' }}
           ENABLE_YTUHD: ${{ inputs.enable_ytuhd && '1' || '0' }}
-          YTUHD_DEVICE_CONFIRMED: ${{ inputs.confirm_ytuhd_device && '1' || '0' }}
 
       - name: Verify YTKACE and CaptionIsland IPA
         env:

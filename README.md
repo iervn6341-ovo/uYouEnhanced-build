@@ -20,7 +20,6 @@ Optional build variables:
 | `ENABLE_YOUMUTE` | `0` | Adds YouMute and its YTVideoOverlay dependency. |
 | `ENABLE_YOUSLIDER` | `0` | Adds YouSlider. |
 | `ENABLE_YTUHD` | `0` | Adds YTUHD only for YouTube versions older than 21.25.5. |
-| `YTUHD_DEVICE_CONFIRMED` | `0` | Must be set to `1` together with `ENABLE_YTUHD=1` after confirming device compatibility. |
 
 The GitHub Actions workflow exposes the same options. It rejects an unsupported
 YTUHD version and verifies that disabled or conflicting standalone dylibs are
