@@ -22,7 +22,6 @@ YTKACE_VERSION = 0.9.2
 endif
 
 # Low-conflict build profile. Optional player tweaks are disabled by default.
-SETTINGS_TWEAK ?= YTABConfig
 ENABLE_QUALITY_EXTRAS ?= 0
 ENABLE_YOUMUTE ?= 0
 ENABLE_YOUSLIDER ?= 0
@@ -59,15 +58,8 @@ $(TWEAK_NAME)_INJECT_DYLIBS = \
 	$(THEOS_OBJ_DIR)/YouTubeDislikesReturn.dylib \
 	$(THEOS_OBJ_DIR)/DontEatMyContent.dylib \
 	$(THEOS_OBJ_DIR)/Gonerino.dylib \
-	$(THEOS_OBJ_DIR)/YouGroupSettings.dylib
-
-ifeq ($(SETTINGS_TWEAK),YTABConfig)
-$(TWEAK_NAME)_INJECT_DYLIBS += $(THEOS_OBJ_DIR)/YTABConfig.dylib
-else ifeq ($(SETTINGS_TWEAK),YTweaks)
-$(TWEAK_NAME)_INJECT_DYLIBS += $(THEOS_OBJ_DIR)/YTweaks.dylib
-else
-$(error SETTINGS_TWEAK must be YTABConfig or YTweaks; got $(SETTINGS_TWEAK))
-endif
+	$(THEOS_OBJ_DIR)/YouGroupSettings.dylib \
+	$(THEOS_OBJ_DIR)/YTABConfig.dylib
 
 ifeq ($(ENABLE_QUALITY_EXTRAS),1)
 $(TWEAK_NAME)_INJECT_DYLIBS += $(THEOS_OBJ_DIR)/YouQuality.dylib $(THEOS_OBJ_DIR)/YouChooseQuality.dylib
@@ -103,11 +95,8 @@ $(TWEAK_NAME)_EMBED_BUNDLES = \
 	Tweaks/Return-YouTube-Dislikes/layout/Library/Application\ Support/RYD.bundle \
 	Tweaks/DontEatMyContent/layout/Library/Application\ Support/DontEatMyContent.bundle \
 	Tweaks/Gonerino/layout/Library/Application\ Support/Gonerino.bundle \
-	Tweaks/YouGroupSettings/layout/Library/Application\ Support/YouGroupSettings.bundle
-
-ifeq ($(SETTINGS_TWEAK),YTABConfig)
-$(TWEAK_NAME)_EMBED_BUNDLES += Tweaks/YTABConfig/layout/Library/Application\ Support/YTABC.bundle
-endif
+	Tweaks/YouGroupSettings/layout/Library/Application\ Support/YouGroupSettings.bundle \
+	Tweaks/YTABConfig/layout/Library/Application\ Support/YTABC.bundle
 ifeq ($(ENABLE_QUALITY_EXTRAS),1)
 $(TWEAK_NAME)_EMBED_BUNDLES += Tweaks/YouQuality/layout/Library/Application\ Support/YouQuality.bundle Tweaks/YouChooseQuality/layout/Library/Application\ Support/YouChooseQuality.bundle
 endif
@@ -124,12 +113,7 @@ $(TWEAK_NAME)_EMBED_EXTENSIONS = $(GENERATED_EXTENSION_APPEXS) $(CAPTION_ISLAND_
 
 include $(THEOS)/makefiles/common.mk
 ifneq ($(JAILBROKEN),1)
-SUBPROJECTS += Tweaks/YTKACE Tweaks/Alderis Tweaks/DontEatMyContent Tweaks/Return-YouTube-Dislikes Tweaks/Gonerino Tweaks/YouGroupSettings Tweaks/CaptionIsland Tweaks/CaptionIsland/Widget
-ifeq ($(SETTINGS_TWEAK),YTABConfig)
-SUBPROJECTS += Tweaks/YTABConfig
-else ifeq ($(SETTINGS_TWEAK),YTweaks)
-SUBPROJECTS += Tweaks/YTweaks
-endif
+SUBPROJECTS += Tweaks/YTKACE Tweaks/Alderis Tweaks/DontEatMyContent Tweaks/Return-YouTube-Dislikes Tweaks/Gonerino Tweaks/YouGroupSettings Tweaks/CaptionIsland Tweaks/CaptionIsland/Widget Tweaks/YTABConfig
 ifeq ($(ENABLE_QUALITY_EXTRAS),1)
 SUBPROJECTS += Tweaks/YouQuality Tweaks/YouChooseQuality
 endif

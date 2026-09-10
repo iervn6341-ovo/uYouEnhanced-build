@@ -26,14 +26,6 @@ on:
         default: "YouTube"
         required: true
         type: string
-      settings_tweak:
-        description: "Choose one A/B and interface settings tweak"
-        default: "YTABConfig"
-        required: true
-        type: choice
-        options:
-          - "YTABConfig"
-          - "YTweaks"
       enable_quality_extras:
         description: "Add YouQuality + YouChooseQuality (and required YTVideoOverlay)"
         default: false
@@ -90,6 +82,11 @@ jobs:
           path: main
           ref: ${{ github.event.inputs.commit_id || github.ref }}
           submodules: recursive
+
+      - name: Apply readable YTABConfig annotations
+        run: |
+          cd ${{ github.workspace }}/main
+          git -C Tweaks/YTABConfig apply ../../Patches/YTABConfig-readable-annotations.patch
 
       - name: Test Caption Island
         run: |
@@ -265,7 +262,6 @@ jobs:
             YTKACE_VERSION="${YTKACE_VERSION}" \
             BUNDLE_ID="${BUNDLE_ID}" \
             DISPLAY_NAME="${APP_NAME}" \
-            SETTINGS_TWEAK="${SETTINGS_TWEAK}" \
             ENABLE_QUALITY_EXTRAS="${ENABLE_QUALITY_EXTRAS}" \
             ENABLE_YOUMUTE="${ENABLE_YOUMUTE}" \
             ENABLE_YOUSLIDER="${ENABLE_YOUSLIDER}" \
@@ -284,7 +280,6 @@ jobs:
           YTKACE_VERSION: ${{ steps.ytkace.outputs.version }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
-          SETTINGS_TWEAK: ${{ inputs.settings_tweak }}
           ENABLE_QUALITY_EXTRAS: ${{ inputs.enable_quality_extras && '1' || '0' }}
           ENABLE_YOUMUTE: ${{ inputs.enable_youmute && '1' || '0' }}
           ENABLE_YOUSLIDER: ${{ inputs.enable_youslider && '1' || '0' }}
@@ -293,7 +288,6 @@ jobs:
       - name: Verify YTKACE and CaptionIsland IPA
         env:
           PACKAGE_NAME: ${{ steps.build_package.outputs.package }}
-          SETTINGS_TWEAK: ${{ inputs.settings_tweak }}
           ENABLE_QUALITY_EXTRAS: ${{ inputs.enable_quality_extras && '1' || '0' }}
           ENABLE_YOUMUTE: ${{ inputs.enable_youmute && '1' || '0' }}
           ENABLE_YOUSLIDER: ${{ inputs.enable_youslider && '1' || '0' }}
@@ -323,14 +317,9 @@ jobs:
           for removed in iSponsorBlock YouPiP YouLoop YouSpeed YTHoldForSpeed YTNativeShare YouTubeNativeShare libFLEX YTIcons YouTimeStamp; do
             test ! -e "$app_path/Frameworks/${removed}.dylib"
           done
-          if [[ "$SETTINGS_TWEAK" == "YTABConfig" ]]; then
-            test -f "$app_path/Frameworks/YTABConfig.dylib"
-            test -d "$app_path/YTABC.bundle"
-            test ! -e "$app_path/Frameworks/YTweaks.dylib"
-          else
-            test -f "$app_path/Frameworks/YTweaks.dylib"
-            test ! -e "$app_path/Frameworks/YTABConfig.dylib"
-          fi
+          test -f "$app_path/Frameworks/YTABConfig.dylib"
+          test -d "$app_path/YTABC.bundle"
+          test ! -e "$app_path/Frameworks/YTweaks.dylib"
           if [[ "$ENABLE_QUALITY_EXTRAS" == "1" ]]; then
             test -f "$app_path/Frameworks/YouQuality.dylib"
             test -f "$app_path/Frameworks/YouChooseQuality.dylib"

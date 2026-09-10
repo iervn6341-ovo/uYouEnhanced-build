@@ -1,0 +1,301 @@
+diff --git a/Settings.x b/Settings.x
+index e86d8f1..a564257 100644
+--- a/Settings.x
++++ b/Settings.x
+@@ -2,7 +2,6 @@
+ #import <YouTubeHeader/UIDevice+YouTube.h>
+ #import <YouTubeHeader/GOOHUDManagerInternal.h>
+ #import <YouTubeHeader/YTAlertView.h>
+-#import <YouTubeHeader/YTCommonUtils.h>
+ #import <YouTubeHeader/YTSearchableSettingsViewController.h>
+ #import <YouTubeHeader/YTSettingsGroupData.h>
+ #import <YouTubeHeader/YTSettingsPickerViewController.h>
+@@ -25,7 +24,6 @@
+ static const NSInteger YTABCSection = 404;
+ static const NSUInteger EstimatedCategoryCount = 26;
+ static const NSUInteger EstimatedCategoryDivisor = 10;
+-static const NSUInteger LongMethodNameThreshold = 26;
+ static NSString * const KeyFormatString = @"%@.%@";
+ static NSString * const FullKeyFormatString = @"%@.%@.%@";
+ 
+@@ -62,6 +60,135 @@ NSBundle *YTABCBundle() {
+     return bundle;
+ }
+ 
++static NSString *YTABCLocalizedString(NSBundle *bundle, NSString *key, NSString *fallback) {
++    return [bundle localizedStringForKey:key value:fallback table:nil];
++}
++
++static NSString *YTABCHumanizedMethodName(NSString *method) {
++    if (method.length == 0) return @"Unknown flag";
++
++    NSCharacterSet *uppercase = [NSCharacterSet uppercaseLetterCharacterSet];
++    NSCharacterSet *lowercase = [NSCharacterSet lowercaseLetterCharacterSet];
++    NSCharacterSet *digits = [NSCharacterSet decimalDigitCharacterSet];
++    NSMutableString *result = [NSMutableString stringWithCapacity:method.length + 8];
++
++    for (NSUInteger index = 0; index < method.length; index++) {
++        unichar current = [method characterAtIndex:index];
++        if (current == '_' || current == '-') {
++            if (result.length > 0 && ![result hasSuffix:@" "]) [result appendString:@" "];
++            continue;
++        }
++
++        BOOL currentIsUppercase = [uppercase characterIsMember:current];
++        if (index > 0 && currentIsUppercase) {
++            unichar previous = [method characterAtIndex:index - 1];
++            BOOL previousIsLowercaseOrDigit = [lowercase characterIsMember:previous] || [digits characterIsMember:previous];
++            BOOL nextIsLowercase = index + 1 < method.length && [lowercase characterIsMember:[method characterAtIndex:index + 1]];
++            BOOL previousIsUppercase = [uppercase characterIsMember:previous];
++            if ((previousIsLowercaseOrDigit || (previousIsUppercase && nextIsLowercase)) && ![result hasSuffix:@" "])
++                [result appendString:@" "];
++        }
++
++        [result appendFormat:@"%C", current];
++    }
++
++    return [result stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
++}
++
++static NSString *YTABCFlagAnnotation(NSString *method, NSBundle *bundle, BOOL includeWarning) {
++    NSString *lowercaseMethod = method.lowercaseString;
++    static NSArray <NSArray <NSString *> *> *topicDefinitions;
++    static dispatch_once_t onceToken;
++    dispatch_once(&onceToken, ^{
++        topicDefinitions = @[
++            @[@"pictureinpicture", @"FLAG_TOPIC_PIP", @"picture-in-picture"],
++            @[@"miniplayer", @"FLAG_TOPIC_MINIPLAYER", @"mini player"],
++            @[@"autoplay", @"FLAG_TOPIC_AUTOPLAY", @"autoplay"],
++            @[@"shorts", @"FLAG_TOPIC_SHORTS", @"Shorts"],
++            @[@"afma", @"FLAG_TOPIC_ADS", @"advertising"],
++            @[@"advert", @"FLAG_TOPIC_ADS", @"advertising"],
++            @[@"adbreak", @"FLAG_TOPIC_ADS", @"advertising"],
++            @[@"sponsor", @"FLAG_TOPIC_SPONSOR", @"sponsorships"],
++            @[@"background", @"FLAG_TOPIC_BACKGROUND", @"background playback"],
++            @[@"download", @"FLAG_TOPIC_DOWNLOADS", @"downloads and offline playback"],
++            @[@"offline", @"FLAG_TOPIC_DOWNLOADS", @"downloads and offline playback"],
++            @[@"caption", @"FLAG_TOPIC_CAPTIONS", @"captions and subtitles"],
++            @[@"subtitle", @"FLAG_TOPIC_CAPTIONS", @"captions and subtitles"],
++            @[@"comment", @"FLAG_TOPIC_COMMENTS", @"comments"],
++            @[@"livestream", @"FLAG_TOPIC_LIVE", @"live streams"],
++            @[@"search", @"FLAG_TOPIC_SEARCH", @"search"],
++            @[@"history", @"FLAG_TOPIC_HISTORY", @"watch and search history"],
++            @[@"privacy", @"FLAG_TOPIC_PRIVACY", @"privacy"],
++            @[@"telemetry", @"FLAG_TOPIC_ANALYTICS", @"analytics and telemetry"],
++            @[@"analytics", @"FLAG_TOPIC_ANALYTICS", @"analytics and telemetry"],
++            @[@"eventlogging", @"FLAG_TOPIC_ANALYTICS", @"analytics and telemetry"],
++            @[@"crashlog", @"FLAG_TOPIC_ANALYTICS", @"analytics and telemetry"],
++            @[@"experiment", @"FLAG_TOPIC_EXPERIMENTS", @"experiments and rollouts"],
++            @[@"network", @"FLAG_TOPIC_NETWORK", @"network requests"],
++            @[@"sabr", @"FLAG_TOPIC_NETWORK", @"network requests"],
++            @[@"quality", @"FLAG_TOPIC_QUALITY", @"video quality"],
++            @[@"codec", @"FLAG_TOPIC_CODEC", @"video codecs and HDR"],
++            @[@"hdr", @"FLAG_TOPIC_CODEC", @"video codecs and HDR"],
++            @[@"vp9", @"FLAG_TOPIC_CODEC", @"video codecs and HDR"],
++            @[@"av1", @"FLAG_TOPIC_CODEC", @"video codecs and HDR"],
++            @[@"cast", @"FLAG_TOPIC_CAST", @"casting"],
++            @[@"player", @"FLAG_TOPIC_PLAYER", @"video player"],
++            @[@"playback", @"FLAG_TOPIC_PLAYER", @"video player"],
++            @[@"feed", @"FLAG_TOPIC_FEED", @"Home and recommendation feeds"],
++            @[@"recommend", @"FLAG_TOPIC_FEED", @"Home and recommendation feeds"],
++            @[@"navigation", @"FLAG_TOPIC_NAVIGATION", @"navigation and tabs"],
++            @[@"pivot", @"FLAG_TOPIC_NAVIGATION", @"navigation and tabs"],
++            @[@"premium", @"FLAG_TOPIC_ACCOUNT", @"account and Premium features"],
++            @[@"account", @"FLAG_TOPIC_ACCOUNT", @"account and Premium features"],
++            @[@"signin", @"FLAG_TOPIC_ACCOUNT", @"account and Premium features"],
++            @[@"notification", @"FLAG_TOPIC_NOTIFICATIONS", @"notifications"],
++            @[@"share", @"FLAG_TOPIC_SHARING", @"sharing"],
++            @[@"playlist", @"FLAG_TOPIC_PLAYLIST", @"playlists"],
++            @[@"channel", @"FLAG_TOPIC_CHANNEL", @"channels"],
++        ];
++    });
++
++    NSString *topic = nil;
++    for (NSArray <NSString *> *definition in topicDefinitions) {
++        if ([lowercaseMethod containsString:definition[0]]) {
++            topic = YTABCLocalizedString(bundle, definition[1], definition[2]);
++            break;
++        }
++    }
++    if (!topic) topic = YTABCHumanizedMethodName(method);
++
++    NSString *actionKey = @"FLAG_ACTION_RELATED";
++    NSString *actionFallback = @"%@-related behavior";
++    if ([lowercaseMethod hasPrefix:@"disable"]) {
++        actionKey = @"FLAG_ACTION_DISABLE";
++        actionFallback = @"disable %@";
++    } else if ([lowercaseMethod hasPrefix:@"hide"]) {
++        actionKey = @"FLAG_ACTION_HIDE";
++        actionFallback = @"hide the %@ interface";
++    } else if ([lowercaseMethod hasPrefix:@"show"]) {
++        actionKey = @"FLAG_ACTION_SHOW";
++        actionFallback = @"show the %@ interface";
++    } else if ([lowercaseMethod hasPrefix:@"enable"]) {
++        actionKey = @"FLAG_ACTION_ENABLE";
++        actionFallback = @"enable %@";
++    } else if ([lowercaseMethod hasPrefix:@"allow"]) {
++        actionKey = @"FLAG_ACTION_ALLOW";
++        actionFallback = @"allow %@ behavior";
++    } else if ([lowercaseMethod hasPrefix:@"use"]) {
++        actionKey = @"FLAG_ACTION_USE";
++        actionFallback = @"use the %@ implementation";
++    } else if ([lowercaseMethod hasPrefix:@"should"] || [lowercaseMethod hasPrefix:@"is"]) {
++        actionKey = @"FLAG_ACTION_CONDITION";
++        actionFallback = @"a condition related to %@";
++    }
++
++    NSString *action = [NSString stringWithFormat:YTABCLocalizedString(bundle, actionKey, actionFallback), topic];
++    NSString *format = includeWarning
++        ? YTABCLocalizedString(bundle, @"FLAG_ANNOTATION_FORMAT", @"Likely purpose: %@. This is a private YouTube flag; its actual behavior may change by app version.")
++        : YTABCLocalizedString(bundle, @"FLAG_ANNOTATION_SUMMARY_FORMAT", @"Inferred: %@");
++    return [NSString stringWithFormat:format, action];
++}
++
+ NSString *getKey(NSString *method, NSString *classKey) {
+     NSString *cacheKey = [NSString stringWithFormat:KeyFormatString, classKey, method];
+     pthread_mutex_lock(&cacheMutex);
+@@ -213,7 +340,6 @@ static NSString *getCategory(char c, NSString *method) {
+     NSMutableArray *sectionItems = [NSMutableArray array];
+     int totalSettings = 0;
+     NSBundle *tweakBundle = YTABCBundle();
+-    BOOL isPhone = ![%c(YTCommonUtils) isIPad];
+     NSString *yesText = _LOC([NSBundle mainBundle], @"settings.yes");
+     NSString *cancelText = _LOC([NSBundle mainBundle], @"confirm.cancel");
+     NSString *deleteText = _LOC([NSBundle mainBundle], @"search.action.delete");
+@@ -240,8 +366,9 @@ static NSString *getCategory(char c, NSString *method) {
+                     NSString *methodKey = getKey(method, classKey); // Cache the key
+                     BOOL modified = [allKeysSet containsObject:methodKey];
+                     NSString *modifiedTitle = modified ? [NSString stringWithFormat:@"%@ *", method] : method;
++                    NSString *annotation = YTABCFlagAnnotation(method, tweakBundle, NO);
+                     YTSettingsSectionItem *methodSwitch = [YTSettingsSectionItemClass switchItemWithTitle:modifiedTitle
+-                        titleDescription:isPhone && method.length > LongMethodNameThreshold ? modifiedTitle : nil
++                        titleDescription:annotation
+                         accessibilityIdentifier:nil
+                         switchOn:getValue(methodKey)
+                         switchBlock:^BOOL (YTSettingsCell *cell, BOOL enabled) {
+@@ -252,7 +379,7 @@ static NSString *getCategory(char c, NSString *method) {
+                             NSString *content = [NSString stringWithFormat:KeyFormatString, classKey, method];
+                             YTAlertView *alertView = [YTAlertViewClass confirmationDialog];
+                             alertView.title = method;
+-                            alertView.subtitle = content;
++                            alertView.subtitle = [NSString stringWithFormat:@"%@\n\n%@", content, YTABCFlagAnnotation(method, tweakBundle, YES)];
+                             [alertView addTitle:LOC(@"COPY_TO_CLIPBOARD") withAction:^{
+                                 UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+                                 pasteboard.string = content;
+@@ -478,8 +605,9 @@ static NSString *getCategory(char c, NSString *method) {
+                     }
+ 
+                     NSString *title = isRemoved ? [NSString stringWithFormat:@"%@ %@", displayKey, [tweakBundle localizedStringForKey:@"REMOVED" value:@"(Removed)" table:nil]] : displayKey;
++                    NSString *annotation = YTABCFlagAnnotation(method, tweakBundle, NO);
+                     YTSettingsSectionItem *toggleItem = [YTSettingsSectionItemClass switchItemWithTitle:title
+-                        titleDescription:isPhone && displayKey.length > 26 ? displayKey : nil
++                        titleDescription:annotation
+                         accessibilityIdentifier:nil
+                         switchOn:[defaults boolForKey:fullKey]
+                         switchBlock:^BOOL (YTSettingsCell *toggleCell, BOOL enabled) {
+@@ -492,7 +620,7 @@ static NSString *getCategory(char c, NSString *method) {
+                         selectBlock:^BOOL (YTSettingsCell *toggleCell, NSUInteger arg1) {
+                             YTAlertView *alertView = [YTAlertViewClass confirmationDialog];
+                             alertView.title = method;
+-                            alertView.subtitle = displayKey;
++                            alertView.subtitle = [NSString stringWithFormat:@"%@\n\n%@", displayKey, YTABCFlagAnnotation(method, tweakBundle, YES)];
+                             [alertView addTitle:LOC(@"COPY_TO_CLIPBOARD") withAction:^{
+                                 UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
+                                 pasteboard.string = displayKey;
+diff --git a/layout/Library/Application Support/YTABC.bundle/en.lproj/Localizable.strings b/layout/Library/Application Support/YTABC.bundle/en.lproj/Localizable.strings
+index dc5ef9d..4525ee8 100644
+--- a/layout/Library/Application Support/YTABC.bundle/en.lproj/Localizable.strings	
++++ b/layout/Library/Application Support/YTABC.bundle/en.lproj/Localizable.strings	
+@@ -38,3 +38,43 @@
+ 
+ "REMOVE_REMOVED_SETTINGS" = "Remove removed settings";
+ "REMOVE_REMOVED_SETTINGS_DESC" = "This will remove %ld settings that are no longer available in YouTube.";
++
++// Inferred descriptions for private YouTube flags
++"FLAG_ANNOTATION_FORMAT" = "Likely purpose: %@. This is a private YouTube flag; its actual behavior may change by app version.";
++"FLAG_ANNOTATION_SUMMARY_FORMAT" = "Inferred: %@";
++"FLAG_ACTION_RELATED" = "%@-related behavior";
++"FLAG_ACTION_DISABLE" = "disable %@";
++"FLAG_ACTION_HIDE" = "hide the %@ interface";
++"FLAG_ACTION_SHOW" = "show the %@ interface";
++"FLAG_ACTION_ENABLE" = "enable %@";
++"FLAG_ACTION_ALLOW" = "allow %@ behavior";
++"FLAG_ACTION_USE" = "use the %@ implementation";
++"FLAG_ACTION_CONDITION" = "a condition related to %@";
++"FLAG_TOPIC_PIP" = "picture-in-picture";
++"FLAG_TOPIC_MINIPLAYER" = "mini player";
++"FLAG_TOPIC_AUTOPLAY" = "autoplay";
++"FLAG_TOPIC_SHORTS" = "Shorts";
++"FLAG_TOPIC_ADS" = "advertising";
++"FLAG_TOPIC_SPONSOR" = "sponsorships";
++"FLAG_TOPIC_BACKGROUND" = "background playback";
++"FLAG_TOPIC_DOWNLOADS" = "downloads and offline playback";
++"FLAG_TOPIC_CAPTIONS" = "captions and subtitles";
++"FLAG_TOPIC_COMMENTS" = "comments";
++"FLAG_TOPIC_LIVE" = "live streams";
++"FLAG_TOPIC_SEARCH" = "search";
++"FLAG_TOPIC_HISTORY" = "watch and search history";
++"FLAG_TOPIC_PRIVACY" = "privacy";
++"FLAG_TOPIC_ANALYTICS" = "analytics and telemetry";
++"FLAG_TOPIC_EXPERIMENTS" = "experiments and rollouts";
++"FLAG_TOPIC_NETWORK" = "network requests";
++"FLAG_TOPIC_QUALITY" = "video quality";
++"FLAG_TOPIC_CODEC" = "video codecs and HDR";
++"FLAG_TOPIC_CAST" = "casting";
++"FLAG_TOPIC_PLAYER" = "video player";
++"FLAG_TOPIC_FEED" = "Home and recommendation feeds";
++"FLAG_TOPIC_NAVIGATION" = "navigation and tabs";
++"FLAG_TOPIC_ACCOUNT" = "account and Premium features";
++"FLAG_TOPIC_NOTIFICATIONS" = "notifications";
++"FLAG_TOPIC_SHARING" = "sharing";
++"FLAG_TOPIC_PLAYLIST" = "playlists";
++"FLAG_TOPIC_CHANNEL" = "channels";
+diff --git a/layout/Library/Application Support/YTABC.bundle/zh_tw.lproj/Localizable.strings b/layout/Library/Application Support/YTABC.bundle/zh_tw.lproj/Localizable.strings
+index 7d55811..834613d 100644
+--- a/layout/Library/Application Support/YTABC.bundle/zh_tw.lproj/Localizable.strings	
++++ b/layout/Library/Application Support/YTABC.bundle/zh_tw.lproj/Localizable.strings	
+@@ -38,3 +38,43 @@
+ 
+ "REMOVE_REMOVED_SETTINGS" = "刪除已移除的設定";
+ "REMOVE_REMOVED_SETTINGS_DESC" = "這將刪除 %ld 個在 YouTube 中已不可用的設定。";
++
++// YouTube 私有旗標的名稱推測說明
++"FLAG_ANNOTATION_FORMAT" = "推測用途：%@。這是 YouTube 私有旗標，實際效果可能隨版本變更。";
++"FLAG_ANNOTATION_SUMMARY_FORMAT" = "推測：%@";
++"FLAG_ACTION_RELATED" = "與「%@」相關的功能";
++"FLAG_ACTION_DISABLE" = "停用「%@」相關功能";
++"FLAG_ACTION_HIDE" = "隱藏「%@」相關介面";
++"FLAG_ACTION_SHOW" = "顯示「%@」相關介面";
++"FLAG_ACTION_ENABLE" = "啟用「%@」相關功能";
++"FLAG_ACTION_ALLOW" = "允許「%@」相關行為";
++"FLAG_ACTION_USE" = "使用「%@」相關實作";
++"FLAG_ACTION_CONDITION" = "判斷「%@」相關條件";
++"FLAG_TOPIC_PIP" = "子母畫面";
++"FLAG_TOPIC_MINIPLAYER" = "迷你播放器";
++"FLAG_TOPIC_AUTOPLAY" = "自動播放";
++"FLAG_TOPIC_SHORTS" = "Shorts 短影音";
++"FLAG_TOPIC_ADS" = "廣告";
++"FLAG_TOPIC_SPONSOR" = "贊助內容";
++"FLAG_TOPIC_BACKGROUND" = "背景播放";
++"FLAG_TOPIC_DOWNLOADS" = "下載與離線播放";
++"FLAG_TOPIC_CAPTIONS" = "字幕";
++"FLAG_TOPIC_COMMENTS" = "留言";
++"FLAG_TOPIC_LIVE" = "直播";
++"FLAG_TOPIC_SEARCH" = "搜尋";
++"FLAG_TOPIC_HISTORY" = "觀看與搜尋紀錄";
++"FLAG_TOPIC_PRIVACY" = "隱私";
++"FLAG_TOPIC_ANALYTICS" = "分析與遙測";
++"FLAG_TOPIC_EXPERIMENTS" = "實驗與分批推出";
++"FLAG_TOPIC_NETWORK" = "網路請求";
++"FLAG_TOPIC_QUALITY" = "影片畫質";
++"FLAG_TOPIC_CODEC" = "影片編碼與 HDR";
++"FLAG_TOPIC_CAST" = "投放";
++"FLAG_TOPIC_PLAYER" = "影片播放器";
++"FLAG_TOPIC_FEED" = "首頁與推薦動態";
++"FLAG_TOPIC_NAVIGATION" = "導覽與分頁";
++"FLAG_TOPIC_ACCOUNT" = "帳戶與 Premium 功能";
++"FLAG_TOPIC_NOTIFICATIONS" = "通知";
++"FLAG_TOPIC_SHARING" = "分享";
++"FLAG_TOPIC_PLAYLIST" = "播放清單";
++"FLAG_TOPIC_CHANNEL" = "頻道";
+

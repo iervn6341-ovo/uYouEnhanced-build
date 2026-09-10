@@ -15,7 +15,6 @@ Optional build variables:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `SETTINGS_TWEAK` | `YTABConfig` | Set to `YTweaks` to select it instead; both cannot be included together. |
 | `ENABLE_QUALITY_EXTRAS` | `0` | Adds YouQuality, YouChooseQuality and their YTVideoOverlay dependency. |
 | `ENABLE_YOUMUTE` | `0` | Adds YouMute and its YTVideoOverlay dependency. |
 | `ENABLE_YOUSLIDER` | `0` | Adds YouSlider. |
@@ -281,7 +280,7 @@ And thanks to the developers qnblackcat, PoomSmart & other  allowing me to expan
 - **Return YouTube Dislikes:** Restores dislike information.
 - **DontEatMyContent:** Keeps 2:1 video content clear of the notch and Dynamic Island.
 - **Gonerino:** Filters unwanted channels, videos and keywords from feeds.
-- **YTABConfig:** The default A/B settings tool; YTweaks may be selected instead.
+- **YTABConfig:** The included A/B settings tool, with inferred descriptions for private flags.
 - **YouGroupSettings:** Groups supported tweak settings inside YouTube.
 
 YouQuality with YouChooseQuality, YouMute, YouSlider and YTUHD are optional and
@@ -314,7 +313,7 @@ disabled by default. See the build-variable table at the top of this README.
 | Return YouTube Dislikes | Default | [PoomSmart/Return-YouTube-Dislikes](https://github.com/PoomSmart/Return-YouTube-Dislikes) |
 | DontEatMyContent | Default | [therealFoxster/DontEatMyContent](https://github.com/therealFoxster/DontEatMyContent) |
 | Gonerino | Default | [castdrian/Gonerino](https://github.com/castdrian/Gonerino) |
-| YTABConfig / YTweaks | Exactly one; YTABConfig by default | [PoomSmart/YTABConfig](https://github.com/PoomSmart/YTABConfig) / [fosterbarnes/YTweaks](https://github.com/fosterbarnes/YTweaks) |
+| YTABConfig | Default | [PoomSmart/YTABConfig](https://github.com/PoomSmart/YTABConfig) |
 | YouQuality + YouChooseQuality | Optional pair | [PoomSmart/YouQuality](https://github.com/PoomSmart/YouQuality) / [PoomSmart/YouChooseQuality](https://github.com/PoomSmart/YouChooseQuality) |
 | YouMute | Optional | [PoomSmart/YouMute](https://github.com/PoomSmart/YouMute) |
 | YouSlider | Optional | [PoomSmart/YouSlider](https://github.com/PoomSmart/YouSlider) |
