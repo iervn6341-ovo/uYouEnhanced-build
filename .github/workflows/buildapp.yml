@@ -27,12 +27,12 @@ on:
         required: true
         type: string
       enable_quality_extras:
-        description: "Add YouQuality + YouChooseQuality (and required YTVideoOverlay)"
+        description: "Add YouQuality + YouChooseQuality"
         default: false
         required: false
         type: boolean
       enable_youmute:
-        description: "Add YouMute (and required YTVideoOverlay)"
+        description: "Add YouMute"
         default: false
         required: false
         type: boolean
@@ -320,6 +320,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app_path/Info.plist")" = "$MINIMUM_IOS_VERSION"
           /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app_path/Info.plist" | grep -qw audio
           test -f "$app_path/Frameworks/CaptionIsland.dylib"
+          test -f "$app_path/Frameworks/YTVideoOverlay.dylib"
           test -f "$app_path/Frameworks/YTKACE.dylib"
           test -d "$app_path/YTKACE.bundle"
           test -f "$app_path/Frameworks/YouTubeDislikesReturn.dylib"
@@ -341,7 +342,6 @@ jobs:
           if [[ "$ENABLE_QUALITY_EXTRAS" == "1" ]]; then
             test -f "$app_path/Frameworks/YouQuality.dylib"
             test -f "$app_path/Frameworks/YouChooseQuality.dylib"
-            test -f "$app_path/Frameworks/YTVideoOverlay.dylib"
             test -d "$app_path/YouQuality.bundle"
             test -d "$app_path/YouChooseQuality.bundle"
           else
@@ -350,7 +350,6 @@ jobs:
           fi
           if [[ "$ENABLE_YOUMUTE" == "1" ]]; then
             test -f "$app_path/Frameworks/YouMute.dylib"
-            test -f "$app_path/Frameworks/YTVideoOverlay.dylib"
             test -d "$app_path/YouMute.bundle"
           else
             test ! -e "$app_path/Frameworks/YouMute.dylib"
@@ -360,9 +359,6 @@ jobs:
             test -d "$app_path/YouSlider.bundle"
           else
             test ! -e "$app_path/Frameworks/YouSlider.dylib"
-          fi
-          if [[ "$ENABLE_QUALITY_EXTRAS" != "1" && "$ENABLE_YOUMUTE" != "1" ]]; then
-            test ! -e "$app_path/Frameworks/YTVideoOverlay.dylib"
           fi
           if [[ "$ENABLE_YTUHD" == "1" ]]; then
             test -f "$app_path/Frameworks/YTUHD.dylib"

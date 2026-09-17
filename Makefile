@@ -27,11 +27,9 @@ ENABLE_YOUMUTE ?= 0
 ENABLE_YOUSLIDER ?= 0
 ENABLE_YTUHD ?= 0
 
-ifneq ($(filter 1,$(ENABLE_QUALITY_EXTRAS) $(ENABLE_YOUMUTE)),)
+# CaptionIsland registers its player button through YTVideoOverlay during its
+# initializer, so the overlay is a required runtime dependency.
 ENABLE_VIDEO_OVERLAY := 1
-else
-ENABLE_VIDEO_OVERLAY := 0
-endif
 
 ifeq ($(ENABLE_YTUHD),1)
 YTUHD_YOUTUBE_COMPATIBLE := $(shell awk -v version="$(YOUTUBE_VERSION)" 'BEGIN { split(version, v, "."); print (v[1] < 21 || (v[1] == 21 && (v[2] < 25 || (v[2] == 25 && v[3] < 5)))) ? 1 : 0 }')
