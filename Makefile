@@ -148,6 +148,8 @@ before-all::
 	@if [[ -f "$(IPA)/Info.plist" ]]; then \
 		plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"; \
+		plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist"; \
 		plutil -replace MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert MinimumOSVersion -string "$(HOST_DEPLOYMENT_VERSION)" "$(IPA)/Info.plist"; \
 		/usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$(IPA)/Info.plist" 2>/dev/null || :; \
@@ -178,6 +180,8 @@ before-package::
 	@bash Sources/prepare-alternate-icons.sh "$(IPA)" "Localizations/uYouPlus.bundle/AppIcons"
 	@plutil -replace NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(IPA)/Info.plist"
+	@plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(IPA)/Info.plist"
 	@/usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$(IPA)/Info.plist" 2>/dev/null || :
 	@/usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsArbitraryLoadsForMedia" "$(IPA)/Info.plist" 2>/dev/null || :
 	@/usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsArbitraryLoadsInWebContent" "$(IPA)/Info.plist" 2>/dev/null || :
@@ -198,6 +202,8 @@ before-package::
 	@/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(YOUTUBE_VERSION)" "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
 	@plutil -replace NSSupportsLiveActivities -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist" 2>/dev/null || \
 		plutil -insert NSSupportsLiveActivities -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
+	@plutil -replace NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist" 2>/dev/null || \
+		plutil -insert NSSupportsLiveActivitiesFrequentUpdates -bool YES "$(CAPTION_ISLAND_WIDGET_APPEX)/Info.plist"
 	@set -e; for appex in $(GENERATED_EXTENSION_APPEXS); do \
 		plist="$$appex/Info.plist"; \
 		old_id=$$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$$plist"); \
